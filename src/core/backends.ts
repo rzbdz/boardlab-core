@@ -131,7 +131,7 @@ export class Backends {
       board.lab = {
         id: instance.id, device: record.device ?? board.name, online: !!device?.online, ip: device?.ip ?? null,
         heldBy: device?.heldBy ?? null, leaseError: this.leaseErrors.get(board.name) ?? null,
-        empty: !!device?.empty, canRefresh: !!instance.backend.inventory.refresh && !device?.empty,
+        empty: !!device?.empty, slotGone: !!device?.slotGone, canRefresh: !!instance.backend.inventory.refresh && !device?.empty,
         mediaBoot: device?.mediaBoot ? { method: device.mediaBoot.method, available: device.mediaBoot.available, why: device.mediaBoot.why ?? null } : null,
         attention: this.lab.relay.attention(board.name) ?? device?.attention ?? null, canConfirm: !!instance.backend.relay.confirm,
         sdks: device?.sdks ?? [], progress: this.lab.download.progress(board.name),
@@ -209,7 +209,7 @@ export class Backends {
       const url = get('url')
       const fields = backend.fields ?? {}
       return {
-        id, kind: backend.kind, about: backend.about ?? '', fields, canDiscover: !!backend.discovery, canRemove: !!backend.inventory?.remove, canBind: !!backend.ports, canRelay: !!backend.channels,
+        id, kind: backend.kind, about: backend.about ?? '', fields, canDiscover: !!backend.discovery, canRebuild: !!backend.discovery?.rebuild, canRemove: !!backend.inventory?.remove, canBind: !!backend.ports, canRelay: !!backend.channels,
         hosts: [...new Set([...this.devices].filter(([name]) => name.startsWith(`${id}-`)).map(([, device]) => device.host).filter((host): host is string => !!host))].sort(),
         discovery: this.discoveries.get(id) ?? null, enabled: get('enabled') === '1', url, username: get('username'), hasPassword: !!get('password'),
         jump: get('jump'), defaultJump: url && fields.jump ? backend.defaultJump?.(new URL(url)) ?? null : null, devices: get('devices'),
@@ -329,9 +329,13 @@ export class Backends {
     const { backend } = this.configurable(id)
     if (!backend.discovery) throw new BoardError('invalid', `实验室 ${id} 不能自己发现板子`)
     if (!confirmed) throw new BoardError('forbidden', '发现板子可能复位实验室里的板子，需要用户确认')
+    if (options.rebuild && !backend.discovery.rebuild) throw new BoardError('invalid', `实验室 ${id} 不能重建主机`)
+    if (options.rebuild && !options.host) throw new BoardError('invalid', '重建要指定主机')
     const config = this.config(id)
-    // An empty slot has no board to reset: whoever holds one (to watch its console, say) may have it discovered.
-    const held = this.heldIn(id, name => !!this.devices.get(name)?.empty)
+    // An empty slot has no board to reset: whoever holds one (to watch its console, say) may have it discovered. A
+    // rebuild forgets the host's boards, so nobody may hold any of them, empty slots included.
+    const elsewhere = (name: string) => { const slot = this.devices.get(name)?.slot; return !!slot && !slot.startsWith(`${options.host}/`) }
+    const held = this.heldIn(id, name => options.rebuild ? elsewhere(name) : !!this.devices.get(name)?.empty)
     if (held) throw new BoardError('locked', `${String(held.board)} 正被 ${String(held.holder)} 使用，发现板子会复位板子，未开始`)
     const outside = [...this.devices].find(([name, device]) => name.startsWith(`${id}-`) && device.heldBy)
     if (outside) throw new BoardError('locked', `${outside[0]} 在实验室里正被 ${outside[1].heldBy} 使用，发现板子会复位板子，未开始`)
@@ -340,13 +344,14 @@ export class Backends {
     const badSlot = (options.slots ?? []).find(slot => !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}\/s\d+$/.test(slot))
     if (badSlot) throw new BoardError('invalid', `槽位要写成 <主机>/s<N>：${badSlot}`)
     const report = (line: string, running = true) => { this.discoveries.set(id, { running, line, at: this.lab.kernel.iso() }); this.lab.kernel.changed(null) }
-    report(options.human ? `开始人工发现${options.host ? `（${options.host}）` : ''}：按提示逐块让未登记的板子进下载模式` : '开始发现板子')
-    const detail = `${id}${options.human ? ` 人工${options.host ? ` ${options.host}` : ''}` : ''}${options.slots?.length ? ` ${options.slots.join(',')}` : ''}`
+    report(options.rebuild ? `开始重建 ${options.host}：忘掉它的板子和槽位，按现在的接线重新发现`
+      : options.human ? `开始人工发现${options.host ? `（${options.host}）` : ''}：按提示逐块让未登记的板子进下载模式` : '开始发现板子')
+    const detail = `${id}${options.rebuild ? ` 重建 ${options.host}` : ''}${options.human ? ` 人工${options.host ? ` ${options.host}` : ''}` : ''}${options.slots?.length ? ` ${options.slots.join(',')}` : ''}`
     let result: { message: string, found: LabFinding[] }
     const registered: string[] = []
     // Each board the backend registers as it goes is listed at once, while the discovery goes on.
     const onRegistered = (device: string) => { registered.push(device); void this.sync(id, actor).catch(() => {}) }
-    try { result = await backend.discovery.discover(config, { human: !!options.human, host: options.host ?? null, slots: options.slots ?? [] }, line => report(line), onRegistered) }
+    try { result = await backend.discovery.discover(config, { human: !!options.human, host: options.host ?? null, slots: options.slots ?? [], rebuild: !!options.rebuild }, line => report(line), onRegistered) }
     catch (error) {
       report(`失败：${(error as Error).message}`, false)
       this.lab.kernel.record(actor, null, 'lab-discover', detail, false, (error as Error).message)
@@ -361,9 +366,9 @@ export class Backends {
         this.lab.proposals.add(scanId, 'new-board', null, null, summary, { lab: id, name: finding.name, finding })
       }
     })
-    if (registered.length) await this.sync(id, actor).catch(() => {})
+    if (registered.length || options.rebuild) await this.sync(id, actor).catch(() => {})
     report(result.message, false)
-    this.lab.kernel.record(actor, null, 'lab-discover', detail, true, result.message)
+    this.lab.kernel.record(actor, null, options.rebuild ? 'lab-rebuild' : 'lab-discover', detail, true, result.message)
     this.lab.kernel.changed(null)
     return { message: result.message, proposals: result.found.length, registered }
   }

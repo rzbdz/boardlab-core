@@ -103,9 +103,9 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     { method: 'GET', path: '/api/labs/slots', about: '实验室的空闲端口（fresh=1 等最新的）', handle: ({ query }) => lab.backends.ports(required(query.get('id'), 'id'), { fresh: query.get('fresh') === '1' }) },
     { method: 'POST', path: '/api/labs/bind', about: '用空闲端口登记板子', handle: async ({ body, caller }) => ({ board: await lab.backends.bind(caller.holder, required(body.id, 'id'), { host: required(body.host, 'host'), console: required(body.console, 'console'), usb: required(body.usb, 'usb'), name: optional(body.name) }) }) },
     {
-      method: 'POST', path: '/api/labs/discover', about: '让实验室发现新板子（slots：只发现这些槽位）', handle: ({ body, caller }) => {
+      method: 'POST', path: '/api/labs/discover', about: '让实验室发现新板子（slots：只发现这些槽位；rebuild + host：重新布线后重建这台主机）', handle: ({ body, caller }) => {
         const slots = Array.isArray(body.slots) ? body.slots.map(String) : typeof body.slots === 'string' && body.slots ? body.slots.split(',') : []
-        return lab.backends.discover(caller.holder, required(body.id, 'id'), body.confirmed === true, { human: body.human === true, host: optional(body.host), slots })
+        return lab.backends.discover(caller.holder, required(body.id, 'id'), body.confirmed === true, { human: body.human === true, host: optional(body.host), slots, rebuild: body.rebuild === true })
       },
     },
   ]

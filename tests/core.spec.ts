@@ -147,8 +147,8 @@ describe('remote labs', () => {
     expect(lab.calls).toEqual(['verify admin ubuntu@lab.test'])
     const listed = svc.boards.list().filter(board => board.lab)
     expect(listed.map(board => [board.name, board.lab, board.source, board.soc, board.slot])).toEqual([
-      ['lab1-sub0-0', { id: 'lab1', device: 'sub0-0', online: true, ip: '10.0.0.10', heldBy: null, leaseError: null, attention: null, canConfirm: false, empty: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null }, 'lab', 'k3', null],
-      ['lab1-sub0-1', { id: 'lab1', device: 'sub0-1', online: true, ip: '10.0.0.11', heldBy: null, leaseError: null, attention: null, canConfirm: false, empty: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null }, 'lab', 'k3', null],
+      ['lab1-sub0-0', { id: 'lab1', device: 'sub0-0', online: true, ip: '10.0.0.10', heldBy: null, leaseError: null, attention: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null }, 'lab', 'k3', null],
+      ['lab1-sub0-1', { id: 'lab1', device: 'sub0-1', online: true, ip: '10.0.0.11', heldBy: null, leaseError: null, attention: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null }, 'lab', 'k3', null],
     ])
     expect(listed.map(board => board.chips.map(chip => [chip.serialPath, chip.downloadUsbPath, chip.online, chip.alias]))).toEqual([[['/dev/ttyS_0', '1-2.1', true, null]], [['/dev/ttyS_1', '1-2.2', false, null]]])
     // A board whose system has not reported its model yet keeps the one it had.
@@ -502,6 +502,43 @@ describe('remote labs', () => {
     } finally { console.log = log; await running.close() }
     expect(lines[0]).toMatch(/^sub0-0\/power +relay +on +on off pulse$/)
     expect(lab.switched.at(-1)).toBe('sub0-0 sub0-0/power off null')
+  })
+
+  it('rebuilds a re-cabled host, never while one of its boards is held, and greys boards whose slot is gone', async () => {
+    class RebuildLab extends FakeLab {
+      constructor() {
+        super()
+        this.listed = [
+          { name: 'k3-a', slot: 'h1/s1', model: 'k3', online: true, serialPort: 'h1:s1', serialConnected: false, slotGone: true, downloadUsbPath: null, ip: null },
+          { name: 'k1-b', slot: 'h2/s1', model: 'k1', online: true, serialPort: 'h2:s1', serialConnected: true, downloadUsbPath: null, ip: null },
+        ]
+      }
+      discovery = {
+        rebuild: true,
+        discover: async (_config: LabConfig, options: { host?: string | null, rebuild?: boolean }) => {
+          this.calls.push(`discover ${options.host} rebuild=${options.rebuild}`)
+          this.listed[0] = { name: 'k3-a', slot: 'h1/s1', model: 'k3', online: true, serialPort: 'h1:s1', serialConnected: true, downloadUsbPath: '1-2.1', ip: null }
+          return { message: '登记了 1 块：h1/k3-a', found: [] }
+        },
+        register: async () => {},
+      }
+    }
+    const lab = new RebuildLab()
+    const { svc } = labService(lab)
+    await enable(svc, { devices: '' })
+    expect(svc.backends.labSettings()[0]).toMatchObject({ canDiscover: true, canRebuild: true })
+    expect(svc.boards.get('lab1-k3-a').lab).toMatchObject({ slotGone: true })
+    await expect(svc.backends.discover('user:alice', 'lab1', true, { rebuild: true })).rejects.toThrow(/重建要指定主机/)
+    // A board held on the host stops the rebuild; one held on another host does not.
+    await svc.locks.lock('lab1-k3-a', 'user:bob', '调试')
+    await expect(svc.backends.discover('user:alice', 'lab1', true, { host: 'h1', rebuild: true })).rejects.toThrow(/lab1-k3-a 正被 user:bob 使用/)
+    await svc.locks.unlock('lab1-k3-a', { holder: 'user:bob' })
+    await svc.locks.lock('lab1-k1-b', 'user:bob', '调试')
+    const result = await svc.backends.discover('user:alice', 'lab1', true, { host: 'h1', rebuild: true })
+    expect(result.message).toBe('登记了 1 块：h1/k3-a')
+    expect(lab.calls.at(-1)).toBe('discover h1 rebuild=true')
+    expect(svc.boards.get('lab1-k3-a').lab).toMatchObject({ slotGone: false })          // listed again after the rebuild
+    expect(svc.history().actions.find(action => action.kind === 'lab-rebuild')).toMatchObject({ detail: 'lab1 重建 h1', ok: true })
   })
 
   it('names boards by their slot, keeps a slot\'s lock when its board is registered or swapped, and reads a swapped board again', async () => {

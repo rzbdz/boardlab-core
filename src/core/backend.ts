@@ -21,6 +21,8 @@ export interface LabDevice {
   slot?: string | null
   /** A slot with no board registered: only its console is there. */
   empty?: boolean
+  /** The board's slot has lost its console (its adapter was unplugged or moved): re-cabled, the host wants a rebuild. */
+  slotGone?: boolean
   /**
    * What a reset does for a board whose backend can tell: boot its own media (`reset`, or the name of the backend's
    * way around a strapped download mode), or not (`why`).
@@ -83,6 +85,11 @@ export interface LabDiscovery {
   host?: string | null
   /** Only these slots (`<host>/s4`). */
   slots?: string[]
+  /**
+   * Start `host`'s wiring over (after it was re-cabled): forget the boards and slots discovery found there and find
+   * them all again, as the backend best can. Only for backends with `rebuild` in their discovery capability.
+   */
+  rebuild?: boolean
 }
 /** A board a scan found: what it suggests calling it, a line for people, and what registering it takes. */
 export interface LabFinding { host: string | null, name: string, summary: string, warnings: string[], detail: unknown }
@@ -185,6 +192,8 @@ export interface DiscoveryCapability {
   discover(config: LabConfig, options: LabDiscovery, progress: (line: string) => void, registered?: (device: string) => void): Promise<{ message: string, found: LabFinding[] }>
   /** Register a board a scan found, under `name` (the backend's own name for it). */
   register(config: LabConfig, finding: LabFinding, name: string): Promise<void>
+  /** It can start a host's wiring over (`LabDiscovery.rebuild`). */
+  rebuild?: boolean
 }
 
 /** For a backend that can tell: its free ports, and making boards of them. */

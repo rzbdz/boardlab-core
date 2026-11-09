@@ -73,6 +73,8 @@ export interface BoardInLab {
   canConfirm: boolean
   /** A slot in the lab with no board registered yet: only its console is there (discover or bind the board). */
   empty: boolean
+  /** Its slot's console is gone (adapter unplugged or moved): if the host was re-cabled, rebuild it. */
+  slotGone: boolean
   /** The lab can read the board in its slot again after a swap (`boardlab refresh`). */
   canRefresh: boolean
   /**
@@ -132,6 +134,8 @@ export interface LabSettings {
   fields: LabFields
   /** The lab can look for new boards itself (`discoverLab`), and forget boards (`removeBoard`). */
   canDiscover: boolean
+  /** It can start a host's wiring over after re-cabling (forget its boards and slots, find them all again). */
+  canRebuild: boolean
   canRemove: boolean
   /** The lab lists free ports (`labSlots`) and makes boards of them (`bindLab`). */
   canBind: boolean

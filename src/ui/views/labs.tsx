@@ -61,7 +61,10 @@ export function LabScan({ lab, state, onPrompt }: { lab: LabSettings, state: Pag
   const host = picked ?? lab.hosts[0] ?? ''
   const held = state.boards.filter(board => board.lab?.id === lab.id && (board.lease || board.lab.heldBy))
   // Finding boards can take many minutes; it runs on in boardd and reports its progress here.
-  const discover = (options: { human?: boolean, host?: string }) => { void api.discoverLab(lab.id, options).catch(() => {}); return Promise.resolve() }
+  const discover = (options: { human?: boolean, host?: string, rebuild?: boolean }) => { void api.discoverLab(lab.id, options).catch(() => {}); return Promise.resolve() }
+  // What a rebuild of the chosen host forgets: the boards registered there (empty slots are just consoles).
+  const onHost = state.boards.filter(board => board.lab?.id === lab.id && board.slotRef?.startsWith(`${host}/`))
+  const heldOnHost = onHost.filter(board => board.lease || board.lab?.heldBy)
   const running = !!lab.discovery?.running
   return (
     <Section title={`实验室 ${lab.id} · 发现板子`} extra={running ? <Pill tone="mine">进行中</Pill> : null}>
@@ -75,6 +78,19 @@ export function LabScan({ lab, state, onPrompt }: { lab: LabSettings, state: Pag
             <button className="primary" disabled={running || held.length > 0} onClick={() => onPrompt({ kind: 'confirm', title: `在实验室 ${lab.id} 发现板子`, body: '逐个拉还没用过的复位线、看串口和 USB，会复位接在这些线上的板子。', action: '开始发现', danger: true, run: () => discover({}) })}>开始发现</button>
           </div>
         </div>
+        {lab.canRebuild && <div className="scan-mode">
+          <b>重新布线以后：重建一台主机</b>
+          <p className="muted">把串口、USB 线重新插过、换了口以后用：忘掉这台主机上发现过的板子和槽位，按现在插着的串口重新建槽位，再逐个找板子（以前用过的复位线先试，找到的板子沿用原来的名字），找到一块登记一块。主机上任何板子被用着时不会开始。</p>
+          <div className="actions">
+            {lab.hosts.length
+              ? <select value={host} onChange={event => setHost(event.target.value)} aria-label="重建的主机">{lab.hosts.map(item => <option key={item} value={item}>{item}</option>)}</select>
+              : <input className="host-input" value={host} onChange={event => setHost(event.target.value)} placeholder="主机名" aria-label="重建的主机" />}
+            <button className="danger" disabled={running || heldOnHost.length > 0 || !host.trim()} title={heldOnHost.length ? `${heldOnHost.map(board => board.name).join('、')} 正被使用` : undefined}
+              onClick={() => onPrompt({ kind: 'confirm', title: `重建 ${host.trim()}`, action: '重建', danger: true,
+                body: `会忘掉 ${host.trim()} 上的 ${onHost.filter(board => !board.lab?.empty).map(board => board.name).join('、') || '（没有登记的板子）'} 和它的所有槽位，按现在的接线重新发现板子，会复位接在复位线上的所有板子。站点配置里写死的板子不受影响。`,
+                run: () => discover({ host: host.trim(), rebuild: true }) })}>重建</button>
+          </div>
+        </div>}
         <div className="scan-mode">
           <b>没接复位线的板子（人工复位）</b>
           <p className="muted">选板子所在的主机，开始后按提示一次让一块还没登记的板子进下载模式，实验室把串口和下载口配成一对。</p>

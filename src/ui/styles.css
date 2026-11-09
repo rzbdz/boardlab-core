@@ -251,4 +251,6 @@ label.inline { display: flex; align-items: center; gap: 8px; }
 label.inline input { width: 110px; }
 .card-vacant { border-style: dashed; background: var(--layer); }
 .card-vacant h3 { color: var(--fg2); }
+.card-gone { opacity: .6; }
+.card-gone .warn { opacity: 1; }
 .small { font-size: 12px; }

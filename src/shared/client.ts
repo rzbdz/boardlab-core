@@ -272,7 +272,7 @@ export class BoardsClient {
   configureHa(url: string, token?: string) { return this.call<HaSettings>('POST', '/api/ha', { url, token }) }
   setHaEnabled(enabled: boolean) { return this.call<HaSettings>('POST', '/api/ha/enabled', { enabled }) }
   testHa() { return this.call<HaSettings>('POST', '/api/ha/test') }
-  discoverLab(id: string, options: { human?: boolean, host?: string, slots?: string[] } = {}) { return this.call<{ message: string, proposals: number, registered?: string[] }>('POST', '/api/labs/discover', { id, confirmed: true, ...options }) }
+  discoverLab(id: string, options: { human?: boolean, host?: string, slots?: string[], rebuild?: boolean } = {}) { return this.call<{ message: string, proposals: number, registered?: string[] }>('POST', '/api/labs/discover', { id, confirmed: true, ...options }) }
   /** Read the board in a slot again after a swap; returns its name afterwards. */
   refresh(board: string, options: { name?: string, rename?: boolean } = {}, token?: string | null) { return this.call<{ board: string, message: string }>('POST', '/api/boards/refresh', { board, ...options, token }) }
   labSlots(id: string, fresh = true) { return this.call<LabPorts>('GET', `/api/labs/slots?id=${encodeURIComponent(id)}${fresh ? '&fresh=1' : ''}`) }

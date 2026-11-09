@@ -39,11 +39,13 @@ function BoardCard(props: { board: Board, state: PageState, busy: boolean, onPro
   const next = board.waiters[0]
   // An empty slot in a lab is only a console so far: no reset line or download port is known.
   const vacant = !!board.lab?.empty
+  // Its slot's adapter is gone: after re-cabling the wiring is stale, and the lab's rebuild starts it over.
+  const gone = !!board.lab?.slotGone
   const canReset = board.lab ? !vacant : !!slot?.canReset
   const canFastboot = board.lab ? !vacant : !!slot?.canFastboot
   const labSlot = board.lab && board.slotRef ? board.slotRef.split('/').slice(1).join('/') : null
   return (
-    <article className={`card ${mine ? 'card-mine' : ''} ${online ? 'card-console' : ''} ${vacant ? 'card-vacant' : ''}`} data-board={board.name}
+    <article className={`card ${mine ? 'card-mine' : ''} ${online ? 'card-console' : ''} ${vacant ? 'card-vacant' : ''} ${gone ? 'card-gone' : ''}`} data-board={board.name}
       title={online ? '点卡片打开串口' : undefined}
       onClick={event => { if (online && !(event.target as HTMLElement).closest('button, a, input, select, textarea, label')) props.onConsole(board) }}>
       <header className="card-head">
@@ -66,6 +68,7 @@ function BoardCard(props: { board: Board, state: PageState, busy: boolean, onPro
         {board.lab.canConfirm && <button className="primary" onClick={() => props.onRun('已告诉实验室', () => api.confirm(board.name))}>我已完成</button>}
       </div>}
       {board.lab?.progress && <p className="progress-line" aria-live="polite">启动中：{board.lab.progress}</p>}
+      {gone && <p className="warn small">这块板的槽位串口不见了（串口线拔掉或换了口）。最近重新布线过的话，到「扫描」里重建主机 {board.slotRef?.split('/')[0]}。</p>}
       {board.lab?.mediaBoot && board.lab.mediaBoot.method !== 'reset' && <p className="muted small" title={board.lab.mediaBoot.why ?? undefined}>
         {board.lab.mediaBoot.available ? `下载模式是短接的：复位时经 ${board.lab.mediaBoot.method} 从板载介质启动` : '下载模式是短接的：复位后停在下载模式，只能从内存启动'}
       </p>}

@@ -3,9 +3,19 @@ import { confirm, type Command, type CommandGroup } from '../command.ts'
 
 const commands: Command[] = [
   {
-    name: 'lab', noBoard: true, usage: ['lab discover <实验室> [--slot <主机>/s<N>,…] [--yes] [--human [--host <主机>]]\t让实验室在空槽位上找板子（会复位没登记的线），找到一块登记一块；--slot 只找这些槽位；--human：没接复位线的板子，由人按提示逐块进下载模式'],
+    name: 'lab', noBoard: true, usage: [
+      'lab discover <实验室> [--slot <主机>/s<N>,…] [--yes] [--human [--host <主机>]]\t让实验室在空槽位上找板子（会复位没登记的线），找到一块登记一块；--slot 只找这些槽位；--human：没接复位线的板子，由人按提示逐块进下载模式',
+      'lab rebuild <实验室> --host <主机> [--yes]\t重新布线以后用：忘掉这台主机上发现过的板子和槽位，按现在的接线重新发现（以前用过的复位线先试，沿用原来的名字）',
+    ],
     async run({ client, args, flag, flags, out }) {
-      if (args[0] !== 'discover' || !args[1]) throw new Error('lab 子命令：discover <实验室>')
+      if (args[0] === 'rebuild' && args[1]) {
+        const host = flag('host')
+        if (!host) throw new Error('重建要指定主机：--host <主机>')
+        if (!flags.has('yes') && !(await confirm(`重建会忘掉 ${host} 上发现过的板子和槽位并复位它们，按现在的接线重新发现。继续？`))) throw new Error('重建需要确认（交互确认或 --yes）')
+        const result = await client.discoverLab(args[1], { host, rebuild: true })
+        return out(result, () => console.log(result.message))
+      }
+      if (args[0] !== 'discover' || !args[1]) throw new Error('lab 子命令：discover <实验室> | rebuild <实验室> --host <主机>')
       const slots = flag('slot')?.split(',').map(item => item.trim()).filter(Boolean)
       if (!flags.has('yes') && !(await confirm(`发现板子可能复位实验室 ${args[1]} 里的板子。继续？`))) throw new Error('发现板子需要确认（交互确认或 --yes）')
       const result = await client.discoverLab(args[1], { human: flags.has('human'), host: flag('host'), slots })
