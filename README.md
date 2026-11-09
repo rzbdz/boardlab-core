@@ -40,6 +40,10 @@ pnpm check
 pnpm test
 ```
 
+## Acknowledgements
+
+boardlab was originally created by [Troy Mitchell](https://github.com/TroyMitchell911). boardlab-core is a refactor of his project into a core and modules.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
