@@ -40,9 +40,14 @@ pnpm check
 pnpm test
 ```
 
-## Acknowledgements
+## Origin and changes
 
-boardlab was originally created by [Troy Mitchell](https://github.com/TroyMitchell911). boardlab-core is a refactor of his project into a core and modules.
+boardlab started as a single project by [Troy Mitchell](https://github.com/TroyMitchell911), released under the MIT license, whose notice is kept in [LICENSE](LICENSE). boardlab-core comes out of a substantial rework of that project. The major changes from the original:
+
+- **A core with no products in it.** boardd's core (locks, inventory, slots, consoles, RAM boot, the API) knows backends only through one backend contract, and an architecture check enforces this.
+- **Modules.** Every backend, slot driver, command group and page section is a module that registers itself with the core.
+- **Distributions.** A boardlab you run is boardlab-core plus a chosen set of modules, so different labs ship different module sets without forking the core.
+- **Remote labs and slots.** Boards in remote labs, slots that keep a board's identity when it is swapped, and backends that boot boards from their own media.
 
 ## License
 
