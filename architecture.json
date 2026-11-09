@@ -1,0 +1,18 @@
+{
+  "$comment": "boardlab-core's layering, enforced by scripts/check-architecture.mjs at build and test time. Distributions have their own architecture.json for their modules, mapping imports of this package into these layers.",
+  "roots": ["src", "bare"],
+  "layers": {
+    "shared": { "path": "src/shared", "may": [] },
+    "core": { "path": "src/core", "may": ["shared"], "typeOnly": ["shared"] },
+    "server": { "path": "src/server", "may": ["core", "shared"] },
+    "cli": { "path": "src/cli", "may": ["shared"], "entries": ["src/server/main.ts", "src/server/catalog.ts"] },
+    "ui": { "path": "src/ui", "may": ["shared"], "typeOnly": ["shared"], "node": false, "packages": ["react", "react-dom", "@xterm/xterm", "@xterm/addon-fit"] },
+    "bare": { "path": "bare", "may": ["cli", "ui"], "$comment": "the bare distribution: the core with no modules" }
+  },
+  "core": {
+    "$comment": "The core knows backends only through the Backend contract: no product, vendor or transport names in its code (comments may give examples).",
+    "forbidden": ["\\bbsp\\b", "home.?assistant", "serial.?mux", "firefly", "spacemit", "\\ba?bmc\\b", "\\bha\\b", "redfish", "smtty"],
+    "env": false
+  },
+  "maxLines": 800
+}

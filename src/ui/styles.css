@@ -222,3 +222,33 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--layer);padding:
   .toasts{bottom:16px;left:16px;right:16px;align-items:stretch}
   main{padding-top:14px}
 }
+
+.attention { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, orange 18%, transparent); border: 1px solid color-mix(in srgb, orange 50%, transparent); }
+.attention button { margin-left: auto; }
+
+.card-console { cursor: pointer; }
+.card-console:hover { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #3b82f6) 40%, transparent); }
+.console .xterm-host { flex: 1; min-height: 0; padding: 6px; background: #11151c; overflow: hidden; }
+.console .xterm-host .xterm { height: 100%; }
+.console .xterm-host .xterm-box { height: 100%; }
+.progress-line { font-size: 12px; color: var(--muted, #6b7280); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Check boxes and radios keep their own size; the text-field sizing above is not for them. */
+input[type=checkbox],input[type=radio]{width:auto;height:auto;padding:0;margin:0;flex:none}
+.scan-modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:12px}
+.scan-mode{display:flex;flex-direction:column;gap:6px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
+.scan-mode p{margin:0;font-size:12.5px;line-height:1.5}
+.scan-mode .actions{margin-top:auto;padding-top:6px;flex-wrap:nowrap}
+.scan-mode .actions select,.scan-mode .actions .host-input{flex:1;min-width:0;width:auto}
+.attention-panel{position:fixed;z-index:30;left:50%;transform:translateX(-50%);top:64px;width:min(560px,calc(100vw - 32px));display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:12px;background:var(--bg);border:2px solid color-mix(in srgb,orange 70%,transparent);box-shadow:0 12px 40px rgb(0 0 0/.18)}
+.attention-item{display:flex;gap:12px;align-items:center}
+.attention-item p{margin:2px 0 0;font-size:13px}
+.attention-item .actions{flex-wrap:nowrap}
+
+.channels { list-style: none; margin: 0 0 12px; padding: 0; }
+.channels li { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line, #e5e7eb); }
+.channels li .grow { display: flex; flex-direction: column; gap: 2px; }
+label.inline { display: flex; align-items: center; gap: 8px; }
+label.inline input { width: 110px; }
+.card-vacant { border-style: dashed; background: var(--layer); }
+.card-vacant h3 { color: var(--fg2); }
+.small { font-size: 12px; }

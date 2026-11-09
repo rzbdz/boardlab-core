@@ -46,25 +46,53 @@ export interface Board {
   lease: Lease | null
   waiters: Waiter[]
   lastSeenAt: string | null
-  /** Set for a board in a remote lab: which lab, and the lab's own name for it. */
-  lab: BoardLab | null
+  /** The backend instance the board is on: `local` (this machine), or a lab's id. */
+  backend: string
+  /**
+   * The slot it sits in, a second name for it: `slot:5` on this machine, `<lab>/<host>/s3` in a lab. Any command takes
+   * it in place of the board's name (`<host>/s3` when no other lab has that host), and a board swapped into the slot
+   * keeps the slot's lock, queue and history.
+   */
+  slotRef: string | null
+  /** Set for a board a backend lists itself (a lab): which lab, its own name for the board, and what it says now. */
+  lab: BoardInLab | null
 }
 
-export interface BoardLab {
+export interface BoardInLab {
   id: string
   device: string
   /** The lab sees the board's own system running, as of its last listing. */
   online: boolean
   ip: string | null
+  /** Someone holds the board in the lab itself, outside boardd; locking waits until they let go. */
+  heldBy: string | null
+  /** Why the lab's own lease does not follow the board's lock, when it does not. */
+  leaseError: string | null
+  /** A person is asked to act on the board (press RESET, …); `boards confirm` tells the lab it is done. */
+  attention: string | null
+  canConfirm: boolean
+  /** A slot in the lab with no board registered yet: only its console is there (discover or bind the board). */
+  empty: boolean
+  /** The lab can read the board in its slot again after a swap (`boardlab refresh`). */
+  canRefresh: boolean
+  /**
+   * Whether a reset boots the board's own media: `reset` when its download mode is not strapped, the name of the
+   * lab's way around the strap when it has one, or null with `why` when a reset leaves it in download mode.
+   */
+  mediaBoot: { method: string | null, available: boolean, why: string | null } | null
+  /** SDKs the lab can boot the board with (`boardlab boot --sdk`), and the line a running one last reported. */
+  sdks: string[]
+  progress: string | null
 }
 
 /**
- * A control slot. `ha` slots are buttons on the Home Assistant controller and follow it on their own; `script` slots run
- * shell scripts entered on the page, for anything else that can power-cycle a board (a smart plug, say).
+ * A control slot on this machine, driven by its kind's slot driver. `ha` slots are buttons on the Home Assistant
+ * controller and follow it on their own; `script` slots run shell scripts entered on the page, for anything else that
+ * can power-cycle a board (a smart plug, say).
  */
 export interface Slot {
   slot: number
-  kind: 'ha' | 'script'
+  kind: string
   label: string | null
   resetEntity: string | null
   fastbootEntity: string | null
@@ -78,6 +106,8 @@ export interface Slot {
 }
 
 export interface HaSettings {
+  /** boardd uses the Home Assistant controller; off, its slots are hidden and never pressed (boards stay listed). */
+  enabled: boolean
   url: string | null
   hasToken: boolean
   verifiedAt: string | null
@@ -89,9 +119,28 @@ export interface HaSettings {
  * A remote lab boardd can use. Its boards are listed from the lab once it is enabled; the password, like the HA token,
  * is write-only.
  */
+/** One of a lab's access settings as its driver uses it. */
+export interface LabField { label: string, placeholder: string | null, required: boolean }
+/** The access settings a lab's driver uses, by key; keys it leaves out are hidden. */
+export type LabFields = Partial<Record<'url' | 'username' | 'password' | 'jump', LabField>>
+
 export interface LabSettings {
   id: string
   kind: string
+  /** What using the lab involves, from its driver. */
+  about: string
+  fields: LabFields
+  /** The lab can look for new boards itself (`discoverLab`), and forget boards (`removeBoard`). */
+  canDiscover: boolean
+  canRemove: boolean
+  /** The lab lists free ports (`labSlots`) and makes boards of them (`bindLab`). */
+  canBind: boolean
+  /** The lab's relay controller works a board's relays and buttons one by one (`/api/relay`). */
+  canRelay: boolean
+  /** The lab's machines its boards are on, as of its last listing. */
+  hosts: string[]
+  /** The latest line of a discovery that is running, or how the last one ended. */
+  discovery: { running: boolean, line: string, at: string } | null
   enabled: boolean
   url: string | null
   username: string | null
@@ -158,17 +207,38 @@ export interface Proposal {
 export interface HaCandidate { slot: number, resetEntity: string | null, fastbootEntity: string | null, device: string | null }
 export interface HaDiscovery { devices: Array<{ id: string, name: string }>, slots: HaCandidate[], unassigned: string[] }
 
+/** A module boardd has loaded. */
+export interface ModuleInfo { id: string, title: string }
+
+/** The whole picture. The parts after `modules` come from the modules that keep them, so they are there only with those. */
 export interface State {
   boards: Board[]
-  slots: Slot[]
-  ha: HaSettings
   labs: LabSettings[]
   firmware: Firmware[]
   proposals: Proposal[]
-  scan: Scan | null
+  modules: ModuleInfo[]
   you: string
   now: string
+  /** `local`: this machine's control slots and its latest scan. */
+  slots?: Slot[]
+  scan?: Scan | null
+  /** `home-assistant`. */
+  ha?: HaSettings
 }
+
+/** A relay, button or line wired to a board, as its backend's relay controller names it (`<board>/power`). */
+export interface Channel {
+  id: string
+  /** Its role on the board (`reset`, `power`, `boot`). */
+  label: string
+  /** `relay`, `button` or `gpio`. */
+  kind: string
+  /** As the controller reads it now (`on`, `off`, `pressed`, …), when it can. */
+  state: string | null
+  /** What can be done to it: `on`, `off`, `toggle`, `pulse` (relays), `press`, `release`, `click` (buttons). */
+  actions: string[]
+}
+export interface BoardChannels { board: string, supported: boolean, channels: Channel[] }
 
 export interface BoardDetail { board: Board, actions: Action[], leases: Lease[] }
 
@@ -182,3 +252,13 @@ export type BoardEvent =
   | { type: 'scan', scan: Scan }
   | { type: 'lease-stolen', board: string, from: string, by: string, reason: string }
   | { type: 'lease-granted', board: string, holder: string }
+  /** A lab's free ports were asked for again, or changed. */
+  | { type: 'lab-ports', lab: string, host?: string, added?: string[], removed?: string[] }
+  /** A person is asked to act on a board (press RESET, …), or no longer is (message null). */
+  | { type: 'attention', board: string, message: string | null, holder: string | null }
+
+/** A lab host's ports that no board uses yet. */
+export interface LabSlots { host: string, consoles: Array<{ id: string, label: string }>, usb: Array<{ id: string, label: string }> }
+
+/** A lab's free ports as boardd last heard them: shown at once, refreshed in the background. */
+export interface LabPorts { hosts: LabSlots[], at: string | null, refreshing: boolean, error: string | null }

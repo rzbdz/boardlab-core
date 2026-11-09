@@ -1,4 +1,0 @@
-product_name,dtb,note
-k3_com260,k3-com260-ifx.dtb,k3_com260-slot1：CoM260 模块装在 IFX 底板上；第一行是默认 configuration
-k3-pico-itx,k3-pico-itx.dtb,k3-pico-itx-slot2
-k3-deepcomputing-fml13v05,k3-deepcomputing-fml13v05.dtb,实验室没有这块板

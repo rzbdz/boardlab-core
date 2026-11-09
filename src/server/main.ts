@@ -1,44 +1,50 @@
-/** How often boardd lists its labs' boards again, which also refreshes whether their consoles are up. */
-const LAB_SYNC_MS = 60_000
-
-/** `boards serve`: wire the real Home Assistant, serial-mux, USB adapters and remote labs into the service. */
+/** `boardlab serve`: build a BoardLab from boardd's configuration and the distribution's modules, and serve it. */
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { DEFAULT_PORT, socketPathFor } from '../shared/client.ts'
-import { openDatabase } from './db.ts'
-import { homeAssistant } from './ha.ts'
-import { fastbootTool, listSerialAdapters, listUsb, scriptRunner } from './hardware.ts'
+import { openDatabase } from '../core/db.ts'
+import { BoardLab } from '../core/lab.ts'
+import { createModules, type CatalogEntry } from './catalog.ts'
+import { loadConfig } from './config.ts'
 import { serve } from './http.ts'
-import { spacemitBmc } from './bmc.ts'
-import { fireflyAbmc } from './firefly.ts'
-import { sshShell } from './labs.ts'
-import { SerialMux, startAlias, stopAlias, stopAll } from './serial-mux.ts'
-import { BoardService } from './service.ts'
 
-export async function startBoardd(options: { stateDir: string, port?: number, hosts?: string[], uiDir?: string | null, firmwareDir?: string }) {
-  const db = openDatabase(join(options.stateDir, 'boards.sqlite'))
-  const mux = new SerialMux()
-  const sshDir = join(options.stateDir, 'ssh')
-  mkdirSync(sshDir, { recursive: true, mode: 0o700 })
-  const service = new BoardService({
-    db, ha: homeAssistant,
-    mux: { open: (alias, token) => mux.open(alias, { token }), gate: (alias, gate) => mux.gate(alias, gate), online: alias => mux.daemons().some(daemon => daemon.alias === alias && !!daemon.device), stopAll: () => stopAll(mux), start: (adapter, alias) => startAlias(mux, adapter, alias), stop: alias => stopAlias(mux, alias) },
-    hardware: { usb: () => listUsb(), serialAdapters: () => listSerialAdapters(), fastboot: fastbootTool, scripts: scriptRunner },
-    firmwareDir: options.firmwareDir,
-    labs: { bmc: spacemitBmc(sshShell(sshDir)), abmc: fireflyAbmc(sshShell(sshDir)) },
+export interface BoarddOptions {
+  stateDir: string
+  /** The modules this distribution offers. */
+  catalog: CatalogEntry[]
+  /** Where files shipped with the distribution are (see ModuleContext.shipped). */
+  shipped?: (path: string) => string | null
+  port?: number
+  hosts?: string[]
+  origins?: string[]
+  /** The UI to serve; null for none (an API-only boardd). */
+  uiDir?: string | null
+  firmwareDir?: string
+  cli?: string
+  /** boardd's configuration file (see config.ts). */
+  config?: string
+  /** Load these modules (with their settings from the configuration) instead of the configuration's list. */
+  modules?: string[]
+}
+
+export async function startBoardd(options: BoarddOptions) {
+  mkdirSync(options.stateDir, { recursive: true, mode: 0o700 })
+  const config = loadConfig(options.stateDir, options.config, options.catalog.map(entry => entry.id))
+  const selection = options.modules ? Object.fromEntries(options.modules.map(id => [id, config.modules[id] ?? {}])) : config.modules
+  const modules = createModules(options.catalog, selection, {
+    stateDir: options.stateDir, shipped: options.shipped ?? (() => null), timing: config.timing,
   })
-  // Pick up controller changes made in HA while boardd was down.
-  if (service.haSettings().hasToken) void service.syncSlots().catch(() => {})
-  // Boards keep their consoles across reboots and scans boardd did not live to finish.
-  void service.restoreConsoles().catch(() => {})
-  void service.syncLabs()
-  const labSync = setInterval(() => void service.syncLabs(), LAB_SYNC_MS)
-  labSync.unref()
+  const db = openDatabase(join(options.stateDir, 'boards.sqlite'))
+  const lab = new BoardLab({
+    db, firmwareDir: options.firmwareDir, filesDir: join(options.stateDir, 'files'),
+    bootTiming: config.timing.boot, consoleTiming: config.timing.console, modules,
+  })
+  lab.start({ syncMs: config.timing.syncMs, reapMs: config.timing.reapMs })
   const port = options.port ?? DEFAULT_PORT
-  const uiDir = options.uiDir === undefined ? null : options.uiDir
-  const server = await serve(service, { port, hosts: options.hosts, socketPath: socketPathFor(options.stateDir), uiDir: uiDir && existsSync(uiDir) ? uiDir : null })
+  const uiDir = options.uiDir && existsSync(join(options.uiDir, 'index.html')) ? options.uiDir : null
+  const server = await serve(lab, { port, hosts: options.hosts, origins: options.origins, cli: options.cli, stateDir: options.stateDir, socketPath: socketPathFor(options.stateDir), uiDir })
   return {
-    service, port, hosts: ['127.0.0.1', ...(options.hosts ?? [])],
-    async close() { clearInterval(labSync); await server.close(); db.close() },
+    lab, port, uiDir, config, hosts: ['127.0.0.1', ...(options.hosts ?? [])],
+    async close() { lab.stop(); await server.close(); db.close() },
   }
 }

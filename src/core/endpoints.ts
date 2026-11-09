@@ -1,0 +1,112 @@
+/** The endpoints of the core: state, locks, the relay, consoles, download, files, inventory, backends and proposals. */
+import type { BoardEvent } from '../shared/types.ts'
+import type { ChannelAction } from './backend.ts'
+import { EventStream, FileReply, optional, required, TextReply, type Endpoint } from './api.ts'
+import { BoardError } from './errors.ts'
+import type { BoardLab } from './lab.ts'
+import { stripAnsi } from './text.ts'
+
+export function coreEndpoints(lab: BoardLab): Endpoint[] {
+  const token = (body: any) => typeof body?.token === 'string' ? body.token : null
+  const who = (holder: string, body: any) => ({ holder, token: token(body) })
+  // A board by its name or its slot (`<host>/s3`, `slot:5`).
+  const board = (body: any) => lab.boards.resolve(required(body.board, 'board'))
+  const named = (value: string | null, what = 'board') => lab.boards.resolve(required(value, what))
+  return [
+    { method: 'GET', path: '/api', about: '列出所有接口和模块', handle: () => ({ endpoints: lab.api.list().map(item => `${item.method} ${item.path}`), described: lab.api.list(), modules: lab.modules() }) },
+    { method: 'GET', path: '/api/modules', about: '装了哪些模块', handle: () => lab.modules() },
+    { method: 'GET', path: '/api/state', about: '全貌：板子、锁、后端、建议，和各模块的部分', handle: ({ caller }) => lab.state(caller.holder) },
+    { method: 'GET', path: '/api/board', about: '一块板子的详情和最近的操作', handle: ({ query }) => lab.boards.detail(named(query.get('name'), 'name')) },
+    { method: 'GET', path: '/api/history', about: '最近的操作和锁', handle: () => lab.history() },
+    { method: 'GET', path: '/api/export.toml', about: '手工和扫描登记的板子，TOML', handle: () => new TextReply(lab.boards.exportToml()) },
+    {
+      method: 'GET', path: '/api/events', about: '事件流：变化、锁的交接、要人操作', handle: () => new EventStream((emit, _end, signal) => {
+        const listener = (event: BoardEvent) => emit(event.type, event)
+        lab.events.on('event', listener)
+        signal.addEventListener('abort', () => lab.events.off('event', listener), { once: true })
+        emit('hello', { ok: true })
+      }),
+    },
+
+    // ---------- locks ----------
+    { method: 'POST', path: '/api/lock', about: '拿锁（queue: join 排队，wait 等到拿到）', handle: ({ body, caller, signal }) => lab.locks.lock(board(body), caller.holder, String(body.purpose ?? ''), { queue: body.queue === 'join' || body.queue === 'wait' ? body.queue : 'none', signal }) },
+    { method: 'POST', path: '/api/unlock', about: '放锁', handle: ({ body, caller }) => { lab.locks.unlock(board(body), who(caller.holder, body)) } },
+    { method: 'POST', path: '/api/unqueue', about: '离开队列', handle: ({ body, caller }) => { lab.locks.unqueue(board(body), caller.holder) } },
+    { method: 'POST', path: '/api/steal', about: '抢锁（只有人可以，要写原因）', handle: ({ body, caller }) => lab.locks.steal(board(body), caller.holder, String(body.reason ?? '')) },
+
+    // ---------- relay ----------
+    { method: 'POST', path: '/api/reset', about: '复位', handle: async ({ body, caller }) => { await lab.relay.reset(board(body), who(caller.holder, body)) } },
+    { method: 'POST', path: '/api/fastboot', about: '进下载模式', handle: async ({ body, caller }) => { await lab.relay.fastboot(board(body), who(caller.holder, body)) } },
+    { method: 'GET', path: '/api/relay', about: '板子的继电器和按钮（后端能单独控制时）', handle: ({ query }) => lab.relay.channels(named(query.get('board'))) },
+    {
+      method: 'POST', path: '/api/relay', about: '控制板子的一个继电器或按钮：on、off、toggle、pulse、press、release、click（要拿锁）',
+      handle: async ({ body, caller }) => ({ message: await lab.relay.setChannel(board(body), who(caller.holder, body), { channel: required(body.channel, 'channel'), action: required(body.action, 'action') as ChannelAction, ms: typeof body.ms === 'number' ? body.ms : null }) }),
+    },
+    { method: 'POST', path: '/api/confirm', about: '告诉后端，等人做的事做完了', handle: async ({ body, caller }) => ({ message: await lab.relay.confirm(board(body), caller.holder, typeof body.note === 'string' ? body.note : '') }) },
+
+    // ---------- consoles ----------
+    {
+      method: 'GET', path: '/api/console', about: '看串口：先给最近的输出，再实时推送（raw=1 保留转义序列）', handle: async ({ query }) => {
+        const session = await lab.consoles.open(named(query.get('board')), query.get('die') ?? undefined)
+        const clean = query.get('raw') === '1' ? (text: string) => text : stripAnsi
+        return new EventStream((emit, end, signal) => {
+          emit('history', session.history.slice(-500).map(clean))
+          const decoder = new TextDecoder()
+          session.onOutput(data => emit('output', clean(decoder.decode(data, { stream: true }))))
+          session.onClose(reason => { emit('closed', reason); end() })
+          signal.addEventListener('abort', () => session.close(), { once: true })
+        })
+      },
+    },
+    { method: 'GET', path: '/api/consoles', about: '开着的串口会话', handle: () => lab.consoles.reap() },
+    { method: 'GET', path: '/api/log', about: '串口最近的输出', handle: async ({ query }) => ({ lines: (await lab.consoles.log(named(query.get('board')), query.get('die') ?? undefined, Number(query.get('lines') ?? 200))).map(stripAnsi) }) },
+    { method: 'POST', path: '/api/console/input', about: '往串口打字（人可以不拿锁：human）', handle: async ({ body, caller }) => { await lab.consoles.input(board(body), who(caller.holder, body), { die: body.die, data: String(body.data ?? ''), human: body.human === true }) } },
+    { method: 'POST', path: '/api/send', about: '往串口发一行，可以等某个输出', handle: ({ body, caller }) => lab.consoles.send(board(body), who(caller.holder, body), { die: body.die, text: String(body.text ?? ''), newline: body.newline, wait: body.wait, timeoutMs: body.timeoutMs }) },
+
+    // ---------- download ----------
+    { method: 'POST', path: '/api/stage', about: '往内存加载 boardd 自带的固件', handle: async ({ body, caller }) => ({ output: await lab.download.stage(board(body), who(caller.holder, body), { die: body.die, firmware: required(body.firmware, 'firmware') }) }) },
+    {
+      method: 'POST', path: '/api/boot', about: '按顺序加载文件，从内存启动', handle: async ({ body, caller }) => {
+        if (!Array.isArray(body.files) || body.files.some((file: unknown) => typeof file !== 'string')) throw new BoardError('invalid', 'files 要是文件路径数组')
+        return { output: await lab.download.boot(board(body), who(caller.holder, body), { die: body.die, files: body.files }) }
+      },
+    },
+    { method: 'POST', path: '/api/boot/sdk', about: '用 SDK 的构建启动（load）或刷机（download）', handle: async ({ body, caller }) => ({ output: await lab.download.build(board(body), who(caller.holder, body), { sdk: required(body.sdk, 'sdk'), method: body.method === 'download' ? 'download' : 'load', variant: optional(body.variant) }) }) },
+
+    // ---------- files ----------
+    {
+      method: 'GET', path: '/api/files/:sha256', about: 'boardd 有没有这个文件（download=1 取回内容）', handle: ({ params, query }) => {
+        if (query.get('download') === '1') {
+          const file = lab.files.get(params.sha256!)
+          if (!file) throw new BoardError('not-found', '没有这个文件')
+          return new FileReply(file.path)
+        }
+        return { sha256: params.sha256, present: !!lab.files.get(params.sha256!) }
+      },
+    },
+    { method: 'PUT', path: '/api/files/:sha256', about: '传文件，按 sha256 校验和保存（name= 文件名）', handle: ({ params, query, caller, upload }) => lab.files.put(caller.holder, params.sha256!, query.get('name') ?? 'file', upload!) },
+
+    // ---------- inventory ----------
+    { method: 'POST', path: '/api/boards/add', about: '手工登记板子', handle: ({ body, caller }) => { lab.boards.add(caller.holder, body) } },
+    { method: 'POST', path: '/api/boards/remove', about: '移除板子', handle: async ({ body, caller }) => { await lab.boards.remove(caller.holder, named(body.name, 'name')) } },
+    { method: 'POST', path: '/api/board', about: '改板子的备注或槽位', handle: ({ body, caller }) => { lab.boards.update(caller.holder, named(body.name, 'name'), { notes: body.notes, slot: body.slot }) } },
+    { method: 'POST', path: '/api/boards/refresh', about: '槽位里换了板子以后重新读取它（要拿锁；name 改名，rename 按读到的改名）', handle: ({ body, caller }) => lab.backends.refresh(board(body), who(caller.holder, body), { name: optional(body.name), rename: body.rename === true }) },
+    { method: 'POST', path: '/api/proposals', about: '应用或拒绝改动建议', handle: async ({ body, caller }) => { await lab.proposals.resolve(caller.holder, body.ids ?? [], body.decision === 'apply' ? 'apply' : 'reject', body.names && typeof body.names === 'object' ? body.names : {}) } },
+
+    // ---------- backends ----------
+    {
+      method: 'POST', path: '/api/labs', about: '设置实验室并开关', handle: ({ body, caller }) => lab.backends.configure(caller.holder, required(body.id, 'id'), {
+        enabled: body.enabled === true, url: optional(body.url), username: optional(body.username), password: optional(body.password), jump: optional(body.jump), devices: optional(body.devices),
+      }),
+    },
+    { method: 'POST', path: '/api/labs/test', about: '检查实验室的访问并重新列板子', handle: ({ body, caller }) => lab.backends.test(caller.holder, required(body.id, 'id')) },
+    { method: 'GET', path: '/api/labs/slots', about: '实验室的空闲端口（fresh=1 等最新的）', handle: ({ query }) => lab.backends.ports(required(query.get('id'), 'id'), { fresh: query.get('fresh') === '1' }) },
+    { method: 'POST', path: '/api/labs/bind', about: '用空闲端口登记板子', handle: async ({ body, caller }) => ({ board: await lab.backends.bind(caller.holder, required(body.id, 'id'), { host: required(body.host, 'host'), console: required(body.console, 'console'), usb: required(body.usb, 'usb'), name: optional(body.name) }) }) },
+    {
+      method: 'POST', path: '/api/labs/discover', about: '让实验室发现新板子（slots：只发现这些槽位）', handle: ({ body, caller }) => {
+        const slots = Array.isArray(body.slots) ? body.slots.map(String) : typeof body.slots === 'string' && body.slots ? body.slots.split(',') : []
+        return lab.backends.discover(caller.holder, required(body.id, 'id'), body.confirmed === true, { human: body.human === true, host: optional(body.host), slots })
+      },
+    },
+  ]
+}

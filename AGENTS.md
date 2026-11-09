@@ -2,51 +2,44 @@
 
 ## What this is
 
-boardlab is the development board lab: the boardd service, the `boards` CLI and its web page, and the Claude skill that teaches the CLI.
+boardlab-core is the core of boardlab: boardd's core (kernel and subsystems), the backend contract, the HTTP gateway, the CLI framework, the default page and the client library. Distributions consume it as a git submodule plus a pnpm workspace package and add modules; see `README.md`.
 
-- `src/server`: boardd. It reaches local hardware only through Home Assistant, serial-mux and fastboot, and boards in a remote lab only through that lab's own web API and its jump host.
-- `src/cli`: the `boards` CLI; `boards serve` runs boardd.
-- `src/shared`: the client library and the types the CLI, the web page and other programs share.
-- `src/ui`: the web page boardd serves.
-- `firmware/`: the firmware boardd loads, registered in `firmware.json` with each file's sha256.
-- `skills/boards`: the Claude skill for the `boards` CLI.
+- `src/core`: the kernel (database, events, action log, settings) and its subsystems (locks, boards, backends, relay, consoles, download, files, proposals, the API registry). It knows backends only through the `Backend` contract and names no product.
+- `src/server`: boardd: the module catalog interface, `boardd.json` configuration, and the HTTP gateway.
+- `src/cli`: the CLI framework (`createCli`), the core's commands, and `serve`.
+- `src/ui`: the default page (`mountPage`) and the interface for modules' page parts.
+- `src/shared`: the client library and the types the CLI, the page and other programs share.
+- `bare/`: the bare distribution, the core with no modules.
+- `scripts/`: the architecture check and the build, which distributions run on themselves.
+- `architecture.json`: the layering. Change the rules there, not around them.
 
-boardlab is standalone. It must not depend on any agent framework, chat host or backend that uses it; those reach boards only through the `boards` CLI, the skill, or the client library.
+## Public repository
 
-## Public Code and Internal Materials
-
-- `internal/` holds local, private materials such as plans, development notes, acceptance reports, screenshots and raw serial logs.
-- **Never commit, publish, or include any part of `internal/` in release artifacts.** Keep the `/internal/` rule in `.gitignore`. Do not bypass it with `git add -f` or any other mechanism.
-- Preserve internal materials locally; do not delete them when organizing the repository. Their absence in a fresh clone must not prevent building or running the project.
-- `README.md` and the files under `skills/` are public. Do not copy internal plans or acceptance records into them, and keep out personal information, private addresses, credentials, Home Assistant tokens and local logs.
+- This repository is public. It holds no distribution's modules and nothing site-specific: no host names, addresses, internal URLs, credentials, tokens, personal information or logs.
+- `internal/` holds local, private materials. Never commit or publish any part of it, and keep the `/internal/` rule in `.gitignore`.
 - Do not commit state databases, CLI tokens, dependencies or build output. Before committing, inspect `git diff --cached --name-only` and the staged content.
 
-## Branches and Merging
+## Changing the core
 
-- Develop every change on a dedicated branch, never directly on `main`.
-- Before merging into `main`, rewrite the branch into clean commits organized by functional module, each complete and working on its own. Fold fixes for code introduced on the same branch into the commit they belong to.
-- A `fix:` commit on `main` is only for a defect in code already on `main`.
+- Something only one kind of hardware needs belongs in a distribution's module, not here. The core grows by generalising the contract.
+- Keep the core usable by every distribution: a change to an exported interface (`Backend`, `Module`, `CatalogEntry`, `Distribution`, `ModuleUi`, the client) is a change to all of them. Say so in the commit body.
 
-## Commits
+## Branches and commits
 
-- Use a concise subject and a short body describing the final change and its purpose. Do not include a development diary.
+- Develop every change on a dedicated branch, never directly on `main`. Before merging, rewrite the branch into clean commits, each complete and working on its own.
+- Use a concise subject and a short body describing the final change and its purpose.
 - End every commit message with the repository owner's own `Signed-off-by` trailer only. Never add AI attribution trailers such as `Co-Authored-By`.
-- When amending, review the complete resulting diff and rewrite the message if the scope changed.
-- Every commit must carry an OpenPGP signature made with the configured signing key, including amended or rewritten commits. Verify with `git verify-commit`. If signing fails, report it instead of committing unsigned.
+- Every commit must carry an OpenPGP signature made with the configured signing key. Verify with `git verify-commit`. If signing fails, report it instead of committing unsigned.
 - Keep this file in English.
-
-## Hardware Safety
-
-- People and Claude share one set of board locks. Take the lock before resetting, entering fastboot, booting or typing on a console, and release it afterwards. Tests must use fake hardware, never the real lab.
-- A scan resets every slot it touches; run one on the real lab only when the owner asks for it.
 
 ## Validation
 
 ```sh
 pnpm install
 pnpm run typecheck
+pnpm check
 pnpm run build
 pnpm test
 ```
 
-boardd runs from this checkout's `dist/`, so a build changes what the next boardd start runs. Restart the service only when no board is locked.
+Tests use fake backends only, never real hardware.

@@ -1,90 +1,84 @@
-/** HTTP API on 127.0.0.1 for the web page and on a Unix socket for the CLI and DSH plugin. */
+/**
+ * The HTTP gateway: every endpoint of the lab's API, on 127.0.0.1 (and opted-in hosts) for the page and remote CLIs, and
+ * on a Unix socket for local CLIs. JSON in and out, event streams as SSE, files as bytes. It also decides who is calling,
+ * refuses foreign hosts and cross-site writes, serves a UI when it is given one, and runs commands older CLIs do not know.
+ */
+import { spawn } from 'node:child_process'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { chmodSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
+import { chmodSync, createReadStream, existsSync, readFileSync, statSync, unlinkSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { extname, join } from 'node:path'
-import type { BoardEvent } from '../shared/types.ts'
-import { BoardError, stripAnsi, type BoardService } from './service.ts'
+import { Api, EventStream, FileReply, TextReply, type Caller, type Emit, type Endpoint } from '../core/api.ts'
+import { BoardError } from '../core/errors.ts'
+import type { BoardLab } from '../core/lab.ts'
 
 const STATUS: Record<BoardError['code'], number> = { 'not-found': 404, invalid: 400, locked: 423, forbidden: 403, conflict: 409, hardware: 502 }
-const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.map': 'application/json' }
+const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.map': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png' }
 const HOLDER_HEADER = 'x-boards-holder'
 const USER_HEADER = 'x-boards-user'
+const AGENT = /^(user|claude|dsh|workspace):[^\s]{1,120}$/
 
-export interface ServeOptions { port: number, hosts?: string[], socketPath: string, uiDir: string | null }
+/**
+ * `origins` are the addresses the page is also served at through a reverse proxy (`https://example.org`), whose
+ * writes are accepted; the proxy forwards with `Host: 127.0.0.1:<port>`. `uiDir` is the UI to serve (null: none).
+ */
+export interface ServeOptions { port: number, hosts?: string[], origins?: string[], socketPath: string, uiDir: string | null, cli?: string, stateDir?: string }
+/** What the gateway's own endpoints need from how boardd runs: its own CLI (to run commands for older clients) and state directory. */
+type GatewayOptions = { cli?: string, stateDir?: string }
 
-type Caller = { holder: string, local: boolean }
-type Handler = (input: { body: any, query: URLSearchParams, caller: Caller, request: IncomingMessage, response: ServerResponse }) => unknown
-
-export function createApi(service: BoardService): (request: IncomingMessage, response: ServerResponse, caller: Caller) => Promise<void> {
-  const token = (body: any) => typeof body?.token === 'string' ? body.token : null
-  const who = (caller: Caller, body: any) => ({ holder: caller.holder, token: token(body) })
-  const routes: Record<string, Handler> = {
-    'GET /api/state': ({ caller }) => service.state(caller.holder),
-    'GET /api/board': ({ query }) => service.detail(required(query.get('name'), 'name')),
-    'GET /api/history': () => service.history(),
-    'GET /api/scan': ({ query }) => service.scan(required(query.get('id'), 'id')),
-    'GET /api/scan/evidence': ({ query }) => service.evidence(required(query.get('id'), 'id')),
-    'GET /api/log': async ({ query }) => ({ lines: (await service.log(required(query.get('board'), 'board'), query.get('die') ?? undefined, Number(query.get('lines') ?? 200))).map(stripAnsi) }),
-    'GET /api/export.toml': ({ response }) => { response.setHeader('Content-Type', 'text/plain; charset=utf-8'); return service.exportToml() },
-    'POST /api/lock': ({ body, caller, request }) => {
-      const abort = new AbortController()
-      request.socket.once('close', () => abort.abort())
-      return service.lock(required(body.board, 'board'), caller.holder, String(body.purpose ?? ''), { queue: body.queue === 'join' || body.queue === 'wait' ? body.queue : 'none', signal: abort.signal })
+export function createApi(lab: BoardLab, options: GatewayOptions = {}): (request: IncomingMessage, response: ServerResponse, caller: Caller) => Promise<void> {
+  // The gateway's own endpoints, served beside the lab's; its index lists both.
+  const own = new Api()
+  own.add('gateway', [cliEndpoint(options), {
+    method: 'GET', path: '/api', about: '列出所有接口和模块', handle: () => {
+      const described = [...lab.api.list().filter(item => item.path !== '/api'), ...own.list()].sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method))
+      return { endpoints: described.map(item => `${item.method} ${item.path}`), described, modules: lab.modules() }
     },
-    'POST /api/unlock': ({ body, caller }) => { service.unlock(required(body.board, 'board'), who(caller, body)); return { ok: true } },
-    'POST /api/unqueue': ({ body, caller }) => { service.unqueue(required(body.board, 'board'), caller.holder); return { ok: true } },
-    'POST /api/steal': ({ body, caller }) => service.steal(required(body.board, 'board'), caller.holder, String(body.reason ?? '')),
-    'POST /api/reset': async ({ body, caller }) => { await service.reset(required(body.board, 'board'), who(caller, body)); return { ok: true } },
-    'POST /api/fastboot': async ({ body, caller }) => { await service.fastboot(required(body.board, 'board'), who(caller, body)); return { ok: true } },
-    'POST /api/send': ({ body, caller }) => service.send(required(body.board, 'board'), who(caller, body), { die: body.die, text: String(body.text ?? ''), newline: body.newline, wait: body.wait, timeoutMs: body.timeoutMs }),
-    'POST /api/stage': async ({ body, caller }) => ({ output: await service.stage(required(body.board, 'board'), who(caller, body), { die: body.die, firmware: required(body.firmware, 'firmware') }) }),
-    'POST /api/boot': async ({ body, caller }) => {
-      if (!Array.isArray(body.files) || body.files.some((file: unknown) => typeof file !== 'string')) throw new BoardError('invalid', 'files 要是文件路径数组')
-      return { output: await service.boot(required(body.board, 'board'), who(caller, body), { die: body.die, files: body.files }) }
-    },
-    'POST /api/scan': ({ body, caller }) => service.startScan(caller.holder, { slots: body.slots, boards: body.boards, confirmed: body.confirmed === true }),
-    'POST /api/scan/cancel': ({ body, caller }) => { service.cancelScan(caller.holder, required(body.id, 'id')); return { ok: true } },
-    'POST /api/proposals': async ({ body, caller }) => { await service.resolveProposals(caller.holder, body.ids ?? [], body.decision === 'apply' ? 'apply' : 'reject', body.names && typeof body.names === 'object' ? body.names : {}); return { ok: true } },
-    'POST /api/slots/script': ({ body, caller }) => service.saveScriptSlot(caller.holder, { slot: Number(body.slot), label: typeof body.label === 'string' ? body.label : null, resetScript: String(body.resetScript ?? ''), fastbootScript: typeof body.fastbootScript === 'string' ? body.fastbootScript : null }),
-    'POST /api/slots/script/remove': ({ body, caller }) => { service.removeScriptSlot(caller.holder, Number(body.slot)); return { ok: true } },
-    'POST /api/ha': ({ body, caller }) => service.configureHa(caller.holder, { url: required(body.url, 'url'), token: body.token }),
-    'POST /api/ha/test': ({ caller }) => service.testHa(caller.holder),
-    'POST /api/labs': ({ body, caller }) => service.configureLab(caller.holder, required(body.id, 'id'), {
-      enabled: body.enabled === true, url: optional(body.url), username: optional(body.username), password: optional(body.password), jump: optional(body.jump), devices: optional(body.devices),
-    }),
-    'POST /api/labs/test': ({ body, caller }) => service.testLab(caller.holder, required(body.id, 'id')),
-    'POST /api/boards/add': ({ body, caller }) => { service.addBoard(caller.holder, body); return { ok: true } },
-    'POST /api/boards/remove': ({ body, caller }) => { service.removeBoard(caller.holder, required(body.name, 'name')); return { ok: true } },
-    'POST /api/board': ({ body, caller }) => { service.updateBoard(caller.holder, required(body.name, 'name'), { notes: body.notes, slot: body.slot }); return { ok: true } },
-  }
-
+  }])
   return async (request, response, caller) => {
     const url = new URL(request.url ?? '/', 'http://boardd')
-    if (request.method === 'GET' && url.pathname === '/api/events') return streamEvents(service, response)
-    if (request.method === 'GET' && url.pathname === '/api/console') return streamConsole(service, url.searchParams, request, response)
-    const route = routes[`${request.method} ${url.pathname}`]
     response.setHeader('Cache-Control', 'no-store')
-    if (!route) return void send(response, 404, { error: '没有这个接口' })
+    const found = own.match(request.method ?? 'GET', url.pathname) ?? lab.api.match(request.method ?? 'GET', url.pathname)
+    if (!found) return void send(response, 404, { error: '没有这个接口' })
+    const raw = (found.endpoint.body ?? (request.method === 'PUT' ? 'raw' : 'json')) === 'raw'
+    const abort = new AbortController()
+    response.on('close', () => { if (!response.writableFinished) abort.abort() })
     try {
-      const body = request.method === 'POST' ? await readJson(request) : {}
-      const result = await route({ body, query: url.searchParams, caller, request, response })
-      if (typeof result === 'string') response.end(result)
-      else send(response, 200, result ?? { ok: true })
+      const body = !raw && request.method !== 'GET' ? await readJson(request) : {}
+      const reply = await found.endpoint.handle({ body, query: url.searchParams, params: found.params, caller, signal: abort.signal, upload: raw ? request : null })
+      await answer(response, reply, abort)
     } catch (error) {
+      if (raw) request.resume()
       if (error instanceof BoardError) send(response, STATUS[error.code], { error: error.message, code: error.code })
       else send(response, 500, { error: (error as Error).message })
     }
   }
 }
 
-function required(value: unknown, name: string): string {
-  if (typeof value !== 'string' || !value) throw new BoardError('invalid', `缺少参数 ${name}`)
-  return value
+async function answer(response: ServerResponse, reply: unknown, abort: AbortController) {
+  if (reply instanceof EventStream) return stream(response, reply, abort)
+  if (reply instanceof TextReply) { response.writeHead(200, { 'Content-Type': reply.type }); return void response.end(reply.text) }
+  if (reply instanceof FileReply) {
+    response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': String(statSync(reply.path).size) })
+    return void createReadStream(reply.path).pipe(response)
+  }
+  send(response, 200, reply ?? { ok: true })
 }
 
-function optional(value: unknown): string | null {
-  return typeof value === 'string' ? value : null
+/** An event stream as SSE. A caller that vanished (a proxy keeping the connection, a sleeping laptop) is noticed when it cannot be written to. */
+async function stream(response: ServerResponse, reply: EventStream, abort: AbortController) {
+  response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive' })
+  const ping = setInterval(() => {
+    if (response.destroyed || !response.writable) return abort.abort()
+    response.write(': ping\n\n')
+  }, 15_000)
+  const stop = () => clearInterval(ping)
+  abort.signal.addEventListener('abort', stop, { once: true })
+  response.on('close', stop)
+  const emit: Emit = (event, data) => { if (!response.writableEnded) response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
+  const end = () => { stop(); if (!response.writableEnded) response.end() }
+  try { await reply.start(emit, end, abort.signal) }
+  catch (error) { emit('error', { message: (error as Error).message }); end() }
 }
 
 function send(response: ServerResponse, status: number, body: unknown): void {
@@ -105,32 +99,42 @@ async function readJson(request: IncomingMessage): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw new BoardError('invalid', '请求不是合法 JSON') }
 }
 
-function sse(response: ServerResponse) {
-  response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive' })
-  const ping = setInterval(() => response.write(': ping\n\n'), 15000)
-  response.on('close', () => clearInterval(ping))
-  return (event: string, data: unknown) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-}
-
-function streamEvents(service: BoardService, response: ServerResponse) {
-  const write = sse(response)
-  const listener = (event: BoardEvent) => write(event.type, event)
-  service.events.on('event', listener)
-  response.on('close', () => service.events.off('event', listener))
-  write('hello', { ok: true })
-}
-
-/** Read-only console stream. Input always goes through /api/send under a lease. */
-async function streamConsole(service: BoardService, query: URLSearchParams, request: IncomingMessage, response: ServerResponse) {
-  let session
-  try { session = await service.openConsole(query.get('board') ?? '', query.get('die') ?? undefined) }
-  catch (error) { return send(response, error instanceof BoardError ? STATUS[error.code] : 502, { error: (error as Error).message }) }
-  const write = sse(response)
-  write('history', session.history.slice(-500).map(stripAnsi))
-  const decoder = new TextDecoder()
-  session.onOutput(data => write('output', stripAnsi(decoder.decode(data, { stream: true }))))
-  session.onClose(reason => { write('closed', reason); response.end() })
-  request.on('close', () => session.close())
+/**
+ * Commands an older CLI does not know: boardd runs its own CLI with them for the caller, against itself, and streams the
+ * output back, so new commands reach every client without updating it. Commands that only make sense on the caller's
+ * machine (an interactive console, installing, choosing a boardd, running one) are refused.
+ */
+export const CLI_LOCAL_ONLY = new Set(['serve', 'install', 'remote', 'console'])
+function cliEndpoint(options: GatewayOptions): Endpoint {
+  return {
+    method: 'POST', path: '/api/cli', about: '用 boardd 自己的 boardlab 命令行替调用者跑命令（旧客户端不认识的命令）',
+    handle: ({ body, caller }) => {
+      const args: unknown = body.args
+      if (!Array.isArray(args) || args.some(arg => typeof arg !== 'string')) throw new BoardError('invalid', 'args 要是字符串数组')
+      if (!options.cli || !options.stateDir) throw new BoardError('invalid', '这个 boardd 不代跑命令')
+      const command = (args as string[]).find(arg => !arg.startsWith('-'))
+      if (command && CLI_LOCAL_ONLY.has(command)) throw new BoardError('invalid', `boardlab ${command} 要在你自己的机器上跑，请更新本机的 boardlab`)
+      if ((args as string[]).some(arg => arg === '--as' || arg.startsWith('--as=') || arg === '--state-dir' || arg.startsWith('--state-dir='))) {
+        throw new BoardError('invalid', '代跑的命令以调用者的身份执行，不能带 --as 或 --state-dir')
+      }
+      return new EventStream((emit, end, signal) => {
+        // The same Node flags as boardd itself (on some CPUs it needs --no-sparkplug to run at all).
+        const child = spawn(process.execPath, [...process.execArgv, options.cli!, ...(args as string[]), ...(body.json === true ? ['--json'] : [])], {
+          env: { ...process.env, BOARDS_HOLDER: caller.holder, BOARDS_STATE_DIR: options.stateDir, BOARDS_REMOTE: '', BOARDS_PROXIED: '1' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        child.stdout.setEncoding('utf8').on('data', text => emit('out', { stream: 'stdout', text }))
+        child.stderr.setEncoding('utf8').on('data', text => emit('out', { stream: 'stderr', text }))
+        signal.addEventListener('abort', () => { if (child.exitCode === null) child.kill('SIGTERM') }, { once: true })
+        child.on('close', (code, killed) => {
+          if (killed) emit('out', { stream: 'stderr', text: `boardd 那边的命令被信号 ${killed} 结束了\n` })
+          emit('exit', { code: code ?? 1, download: null })
+          end()
+        })
+        child.on('error', error => { emit('error', { message: error.message }); end() })
+      })
+    },
+  }
 }
 
 function serveStatic(uiDir: string, pathname: string, response: ServerResponse) {
@@ -142,23 +146,29 @@ function serveStatic(uiDir: string, pathname: string, response: ServerResponse) 
 }
 
 /** The page always listens on loopback; extra hosts (such as a Tailscale address) are opt-in. */
-export async function serve(service: BoardService, options: ServeOptions): Promise<{ http: Server[], unix: Server, close(): Promise<void> }> {
-  const api = createApi(service)
+export async function serve(lab: BoardLab, options: ServeOptions): Promise<{ http: Server[], unix: Server, close(): Promise<void> }> {
+  const api = createApi(lab, { cli: options.cli, stateDir: options.stateDir })
   const human = `user:${userInfo().username}`
   const hosts = [...new Set(['127.0.0.1', ...(options.hosts ?? [])])]
   const allowed = new Set([...hosts, 'localhost'].map(host => `${host}:${options.port}`))
+  const origins = new Set((options.origins ?? []).map(origin => origin.replace(/\/+$/, '')))
 
   const handle = (request: IncomingMessage, response: ServerResponse) => {
     // Refuse rebinding hosts and cross-site writes.
     if (!allowed.has(request.headers.host ?? '')) return send(response, 403, { error: '不接受这个地址的访问' })
     const origin = request.headers.origin
-    if (request.method !== 'GET' && origin && !allowed.has(origin.replace(/^https?:\/\//, ''))) return send(response, 403, { error: '拒绝跨站请求' })
+    if (request.method !== 'GET' && origin && !allowed.has(origin.replace(/^https?:\/\//, '')) && !origins.has(origin)) return send(response, 403, { error: '拒绝跨站请求' })
     const pathname = new URL(request.url ?? '/', 'http://boardd').pathname
     // People on the page name themselves so several of them can queue for one board; the default is the local user.
     const name = String(request.headers[USER_HEADER] ?? '')
-    const holder = /^[A-Za-z0-9_.@-]{1,40}$/.test(name) ? `user:${name}` : human
-    if (pathname.startsWith('/api/')) return void api(request, response, { holder, local: false })
-    if (!options.uiDir) return send(response, 404, { error: '网页没有构建' })
+    const person = /^[A-Za-z0-9_.@-]{1,40}$/.test(name) ? `user:${name}` : human
+    // A remote `boardlab` CLI (through a tunnel or a proxy) acts for an agent of that person: `claude:<session>` and the
+    // like. It may not act as some other person.
+    const agent = String(request.headers[HOLDER_HEADER] ?? '')
+    if (agent && (!AGENT.test(agent) || (agent.startsWith('user:') && agent !== person))) return send(response, 403, { error: `不能以 ${agent} 的身份操作` })
+    const holder = agent || person
+    if (pathname === '/api' || pathname.startsWith('/api/')) return void api(request, response, { holder, local: false })
+    if (!options.uiDir) return send(response, 404, { error: '这个 boardd 不带网页（只有 /api）' })
     serveStatic(options.uiDir, pathname, response)
   }
   const unix = createServer((request, response) => {
