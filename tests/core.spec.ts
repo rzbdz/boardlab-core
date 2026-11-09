@@ -514,13 +514,14 @@ describe('remote labs', () => {
         ]
       }
       discovery = {
-        rebuild: true,
-        discover: async (_config: LabConfig, options: { host?: string | null, rebuild?: boolean }) => {
-          this.calls.push(`discover ${options.host} rebuild=${options.rebuild}`)
+        discover: async () => ({ message: '', found: [] }),
+        register: async () => {},
+        rebuild: async (_config: LabConfig, host: string, _progress: (line: string) => void, registered?: (device: string) => void) => {
+          this.calls.push(`rebuild ${host}`)
           this.listed[0] = { name: 'k3-a', slot: 'h1/s1', model: 'k3', online: true, serialPort: 'h1:s1', serialConnected: true, downloadUsbPath: '1-2.1', ip: null }
+          registered?.('k3-a')
           return { message: '登记了 1 块：h1/k3-a', found: [] }
         },
-        register: async () => {},
       }
     }
     const lab = new RebuildLab()
@@ -528,15 +529,16 @@ describe('remote labs', () => {
     await enable(svc, { devices: '' })
     expect(svc.backends.labSettings()[0]).toMatchObject({ canDiscover: true, canRebuild: true })
     expect(svc.boards.get('lab1-k3-a').lab).toMatchObject({ slotGone: true })
-    await expect(svc.backends.discover('user:alice', 'lab1', true, { rebuild: true })).rejects.toThrow(/重建要指定主机/)
+    await expect(svc.backends.rebuild('user:alice', 'lab1', true, '')).rejects.toThrow(/主机名不合法/)
+    await expect(svc.backends.rebuild('user:alice', 'lab1', false, 'h1')).rejects.toThrow(/需要用户确认/)
     // A board held on the host stops the rebuild; one held on another host does not.
     await svc.locks.lock('lab1-k3-a', 'user:bob', '调试')
-    await expect(svc.backends.discover('user:alice', 'lab1', true, { host: 'h1', rebuild: true })).rejects.toThrow(/lab1-k3-a 正被 user:bob 使用/)
+    await expect(svc.backends.rebuild('user:alice', 'lab1', true, 'h1')).rejects.toThrow(/lab1-k3-a 正被 user:bob 使用/)
     await svc.locks.unlock('lab1-k3-a', { holder: 'user:bob' })
     await svc.locks.lock('lab1-k1-b', 'user:bob', '调试')
-    const result = await svc.backends.discover('user:alice', 'lab1', true, { host: 'h1', rebuild: true })
+    const result = await svc.backends.rebuild('user:alice', 'lab1', true, 'h1')
     expect(result.message).toBe('登记了 1 块：h1/k3-a')
-    expect(lab.calls.at(-1)).toBe('discover h1 rebuild=true')
+    expect(lab.calls.at(-1)).toBe('rebuild h1')
     expect(svc.boards.get('lab1-k3-a').lab).toMatchObject({ slotGone: false })          // listed again after the rebuild
     expect(svc.history().actions.find(action => action.kind === 'lab-rebuild')).toMatchObject({ detail: 'lab1 重建 h1', ok: true })
   })

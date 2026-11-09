@@ -26,6 +26,9 @@ export interface Route { id: string, backend: Backend, config: LabConfig, target
 const PORTS_FRESH_MS = 10_000
 const NO_CONFIG: LabConfig = { url: '', username: '', password: '', jump: '' }
 
+/** A host name as backends report them. */
+const HOST = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
+
 export class Backends {
   private readonly instances = new Map<string, Instance>()
   /** The instance of boards registered without a backend: this machine's. */
@@ -329,35 +332,63 @@ export class Backends {
     const { backend } = this.configurable(id)
     if (!backend.discovery) throw new BoardError('invalid', `实验室 ${id} 不能自己发现板子`)
     if (!confirmed) throw new BoardError('forbidden', '发现板子可能复位实验室里的板子，需要用户确认')
-    if (options.rebuild && !backend.discovery.rebuild) throw new BoardError('invalid', `实验室 ${id} 不能重建主机`)
-    if (options.rebuild && !options.host) throw new BoardError('invalid', '重建要指定主机')
-    const config = this.config(id)
-    // An empty slot has no board to reset: whoever holds one (to watch its console, say) may have it discovered. A
-    // rebuild forgets the host's boards, so nobody may hold any of them, empty slots included.
-    const elsewhere = (name: string) => { const slot = this.devices.get(name)?.slot; return !!slot && !slot.startsWith(`${options.host}/`) }
-    const held = this.heldIn(id, name => options.rebuild ? elsewhere(name) : !!this.devices.get(name)?.empty)
-    if (held) throw new BoardError('locked', `${String(held.board)} 正被 ${String(held.holder)} 使用，发现板子会复位板子，未开始`)
-    const outside = [...this.devices].find(([name, device]) => name.startsWith(`${id}-`) && device.heldBy)
-    if (outside) throw new BoardError('locked', `${outside[0]} 在实验室里正被 ${outside[1].heldBy} 使用，发现板子会复位板子，未开始`)
-    if (this.discoveries.get(id)?.running) throw new BoardError('conflict', `实验室 ${id} 已经在发现板子`)
-    if (options.host && !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/.test(options.host)) throw new BoardError('invalid', `主机名不合法：${options.host}`)
+    // An empty slot has no board to reset: whoever holds one (to watch its console, say) may have it discovered.
+    this.assertNoneHeld(id, name => !!this.devices.get(name)?.empty)
+    if (options.host && !HOST.test(options.host)) throw new BoardError('invalid', `主机名不合法：${options.host}`)
     const badSlot = (options.slots ?? []).find(slot => !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}\/s\d+$/.test(slot))
     if (badSlot) throw new BoardError('invalid', `槽位要写成 <主机>/s<N>：${badSlot}`)
+    const discovery = backend.discovery
+    return this.finding(actor, id, 'lab-discover',
+      options.human ? `开始人工发现${options.host ? `（${options.host}）` : ''}：按提示逐块让未登记的板子进下载模式` : '开始发现板子',
+      `${id}${options.human ? ` 人工${options.host ? ` ${options.host}` : ''}` : ''}${options.slots?.length ? ` ${options.slots.join(',')}` : ''}`,
+      (progress, registered) => discovery.discover(this.config(id), { human: !!options.human, host: options.host ?? null, slots: options.slots ?? [] }, progress, registered))
+  }
+
+  /**
+   * Have an instance start one host over after it was re-cabled (`DiscoveryCapability.rebuild`). It forgets that host's
+   * boards, so nobody may hold any of them, empty slots included; boards on other hosts may stay held.
+   */
+  async rebuild(actor: string, id: string, confirmed: boolean, host: string): Promise<{ message: string, proposals: number, registered: string[] }> {
+    const { backend } = this.configurable(id)
+    const rebuild = backend.discovery?.rebuild?.bind(backend.discovery)
+    if (!rebuild) throw new BoardError('invalid', `实验室 ${id} 不能重建主机`)
+    if (!confirmed) throw new BoardError('forbidden', '重建会忘掉这台主机上的板子并复位它们，需要用户确认')
+    if (!host || !HOST.test(host)) throw new BoardError('invalid', `主机名不合法：${host || '（空）'}`)
+    this.assertNoneHeld(id, name => { const slot = this.devices.get(name)?.slot; return !!slot && !slot.startsWith(`${host}/`) })
+    const result = await this.finding(actor, id, 'lab-rebuild', `开始重建 ${host}：按现在的接线重新发现它的板子`, `${id} 重建 ${host}`,
+      (progress, registered) => rebuild(this.config(id), host, progress, registered))
+    await this.sync(id, actor).catch(() => {})
+    return result
+  }
+
+  /** Nobody holds a board of instance `id` that `ignore` does not exempt, here or in the backend. */
+  private assertNoneHeld(id: string, ignore: (board: string) => boolean) {
+    const held = this.heldIn(id, ignore)
+    if (held) throw new BoardError('locked', `${String(held.board)} 正被 ${String(held.holder)} 使用，这会复位板子，未开始`)
+    const outside = [...this.devices].find(([name, device]) => name.startsWith(`${id}-`) && device.heldBy && !ignore(name))
+    if (outside) throw new BoardError('locked', `${outside[0]} 在实验室里正被 ${outside[1].heldBy} 使用，这会复位板子，未开始`)
+  }
+
+  /**
+   * Run a backend's search for boards (a discovery or a rebuild): one at a time per instance, its progress on the page,
+   * each board it registers listed at once, and what it could not register left as proposals for a person.
+   */
+  private async finding(actor: string, id: string, kind: string, start: string, detail: string,
+    search: (progress: (line: string) => void, registered: (device: string) => void) => Promise<{ message: string, found: LabFinding[] }>) {
+    if (this.discoveries.get(id)?.running) throw new BoardError('conflict', `实验室 ${id} 已经在发现板子`)
     const report = (line: string, running = true) => { this.discoveries.set(id, { running, line, at: this.lab.kernel.iso() }); this.lab.kernel.changed(null) }
-    report(options.rebuild ? `开始重建 ${options.host}：忘掉它的板子和槽位，按现在的接线重新发现`
-      : options.human ? `开始人工发现${options.host ? `（${options.host}）` : ''}：按提示逐块让未登记的板子进下载模式` : '开始发现板子')
-    const detail = `${id}${options.rebuild ? ` 重建 ${options.host}` : ''}${options.human ? ` 人工${options.host ? ` ${options.host}` : ''}` : ''}${options.slots?.length ? ` ${options.slots.join(',')}` : ''}`
+    report(start)
     let result: { message: string, found: LabFinding[] }
     const registered: string[] = []
-    // Each board the backend registers as it goes is listed at once, while the discovery goes on.
+    // Each board the backend registers as it goes is listed at once, while the search goes on.
     const onRegistered = (device: string) => { registered.push(device); void this.sync(id, actor).catch(() => {}) }
-    try { result = await backend.discovery.discover(config, { human: !!options.human, host: options.host ?? null, slots: options.slots ?? [], rebuild: !!options.rebuild }, line => report(line), onRegistered) }
+    try { result = await search(line => report(line), onRegistered) }
     catch (error) {
       report(`失败：${(error as Error).message}`, false)
-      this.lab.kernel.record(actor, null, 'lab-discover', detail, false, (error as Error).message)
+      this.lab.kernel.record(actor, null, kind, detail, false, (error as Error).message)
       throw new BoardError('hardware', (error as Error).message)
     }
-    // A new discovery replaces the instance's earlier proposals.
+    // A new search replaces the instance's earlier proposals.
     const scanId = `lab:${id}:${randomUUID()}`
     transaction(this.lab.kernel.db, () => {
       this.lab.proposals.supersede(proposal => proposal.scanId.startsWith(`lab:${id}:`))
@@ -366,9 +397,9 @@ export class Backends {
         this.lab.proposals.add(scanId, 'new-board', null, null, summary, { lab: id, name: finding.name, finding })
       }
     })
-    if (registered.length || options.rebuild) await this.sync(id, actor).catch(() => {})
+    if (registered.length) await this.sync(id, actor).catch(() => {})
     report(result.message, false)
-    this.lab.kernel.record(actor, null, options.rebuild ? 'lab-rebuild' : 'lab-discover', detail, true, result.message)
+    this.lab.kernel.record(actor, null, kind, detail, true, result.message)
     this.lab.kernel.changed(null)
     return { message: result.message, proposals: result.found.length, registered }
   }

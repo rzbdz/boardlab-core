@@ -85,11 +85,6 @@ export interface LabDiscovery {
   host?: string | null
   /** Only these slots (`<host>/s4`). */
   slots?: string[]
-  /**
-   * Start `host`'s wiring over (after it was re-cabled): forget the boards and slots discovery found there and find
-   * them all again, as the backend best can. Only for backends with `rebuild` in their discovery capability.
-   */
-  rebuild?: boolean
 }
 /** A board a scan found: what it suggests calling it, a line for people, and what registering it takes. */
 export interface LabFinding { host: string | null, name: string, summary: string, warnings: string[], detail: unknown }
@@ -192,8 +187,13 @@ export interface DiscoveryCapability {
   discover(config: LabConfig, options: LabDiscovery, progress: (line: string) => void, registered?: (device: string) => void): Promise<{ message: string, found: LabFinding[] }>
   /** Register a board a scan found, under `name` (the backend's own name for it). */
   register(config: LabConfig, finding: LabFinding, name: string): Promise<void>
-  /** It can start a host's wiring over (`LabDiscovery.rebuild`). */
-  rebuild?: boolean
+  /**
+   * Start one host over after it was re-cabled: drop the backend's own record of what is wired to `host` and find
+   * its boards again, registering each as found (`registered`), as `discover` does. Boards the backend was told about
+   * by hand stay. It resets boards, so boardd runs it only on a person's confirmation while none of that host's boards
+   * is held.
+   */
+  rebuild?(config: LabConfig, host: string, progress: (line: string) => void, registered?: (device: string) => void): Promise<{ message: string, found: LabFinding[] }>
 }
 
 /** For a backend that can tell: its free ports, and making boards of them. */

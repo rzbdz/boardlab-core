@@ -12,7 +12,7 @@ const commands: Command[] = [
         const host = flag('host')
         if (!host) throw new Error('重建要指定主机：--host <主机>')
         if (!flags.has('yes') && !(await confirm(`重建会忘掉 ${host} 上发现过的板子和槽位并复位它们，按现在的接线重新发现。继续？`))) throw new Error('重建需要确认（交互确认或 --yes）')
-        const result = await client.discoverLab(args[1], { host, rebuild: true })
+        const result = await client.rebuildLab(args[1], host)
         return out(result, () => console.log(result.message))
       }
       if (args[0] !== 'discover' || !args[1]) throw new Error('lab 子命令：discover <实验室> | rebuild <实验室> --host <主机>')

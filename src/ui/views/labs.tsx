@@ -61,7 +61,8 @@ export function LabScan({ lab, state, onPrompt }: { lab: LabSettings, state: Pag
   const host = picked ?? lab.hosts[0] ?? ''
   const held = state.boards.filter(board => board.lab?.id === lab.id && (board.lease || board.lab.heldBy))
   // Finding boards can take many minutes; it runs on in boardd and reports its progress here.
-  const discover = (options: { human?: boolean, host?: string, rebuild?: boolean }) => { void api.discoverLab(lab.id, options).catch(() => {}); return Promise.resolve() }
+  const discover = (options: { human?: boolean, host?: string }) => { void api.discoverLab(lab.id, options).catch(() => {}); return Promise.resolve() }
+  const rebuild = (target: string) => { void api.rebuildLab(lab.id, target).catch(() => {}); return Promise.resolve() }
   // What a rebuild of the chosen host forgets: the boards registered there (empty slots are just consoles).
   const onHost = state.boards.filter(board => board.lab?.id === lab.id && board.slotRef?.startsWith(`${host}/`))
   const heldOnHost = onHost.filter(board => board.lease || board.lab?.heldBy)
@@ -88,7 +89,7 @@ export function LabScan({ lab, state, onPrompt }: { lab: LabSettings, state: Pag
             <button className="danger" disabled={running || heldOnHost.length > 0 || !host.trim()} title={heldOnHost.length ? `${heldOnHost.map(board => board.name).join('、')} 正被使用` : undefined}
               onClick={() => onPrompt({ kind: 'confirm', title: `重建 ${host.trim()}`, action: '重建', danger: true,
                 body: `会忘掉 ${host.trim()} 上的 ${onHost.filter(board => !board.lab?.empty).map(board => board.name).join('、') || '（没有登记的板子）'} 和它的所有槽位，按现在的接线重新发现板子，会复位接在复位线上的所有板子。站点配置里写死的板子不受影响。`,
-                run: () => discover({ host: host.trim(), rebuild: true }) })}>重建</button>
+                run: () => rebuild(host.trim()) })}>重建</button>
           </div>
         </div>}
         <div className="scan-mode">
