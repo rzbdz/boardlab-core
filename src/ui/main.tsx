@@ -28,6 +28,9 @@ function useToasts() {
   return { toasts, show }
 }
 
+/** One-click purposes for taking or queueing for a lock. */
+const PURPOSES = ['临时调试', 'boardlab 调试', '临时开发任务']
+
 function App() {
   const [state, setState] = useState<PageState | null>(null)
   const [tab, setTab] = useState<Tab>(() => (TABS.find(([key]) => `#${key}` === location.hash)?.[0]) ?? 'boards')
@@ -156,10 +159,12 @@ function PromptDialog({ prompt, onClose, onRun, onIdentity }: { prompt: Exclude<
         {prompt.kind === 'lock' && <>
           <p className="muted">锁没有时间限制，用完请放锁；有人排队时会自动交给排在第一位的人。</p>
           <label>用途<input autoFocus value={text} onChange={event => setText(event.target.value)} placeholder="例如：调试 U-Boot 网络" /></label>
+          <div className="quick">{PURPOSES.map(purpose => <button key={purpose} type="button" className={`chip ${text === purpose ? 'chip-on' : ''}`} onClick={() => setText(purpose)}>{purpose}</button>)}</div>
         </>}
         {prompt.kind === 'queue' && <>
           <p>现在由 <b>{who(prompt.board.lease?.holder ?? '')}</b> 使用（{prompt.board.lease?.purpose}）{prompt.board.waiters.length ? `，前面还有 ${prompt.board.waiters.length} 人` : ''}。轮到你时会自动把锁交给你。</p>
           <label>用途<input autoFocus value={text} onChange={event => setText(event.target.value)} placeholder="例如：跑一遍启动回归" /></label>
+          <div className="quick">{PURPOSES.map(purpose => <button key={purpose} type="button" className={`chip ${text === purpose ? 'chip-on' : ''}`} onClick={() => setText(purpose)}>{purpose}</button>)}</div>
         </>}
         {prompt.kind === 'steal' && <>
           <p>当前由 <b>{who(prompt.board.lease?.holder ?? '')}</b> 使用（{prompt.board.lease?.purpose}）。抢锁会记录下来，原使用者会收到通知；排队顺序不变。</p>

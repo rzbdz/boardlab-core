@@ -254,3 +254,6 @@ label.inline input { width: 110px; }
 .card-gone { opacity: .6; }
 .card-gone .warn { opacity: 1; }
 .small { font-size: 12px; }
+.quick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.quick .chip { font-size: 12px; padding: 3px 10px; border-radius: 999px; }
+.quick .chip-on { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
