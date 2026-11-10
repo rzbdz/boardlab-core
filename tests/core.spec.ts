@@ -543,6 +543,23 @@ describe('remote labs', () => {
     expect(svc.history().actions.find(action => action.kind === 'lab-rebuild')).toMatchObject({ detail: 'lab1 重建 h1', ok: true })
   })
 
+  it('lets a person pair a board by hand while others are held: it resets nothing', async () => {
+    const lab = new FakeLab()
+    const asked: unknown[] = []
+    ;(lab as unknown as { discovery: unknown }).discovery = {
+      discover: async (_config: LabConfig, options: unknown) => { asked.push(options); return { message: '配对了 1 块', found: [] } },
+      register: async () => {},
+    }
+    const { svc } = labService(lab)
+    await enable(svc)
+    await svc.locks.lock('lab1-sub0-0', 'user:bob', '调试')
+    // Pulsing reset lines would reset held boards: refused.
+    await expect(svc.backends.discover('user:alice', 'lab1', true, {})).rejects.toThrow(/lab1-sub0-0 正被 user:bob 使用/)
+    // A person pressing RESET on the new board themselves: fine.
+    expect((await svc.backends.discover('user:alice', 'lab1', true, { human: true, host: 'h1' })).message).toBe('配对了 1 块')
+    expect(asked).toEqual([{ human: true, host: 'h1', slots: [] }])
+  })
+
   it('names boards by their slot, keeps a slot\'s lock when its board is registered or swapped, and reads a swapped board again', async () => {
     /** A lab whose boards sit in slots: s1 holds a board, s2 is only a console so far. */
     class SlotLab extends FakeLab {

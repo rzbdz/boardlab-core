@@ -326,14 +326,16 @@ export class Backends {
 
   /**
    * Have an instance look for new boards, as proposals for a person to apply. Finding boards can reset them, so it
-   * needs confirmation and none of the instance's boards may be held, here or in the backend.
+   * needs confirmation and, unless a person resets the boards by hand, none of the instance's boards may be held.
    */
   async discover(actor: string, id: string, confirmed: boolean, options: LabDiscovery = {}): Promise<{ message: string, proposals: number, registered: string[] }> {
     const { backend } = this.configurable(id)
     if (!backend.discovery) throw new BoardError('invalid', `实验室 ${id} 不能自己发现板子`)
     if (!confirmed) throw new BoardError('forbidden', '发现板子可能复位实验室里的板子，需要用户确认')
-    // An empty slot has no board to reset: whoever holds one (to watch its console, say) may have it discovered.
-    this.assertNoneHeld(id, name => !!this.devices.get(name)?.empty)
+    // Pulsing reset lines resets boards: none of the instance's may be held (an empty slot has no board to reset, so
+    // whoever holds one to watch its console may still have it discovered). A person resetting the new board by hand
+    // touches no other board, so held boards do not stop that.
+    if (!options.human) this.assertNoneHeld(id, name => !!this.devices.get(name)?.empty)
     if (options.host && !HOST.test(options.host)) throw new BoardError('invalid', `主机名不合法：${options.host}`)
     const badSlot = (options.slots ?? []).find(slot => !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}\/s\d+$/.test(slot))
     if (badSlot) throw new BoardError('invalid', `槽位要写成 <主机>/s<N>：${badSlot}`)
