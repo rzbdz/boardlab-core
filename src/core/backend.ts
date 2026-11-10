@@ -202,8 +202,14 @@ export interface DiscoveryCapability {
    * its boards again, registering each as found (`registered`), as `discover` does. Boards the backend was told about
    * by hand stay. It resets boards, so boardd runs it only on a person's confirmation while none of that host's boards
    * is held.
+   *
+   * `keepInUse` (when `keepsInUse` says the backend can): redo only what moved. Boards in use keep their slots and
+   * wiring and are never reset; boards whose console is gone are forgotten; free consoles are searched again. boardd
+   * then runs it while others hold boards on the host.
    */
-  rebuild?(config: LabConfig, host: string, progress: (line: string) => void, registered?: (device: string) => void): Promise<{ message: string, found: LabFinding[] }>
+  rebuild?(config: LabConfig, host: string, progress: (line: string) => void, registered?: (device: string) => void, options?: { keepInUse: boolean }): Promise<{ message: string, found: LabFinding[] }>
+  /** `rebuild` can keep the boards in use (`keepInUse`). */
+  keepsInUse?: boolean
 }
 
 /** For a backend that can tell: its free ports, and making boards of them. */

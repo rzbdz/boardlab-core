@@ -273,7 +273,7 @@ export class BoardsClient {
   setHaEnabled(enabled: boolean) { return this.call<HaSettings>('POST', '/api/ha/enabled', { enabled }) }
   testHa() { return this.call<HaSettings>('POST', '/api/ha/test') }
   /** After re-cabling: have the lab start `host` over (forget its boards, find them again). */
-  rebuildLab(id: string, host: string) { return this.call<{ message: string, proposals: number, registered?: string[] }>('POST', '/api/labs/rebuild', { id, host, confirmed: true }) }
+  rebuildLab(id: string, host: string, keepInUse = false) { return this.call<{ message: string, proposals: number, registered?: string[] }>('POST', '/api/labs/rebuild', { id, host, confirmed: true, keepInUse }) }
   discoverLab(id: string, options: { human?: boolean, host?: string, slots?: string[] } = {}) { return this.call<{ message: string, proposals: number, registered?: string[] }>('POST', '/api/labs/discover', { id, confirmed: true, ...options }) }
   /** Read the board in a slot again after a swap; returns its name afterwards. */
   refresh(board: string, options: { name?: string, rename?: boolean } = {}, token?: string | null) { return this.call<{ board: string, message: string }>('POST', '/api/boards/refresh', { board, ...options, token }) }

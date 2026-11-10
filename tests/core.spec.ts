@@ -543,6 +543,34 @@ describe('remote labs', () => {
     expect(svc.history().actions.find(action => action.kind === 'lab-rebuild')).toMatchObject({ detail: 'lab1 重建 h1', ok: true })
   })
 
+  it('rediscovers a host while its boards are held, when the backend keeps the boards in use', async () => {
+    const seen: unknown[] = []
+    class KeepLab extends FakeLab {
+      constructor() { super(); this.listed = [{ name: 'k3-a', slot: 'h1/s1', model: 'k3', online: true, serialPort: 'h1:s1', serialConnected: true, downloadUsbPath: null, ip: null }] }
+      discovery = {
+        discover: async () => ({ message: '', found: [] }), register: async () => {}, keepsInUse: true,
+        rebuild: async (_config: LabConfig, host: string, _progress: (line: string) => void, _registered?: (device: string) => void, options?: { keepInUse: boolean }) => { seen.push([host, options]); return { message: '没有变动', found: [] } },
+      }
+    }
+    const lab = new KeepLab()
+    const { svc } = labService(lab)
+    await enable(svc, { devices: '' })
+    expect(svc.backends.labSettings()[0]).toMatchObject({ canRebuild: true, canRediscover: true })
+    await svc.locks.lock('lab1-k3-a', 'user:bob', '调试')
+    await expect(svc.backends.rebuild('user:alice', 'lab1', true, 'h1')).rejects.toThrow(/正被 user:bob 使用/)   // a whole rebuild still waits
+    expect((await svc.backends.rebuild('user:alice', 'lab1', true, 'h1', true)).message).toBe('没有变动')
+    expect(seen).toEqual([['h1', { keepInUse: true }]])
+    expect(svc.history().actions.find(action => action.kind === 'lab-rebuild')).toMatchObject({ detail: 'lab1 重新发现 h1', ok: true })
+  })
+
+  it('refuses to rediscover with a backend that can only rebuild a whole host', async () => {
+    class WholeLab extends FakeLab { discovery = { discover: async () => ({ message: '', found: [] }), register: async () => {}, rebuild: async () => ({ message: '', found: [] }) } }
+    const { svc } = labService(new WholeLab())
+    await enable(svc, { devices: '' })
+    expect(svc.backends.labSettings()[0]).toMatchObject({ canRebuild: true, canRediscover: false })
+    await expect(svc.backends.rebuild('user:alice', 'lab1', true, 'h1', true)).rejects.toThrow(/只能整台重建/)
+  })
+
   it('lets a person pair a board by hand while others are held: it resets nothing', async () => {
     const lab = new FakeLab()
     const asked: unknown[] = []

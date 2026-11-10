@@ -136,6 +136,8 @@ export interface LabSettings {
   canDiscover: boolean
   /** It can start a host's wiring over after re-cabling (forget its boards and slots, find them all again). */
   canRebuild: boolean
+  /** It can rediscover a host: keep the boards in use, forget the ones whose console is gone, search the free consoles. */
+  canRediscover: boolean
   canRemove: boolean
   /** The lab lists free ports (`labSlots`) and makes boards of them (`bindLab`). */
   canBind: boolean

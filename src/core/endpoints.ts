@@ -122,6 +122,6 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
         return lab.backends.discover(caller.holder, required(body.id, 'id'), body.confirmed === true, { human: body.human === true, host: optional(body.host), slots })
       },
     },
-    { method: 'POST', path: '/api/labs/rebuild', about: '重新布线以后，让实验室重建一台主机：忘掉它的板子，按现在的接线重新发现', handle: ({ body, caller }) => lab.backends.rebuild(caller.holder, required(body.id, 'id'), body.confirmed === true, required(body.host, 'host')) },
+    { method: 'POST', path: '/api/labs/rebuild', about: '重新布线以后，让实验室重建一台主机：忘掉它的板子，按现在的接线重新发现；keepInUse 只重做变动的，保留在用的板子', handle: ({ body, caller }) => lab.backends.rebuild(caller.holder, required(body.id, 'id'), body.confirmed === true, required(body.host, 'host'), body.keepInUse === true) },
   ]
 }

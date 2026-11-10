@@ -212,7 +212,7 @@ export class Backends {
       const url = get('url')
       const fields = backend.fields ?? {}
       return {
-        id, kind: backend.kind, about: backend.about ?? '', fields, canDiscover: !!backend.discovery, canRebuild: !!backend.discovery?.rebuild, canRemove: !!backend.inventory?.remove, canBind: !!backend.ports, canRelay: !!backend.channels,
+        id, kind: backend.kind, about: backend.about ?? '', fields, canDiscover: !!backend.discovery, canRebuild: !!backend.discovery?.rebuild, canRediscover: !!backend.discovery?.rebuild && !!backend.discovery.keepsInUse, canRemove: !!backend.inventory?.remove, canBind: !!backend.ports, canRelay: !!backend.channels,
         hosts: [...new Set([...this.devices].filter(([name]) => name.startsWith(`${id}-`)).map(([, device]) => device.host).filter((host): host is string => !!host))].sort(),
         discovery: this.discoveries.get(id) ?? null, enabled: get('enabled') === '1', url, username: get('username'), hasPassword: !!get('password'),
         jump: get('jump'), defaultJump: url && fields.jump ? backend.defaultJump?.(new URL(url)) ?? null : null, devices: get('devices'),
@@ -349,16 +349,21 @@ export class Backends {
   /**
    * Have an instance start one host over after it was re-cabled (`DiscoveryCapability.rebuild`). It forgets that host's
    * boards, so nobody may hold any of them, empty slots included; boards on other hosts may stay held.
+   *
+   * `keepInUse` rediscovers instead: the backend keeps the boards in use untouched and redoes only what moved, so it
+   * runs while boards on the host are held.
    */
-  async rebuild(actor: string, id: string, confirmed: boolean, host: string): Promise<{ message: string, proposals: number, registered: string[] }> {
+  async rebuild(actor: string, id: string, confirmed: boolean, host: string, keepInUse = false): Promise<{ message: string, proposals: number, registered: string[] }> {
     const { backend } = this.configurable(id)
     const rebuild = backend.discovery?.rebuild?.bind(backend.discovery)
     if (!rebuild) throw new BoardError('invalid', `实验室 ${id} 不能重建主机`)
-    if (!confirmed) throw new BoardError('forbidden', '重建会忘掉这台主机上的板子并复位它们，需要用户确认')
+    if (keepInUse && !backend.discovery?.keepsInUse) throw new BoardError('invalid', `实验室 ${id} 不能保留在用的板子重新发现，只能整台重建`)
+    if (!confirmed) throw new BoardError('forbidden', keepInUse ? '重新发现会复位这台主机上没人用的板子，需要用户确认' : '重建会忘掉这台主机上的板子并复位它们，需要用户确认')
     if (!host || !HOST.test(host)) throw new BoardError('invalid', `主机名不合法：${host || '（空）'}`)
-    this.assertNoneHeld(id, name => { const slot = this.devices.get(name)?.slot; return !!slot && !slot.startsWith(`${host}/`) })
-    const result = await this.finding(actor, id, 'lab-rebuild', `开始重建 ${host}：按现在的接线重新发现它的板子`, `${id} 重建 ${host}`,
-      (progress, registered) => rebuild(this.config(id), host, progress, registered))
+    if (!keepInUse) this.assertNoneHeld(id, name => { const slot = this.devices.get(name)?.slot; return !!slot && !slot.startsWith(`${host}/`) })
+    const [start, detail] = keepInUse ? [`开始重新发现 ${host}：保留在用的板子，只重做变动的`, `${id} 重新发现 ${host}`] : [`开始重建 ${host}：按现在的接线重新发现它的板子`, `${id} 重建 ${host}`]
+    const result = await this.finding(actor, id, 'lab-rebuild', start, detail,
+      (progress, registered) => rebuild(this.config(id), host, progress, registered, { keepInUse }))
     await this.sync(id, actor).catch(() => {})
     return result
   }
