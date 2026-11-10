@@ -727,6 +727,30 @@ describe('the bare distribution', () => {
 })
 
 describe('boardd API', () => {
+  it('serves several frontends, each browser the one it chose', async () => {
+    const ui = join(dir, 'ui')
+    for (const name of ['shiny', 'plain']) { mkdirSync(join(ui, name), { recursive: true }); writeFileSync(join(ui, name, 'index.html'), `<title>${name}</title>`) }
+    writeFileSync(join(ui, 'frontends.json'), JSON.stringify({ default: 'shiny', frontends: [{ name: 'shiny', title: 'Shiny' }, { name: 'plain', title: 'Plain' }, { name: 'gone', title: 'Not built' }] }))
+    const port = 39000 + Math.floor(Math.random() * 1000)
+    const running = await serve(service(), { port, socketPath: join(dir, 'ui.sock'), uiDir: ui })
+    const get = (path: string, headers: Record<string, string> = {}) => new Promise<{ status: number, body: string, cookie: string | undefined }>(resolve => {
+      request({ host: '127.0.0.1', port, path, method: path.includes('?name=') ? 'POST' : 'GET', headers }, res => {
+        let body = ''
+        res.on('data', chunk => { body += chunk })
+        res.on('end', () => resolve({ status: res.statusCode!, body, cookie: res.headers['set-cookie']?.[0] }))
+      }).end()
+    })
+    try {
+      expect((await get('/')).body).toBe('<title>shiny</title>')
+      expect(JSON.parse((await get('/api/frontends')).body)).toEqual({ default: 'shiny', current: 'shiny', frontends: [{ name: 'shiny', title: 'Shiny' }, { name: 'plain', title: 'Plain' }] })
+      const chosen = await get('/api/frontends?name=plain')
+      expect(chosen.cookie).toMatch(/^boardlab-frontend=plain;/)
+      const cookie = chosen.cookie!.split(';')[0]!
+      expect((await get('/', { cookie })).body).toBe('<title>plain</title>')
+      expect((await get('/api/frontends?name=gone')).status).toBe(400)           // listed but not built
+    } finally { await running.close() }
+  })
+
   it('serves the CLI over the Unix socket, listens on opted-in hosts and refuses foreign ones', async () => {
     const svc = service()
     const socketPath = join(dir, 'boardd.sock')

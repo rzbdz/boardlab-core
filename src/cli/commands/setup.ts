@@ -92,7 +92,7 @@ const serve: Command = {
   async run({ flag, flags, stateDir, catalog }) {
     const { startBoardd } = await import('../../server/main.ts')
     // The default UI built with boardlab, another one given, or none (an API-only boardd).
-    const uiDir = flags.has('no-ui') ? null : flag('ui') ? resolve(flag('ui')!) : shipped('dist/ui', dir => existsSync(join(dir, 'index.html')))
+    const uiDir = flags.has('no-ui') ? null : flag('ui') ? resolve(flag('ui')!) : shipped('dist/ui', dir => existsSync(join(dir, 'index.html')) || existsSync(join(dir, 'frontends.json')))
     const firmwareDir = shipped('firmware', dir => existsSync(join(dir, 'firmware.json'))) ?? undefined
     const hosts = (flag('host') ?? process.env.BOARDS_HOSTS)?.split(',').map(host => host.trim()).filter(Boolean)
     const origins = (flag('origin') ?? process.env.BOARDS_ORIGINS)?.split(',').map(origin => origin.trim()).filter(Boolean)
