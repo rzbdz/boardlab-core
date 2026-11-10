@@ -787,6 +787,27 @@ describe('boardd API', () => {
     } finally { await running.close() }
   })
 
+  it('sends a person\'s first keystroke through the console they are watching, without opening another', async () => {
+    const here = new Here()
+    let opened = 0
+    const open = here.serial.open
+    here.serial.open = async (...args) => { opened++; return open(...args) }
+    const svc = new BoardLab({
+      db: openDatabase(join(dir, 'typing.sqlite')), sleep: async () => {},
+      modules: [{ id: 'test-here', title: '本机（测试）', setup: core => core.backends.register('local', here, { configurable: false, isDefault: true }) }],
+    })
+    svc.boards.add('user:alice', { name: 'k1', slot: 1, chips: [{ serialPath: '/dev/ttyUSB1', alias: 'k1' }] })
+    const watching = await svc.consoles.open('k1')
+    expect(opened).toBe(1)
+    await svc.consoles.input('k1', { holder: 'user:alice' }, { data: 'ls\r', human: true })
+    expect(opened).toBe(1)                                         // the watched console carried it
+    expect(here.sent).toEqual(['k1: ls\r'])
+    watching.close()
+    // Nobody watching: input opens a session of its own, as before.
+    await svc.consoles.input('k1', { holder: 'user:alice' }, { data: 'x', human: true })
+    expect(here.sent.at(-1)).toBe('k1: x')
+  })
+
   it('serves the CLI over the Unix socket, listens on opted-in hosts and refuses foreign ones', async () => {
     const svc = service()
     const socketPath = join(dir, 'boardd.sock')

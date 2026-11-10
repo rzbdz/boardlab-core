@@ -36,6 +36,8 @@ interface Watch {
 export class Consoles {
   private readonly watches = new Map<string, Watch>()
   private readonly typing = new Map<string, { session: Promise<ConsoleSession>, timer: ReturnType<typeof setTimeout> | null }>()
+  /** People who typed through a watched console, so their input is recorded once per console. */
+  private readonly humans = new Set<string>()
 
   constructor(private readonly lab: BoardLab, private readonly timing: ConsoleTiming = CONSOLE_TIMING) {
     lab.locks.onEnd(board => this.closeTyping(board))
@@ -149,6 +151,25 @@ export class Consoles {
     if (!input.data) return
     if (input.data.length > 64 * 1024) throw new BoardError('invalid', '一次输入太多')
     const chip = this.lab.boards.chip(board, input.die)
+    // A person types where they watch: the console they have open already carries the bytes, with no new session to
+    // open first (for a lab, a new connection to its host). Agents keep a session of their own under the lock.
+    // On a port whose input gate follows the lock, the watched session holds the gate token of when it opened, so it
+    // types through its own session there as before.
+    const gated = !!this.lab.backends.route(board, chip.die).backend.serial.gated
+    const watched = asHuman && !gated ? this.watches.get(`${board}\0${chip.die}`) : undefined
+    if (watched && watched.viewers > 0) {
+      let session: ConsoleSession | null = null
+      try { session = await watched.session } catch {}
+      if (session) {
+        if (!this.humans.has(`${board}\0${chip.die}\0${caller.holder}`)) {
+          this.humans.add(`${board}\0${chip.die}\0${caller.holder}`)
+          const held = this.lab.locks.held(board)
+          this.lab.kernel.record(lease.holder, board, 'console-input', `${chip.die}（人，不查锁${held && held.holder !== caller.holder ? `；锁在 ${held.holder} 手里` : ''}）`, true)
+        }
+        session.send(Buffer.from(input.data, 'utf8'))
+        return
+      }
+    }
     const key = `${board}\0${chip.die}\0${lease.id}`
     let entry = this.typing.get(key)
     if (!entry) {
