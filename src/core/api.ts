@@ -29,7 +29,8 @@ export class EventStream {
 }
 /** A reply of plain text rather than JSON. */
 export class TextReply {
-  constructor(readonly text: string, readonly type = 'text/plain; charset=utf-8') {}
+  /** `filename`: offered as a download under this name (Content-Disposition: attachment). */
+  constructor(readonly text: string, readonly type = 'text/plain; charset=utf-8', readonly filename?: string) {}
 }
 /** A reply that is a file's bytes. */
 export class FileReply {

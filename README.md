@@ -25,6 +25,8 @@ runIfMain(cli, import.meta.url)
 
 Build the CLI with `node core/scripts/build.mjs --cli src/boardlab.ts`, and check the layering with `node core/scripts/check-architecture.mjs`.
 
+A console's log can be read over a time range and searched (`GET /api/logs?board=&since=&until=&grep=`); with `download=1` it comes as a file, for a browser or `wget`. A backend that keeps logs can answer this itself (`SerialCapability.logs`); otherwise the console's buffer does.
+
 boardd serves whatever web frontend the distribution builds into `dist/ui`. That is either one frontend, or several listed in `dist/ui/frontends.json` (`{"default": "<name>", "frontends": [{"name", "title"}]}`), each in `dist/ui/<name>/`. Each browser picks one: `GET /api/frontends` lists them, and `POST /api/frontends?name=<name>` chooses one.
 
 ## Development

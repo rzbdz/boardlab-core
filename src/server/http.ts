@@ -57,7 +57,10 @@ export function createApi(lab: BoardLab, options: GatewayOptions = {}): (request
 
 async function answer(response: ServerResponse, reply: unknown, abort: AbortController) {
   if (reply instanceof EventStream) return stream(response, reply, abort)
-  if (reply instanceof TextReply) { response.writeHead(200, { 'Content-Type': reply.type }); return void response.end(reply.text) }
+  if (reply instanceof TextReply) {
+    response.writeHead(200, { 'Content-Type': reply.type, ...(reply.filename ? { 'Content-Disposition': `attachment; filename="${reply.filename.replace(/[^A-Za-z0-9._-]/g, '_')}"` } : {}) })
+    return void response.end(reply.text)
+  }
   if (reply instanceof FileReply) {
     response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': String(statSync(reply.path).size) })
     return void createReadStream(reply.path).pipe(response)

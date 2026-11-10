@@ -137,7 +137,17 @@ export interface SerialCapability {
   online?(target: BoardTarget): boolean
   /** Its consoles have input gates that follow the lock, so a lock comes with a gate token (`smtty --token`). */
   gated?: boolean
+  /** Its console's log over a time range, searched (see LogQuery); for a backend that keeps logs it can read back. */
+  logs?(config: LabConfig, target: BoardTarget, query: LogQuery): Promise<LogRange>
 }
+
+/**
+ * What part of a console's log: lines stamped from `since` to `until` (`YYYY-MM-DD HH:MM:SS`, either may be absent),
+ * keeping those matching `grep` (text, case-blind; a regex with `regex`), at most `limit`, the last ones unless
+ * `first`.
+ */
+export interface LogQuery { since?: string | null, until?: string | null, grep?: string | null, regex?: boolean, limit?: number, first?: boolean }
+export interface LogRange { lines: string[], matched: number, truncated: boolean }
 
 /** The USB download path. Loading runs from RAM and never flashes. */
 export interface DownloadCapability {

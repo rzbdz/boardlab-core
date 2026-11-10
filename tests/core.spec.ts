@@ -727,6 +727,40 @@ describe('the bare distribution', () => {
 })
 
 describe('boardd API', () => {
+  it('reads a console\'s log over a time range, searched, from the backend or the console\'s buffer, and offers it as a file', async () => {
+    // The board here: no logs of its own, so its console's buffer.
+    const svc = service()
+    const lines = ['[2026-11-10 08:00:00] U-Boot 2022.10', 'continuation of the line above', '[2026-11-10 09:00:00] ERROR mmc0', '[2026-11-10 10:00:00] login:']
+    ;(svc.consoles as unknown as { log: () => Promise<string[]> }).log = async () => lines
+    expect(await svc.consoles.logs('com260', undefined, { since: '2026-11-10 08:00:00', until: '2026-11-10 09:00:00' })).toEqual({ lines: lines.slice(0, 3), matched: 3, truncated: false, source: 'buffer' })
+    expect(await svc.consoles.logs('com260', undefined, { grep: 'error' })).toMatchObject({ lines: ['[2026-11-10 09:00:00] ERROR mmc0'], matched: 1 })
+    expect(await svc.consoles.logs('com260', undefined, { limit: 1 })).toMatchObject({ lines: ['[2026-11-10 10:00:00] login:'], truncated: true })
+    await expect(svc.consoles.logs('com260', undefined, { grep: '(', regex: true })).rejects.toThrow(/不是合法的正则/)
+    // A lab board whose backend keeps logs: the query goes to the backend.
+    const asked: unknown[] = []
+    const lab = new FakeLab()
+    lab.serial.logs = async (_config, target, query) => { asked.push([target.device, query]); return { lines: ['[2026-11-10 09:00:00] from the lab'], matched: 1, truncated: false } }
+    svc.kernel.db.close()
+    rmSync(join(dir, 'lab.sqlite'), { force: true })             // the next service starts from an empty database
+    const { svc: labbed } = labService(lab)
+    await enable(labbed)
+    expect(await labbed.consoles.logs('lab1-sub0-0', undefined, { grep: 'lab' })).toEqual({ lines: ['[2026-11-10 09:00:00] from the lab'], matched: 1, truncated: false, source: 'backend' })
+    expect(asked).toEqual([['sub0-0', { grep: 'lab', limit: 20000 }]])
+    // Over HTTP: JSON for the page, a file to download for a browser or wget.
+    const port = 39500 + Math.floor(Math.random() * 400)
+    const running = await serve(labbed, { port, socketPath: join(dir, 'logs.sock'), uiDir: null })
+    const get = (path: string) => new Promise<{ status: number, body: string, headers: Record<string, unknown> }>(resolve => {
+      request({ host: '127.0.0.1', port, path }, res => { let body = ''; res.on('data', chunk => { body += chunk }); res.on('end', () => resolve({ status: res.statusCode!, body, headers: res.headers })) }).end()
+    })
+    try {
+      expect(JSON.parse((await get('/api/logs?board=lab1-sub0-0&grep=lab')).body)).toMatchObject({ matched: 1, source: 'backend' })
+      const file = await get('/api/logs?board=lab1-sub0-0&since=2026-11-10%2009:00:00&until=2026-11-10%2010:00:00&download=1')
+      expect(file.headers['content-disposition']).toBe('attachment; filename="lab1-sub0-0-202611100900-202611101000.log"')
+      expect(file.body).toBe('[2026-11-10 09:00:00] from the lab\n')
+      expect((await get('/api/logs?board=lab1-sub0-0&since=yesterday')).status).toBe(400)
+    } finally { await running.close() }
+  })
+
   it('serves several frontends, each browser the one it chose', async () => {
     const ui = join(dir, 'ui')
     for (const name of ['shiny', 'plain']) { mkdirSync(join(ui, name), { recursive: true }); writeFileSync(join(ui, name, 'index.html'), `<title>${name}</title>`) }

@@ -4,6 +4,7 @@
  * session per board, chip and lock, kept open while typing goes on, so keystrokes are not each a new connection.
  */
 import type { SendResult } from '../shared/types.ts'
+import type { LogQuery, LogRange } from './backend.ts'
 import type { ConsoleSession } from './console.ts'
 import { BoardError } from './errors.ts'
 import type { BoardLab } from './lab.ts'
@@ -115,6 +116,23 @@ export class Consoles {
     return { watching: [...this.watches.values()].map(watch => ({ console: watch.key.replace('\0', '.'), viewers: watch.viewers })), typing: this.typing.size }
   }
 
+  /**
+   * A chip's log over a time range, searched, for export and search: from the backend when it keeps logs it can read
+   * back, else from what this console has buffered.
+   */
+  async logs(board: string, die: string | undefined, query: LogQuery): Promise<LogRange & { source: 'backend' | 'buffer' }> {
+    const chip = this.lab.boards.chip(board, die)
+    const route = this.lab.backends.route(board, chip.die)
+    const limit = Math.max(1, Math.min(query.limit ?? 20000, 200000))
+    if (query.regex && query.grep) { try { new RegExp(query.grep) } catch (error) { throw new BoardError('invalid', `不是合法的正则：${(error as Error).message}`) } }
+    if (route.backend.serial.logs) {
+      try { return { ...(await route.backend.serial.logs(route.config, route.target, { ...query, limit })), source: 'backend' } }
+      catch (error) { throw new BoardError('hardware', (error as Error).message) }
+    }
+    const lines = (await this.log(board, die, 100000)).map(stripAnsi)
+    return { ...filterLog(lines, { ...query, limit }), source: 'buffer' }
+  }
+
   async log(board: string, die?: string, lines = 200): Promise<string[]> {
     const session = await this.open(board, die)
     session.close()
@@ -191,4 +209,24 @@ export class Consoles {
       return { output: stripAnsi(output), matched }
     } finally { session.close() }
   }
+}
+
+const STAMP = /^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\]/
+
+/** Lines stamped within the range (unstamped ones go with the line before), matching the search, capped. */
+export function filterLog(lines: string[], query: LogQuery): LogRange {
+  const lo = (query.since ?? '').slice(0, 19), hi = (query.until ?? '9999').slice(0, 19)
+  const needle = query.grep && !query.regex ? query.grep.toLowerCase() : null
+  const rx = query.grep && query.regex ? new RegExp(query.grep) : null
+  const limit = query.limit ?? 20000
+  let inside = !lo, matched = 0
+  const out: string[] = []
+  for (const line of lines) {
+    const stamp = STAMP.exec(line)?.[1]
+    if (stamp) inside = lo <= stamp && stamp <= hi
+    if (!inside || (needle && !line.toLowerCase().includes(needle)) || (rx && !rx.test(line))) continue
+    matched++
+    if (!query.first || out.length < limit) { out.push(line); if (!query.first && out.length > limit) out.shift() }
+  }
+  return { lines: out, matched, truncated: matched > out.length }
 }
