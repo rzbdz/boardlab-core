@@ -142,11 +142,11 @@ function cliEndpoint(options: GatewayOptions): Endpoint {
 
 /**
  * The frontends boardd serves. `uiDir` is one frontend (its index.html at the top), or several: a directory with
- * `frontends.json` (`{"default": "<name>", "frontends": [{"name", "title"}]}`) and each frontend in `<name>/`. Each
- * browser picks one with the `boardlab-frontend` cookie (`GET /api/frontends` lists them); without it, the default.
+ * `frontends.json` (`{"default": "<name>", "frontends": [{"name", "title"}]}`) and each frontend in `<name>/`. Which one
+ * boardd serves is boardd's setting `ui.frontend` (`GET /api/frontends` lists them, `POST /api/frontends?name=` picks
+ * one for everyone), else the default; no cookie, so it works the same behind any proxy.
  */
 export interface Frontends { default: string, frontends: Array<{ name: string, title: string }> }
-const FRONTEND_COOKIE = 'boardlab-frontend'
 
 export function readFrontends(uiDir: string | null): Frontends | null {
   if (!uiDir) return null
@@ -158,10 +158,7 @@ export function readFrontends(uiDir: string | null): Frontends | null {
   } catch { return null }
 }
 
-function frontendOf(request: IncomingMessage, frontends: Frontends): string {
-  const cookie = String(request.headers.cookie ?? '').split(/;\s*/).find(part => part.startsWith(`${FRONTEND_COOKIE}=`))?.slice(FRONTEND_COOKIE.length + 1)
-  return cookie && frontends.frontends.some(item => item.name === cookie) ? cookie : frontends.default
-}
+const FRONTEND_SETTING = 'ui.frontend'
 
 function serveStatic(uiDir: string, pathname: string, response: ServerResponse) {
   const file = pathname === '/' ? 'index.html' : pathname.slice(1)
@@ -174,6 +171,7 @@ function serveStatic(uiDir: string, pathname: string, response: ServerResponse) 
 /** The page always listens on loopback; extra hosts (such as a Tailscale address) are opt-in. */
 export async function serve(lab: BoardLab, options: ServeOptions): Promise<{ http: Server[], unix: Server, close(): Promise<void> }> {
   const listFrontends = () => readFrontends(options.uiDir)
+  const current = (list: Frontends) => { const chosen = lab.kernel.setting(FRONTEND_SETTING); return chosen && list.frontends.some(item => item.name === chosen) ? chosen : list.default }
   const api = createApi(lab, { cli: options.cli, stateDir: options.stateDir })
   const human = `user:${userInfo().username}`
   const hosts = [...new Set(['127.0.0.1', ...(options.hosts ?? [])])]
@@ -200,15 +198,16 @@ export async function serve(lab: BoardLab, options: ServeOptions): Promise<{ htt
       if (request.method === 'POST') {
         const name = new URL(request.url ?? '/', 'http://boardd').searchParams.get('name') ?? ''
         if (!list?.frontends.some(item => item.name === name)) return send(response, 400, { error: `没有这个前端：${name}` })
-        response.setHeader('Set-Cookie', `${FRONTEND_COOKIE}=${name}; Path=/; Max-Age=31536000; SameSite=Lax`)
+        lab.kernel.setSetting(FRONTEND_SETTING, name)
+        lab.kernel.record(holder, null, 'frontend', name, true, null)
         return send(response, 200, { current: name })
       }
-      return send(response, 200, { ...(list ?? { default: null, frontends: [] }), current: list ? frontendOf(request, list) : null })
+      return send(response, 200, { ...(list ?? { default: null, frontends: [] }), current: list ? current(list) : null })
     }
     if (pathname === '/api' || pathname.startsWith('/api/')) return void api(request, response, { holder, local: false })
     if (!options.uiDir) return send(response, 404, { error: '这个 boardd 不带网页（只有 /api）' })
     const frontends = readFrontends(options.uiDir)
-    serveStatic(frontends ? join(options.uiDir, frontendOf(request, frontends)) : options.uiDir, pathname, response)
+    serveStatic(frontends ? join(options.uiDir, current(frontends)) : options.uiDir, pathname, response)
   }
   const unix = createServer((request, response) => {
     const holder = String(request.headers[HOLDER_HEADER] ?? human)

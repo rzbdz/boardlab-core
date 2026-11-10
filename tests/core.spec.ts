@@ -761,26 +761,28 @@ describe('boardd API', () => {
     } finally { await running.close() }
   })
 
-  it('serves several frontends, each browser the one it chose', async () => {
+  it('serves several frontends, the one picked for this boardd', async () => {
     const ui = join(dir, 'ui')
     for (const name of ['shiny', 'plain']) { mkdirSync(join(ui, name), { recursive: true }); writeFileSync(join(ui, name, 'index.html'), `<title>${name}</title>`) }
     writeFileSync(join(ui, 'frontends.json'), JSON.stringify({ default: 'shiny', frontends: [{ name: 'shiny', title: 'Shiny' }, { name: 'plain', title: 'Plain' }, { name: 'gone', title: 'Not built' }] }))
-    const port = 39000 + Math.floor(Math.random() * 1000)
-    const running = await serve(service(), { port, socketPath: join(dir, 'ui.sock'), uiDir: ui })
-    const get = (path: string, headers: Record<string, string> = {}) => new Promise<{ status: number, body: string, cookie: string | undefined }>(resolve => {
-      request({ host: '127.0.0.1', port, path, method: path.includes('?name=') ? 'POST' : 'GET', headers }, res => {
+    const port = 39000 + Math.floor(Math.random() * 400)
+    const svc = service()
+    const running = await serve(svc, { port, socketPath: join(dir, 'ui.sock'), uiDir: ui })
+    const get = (path: string) => new Promise<{ status: number, body: string }>(resolve => {
+      request({ host: '127.0.0.1', port, path, method: path.includes('?name=') ? 'POST' : 'GET' }, res => {
         let body = ''
         res.on('data', chunk => { body += chunk })
-        res.on('end', () => resolve({ status: res.statusCode!, body, cookie: res.headers['set-cookie']?.[0] }))
+        res.on('end', () => resolve({ status: res.statusCode!, body }))
       }).end()
     })
     try {
       expect((await get('/')).body).toBe('<title>shiny</title>')
       expect(JSON.parse((await get('/api/frontends')).body)).toEqual({ default: 'shiny', current: 'shiny', frontends: [{ name: 'shiny', title: 'Shiny' }, { name: 'plain', title: 'Plain' }] })
-      const chosen = await get('/api/frontends?name=plain')
-      expect(chosen.cookie).toMatch(/^boardlab-frontend=plain;/)
-      const cookie = chosen.cookie!.split(';')[0]!
-      expect((await get('/', { cookie })).body).toBe('<title>plain</title>')
+      // Picking one switches the page for everyone, whatever proxy is in front: no cookie involved.
+      expect((await get('/api/frontends?name=plain')).status).toBe(200)
+      expect((await get('/')).body).toBe('<title>plain</title>')
+      expect(JSON.parse((await get('/api/frontends')).body).current).toBe('plain')
+      expect(svc.history().actions[0]).toMatchObject({ kind: 'frontend', detail: 'plain' })
       expect((await get('/api/frontends?name=gone')).status).toBe(400)           // listed but not built
     } finally { await running.close() }
   })
