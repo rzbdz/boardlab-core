@@ -3,21 +3,17 @@
     "target": "ES2023",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "jsx": "react-jsx",
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "types": [
-      "node",
-      "react"
+      "node"
     ]
   },
   "include": [
     "src/**/*.ts",
-    "src/**/*.tsx",
     "bare/**/*.ts",
-    "bare/**/*.tsx",
     "tests/**/*.ts"
   ]
 }

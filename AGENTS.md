@@ -2,12 +2,11 @@
 
 ## What this is
 
-boardlab-core is the core of boardlab: boardd's core (kernel and subsystems), the backend contract, the HTTP gateway, the CLI framework, the default page and the client library. Distributions consume it as a git submodule plus a pnpm workspace package and add modules; see `README.md`.
+boardlab-core is the core of boardlab: boardd's core (kernel and subsystems), the backend contract, the HTTP gateway, the CLI framework and the client library. It has no web page: distributions bring their frontends. Distributions consume it as a git submodule plus a pnpm workspace package and add modules; see `README.md`.
 
 - `src/core`: the kernel (database, events, action log, settings) and its subsystems (locks, boards, backends, relay, consoles, download, files, proposals, the API registry). It knows backends only through the `Backend` contract and names no product.
 - `src/server`: boardd: the module catalog interface, `boardd.json` configuration, and the HTTP gateway.
 - `src/cli`: the CLI framework (`createCli`), the core's commands, and `serve`.
-- `src/ui`: the default page (`mountPage`) and the interface for modules' page parts.
 - `src/shared`: the client library and the types the CLI, the page and other programs share.
 - `bare/`: the bare distribution, the core with no modules.
 - `scripts/`: the architecture check and the build, which distributions run on themselves.
@@ -22,7 +21,7 @@ boardlab-core is the core of boardlab: boardd's core (kernel and subsystems), th
 ## Changing the core
 
 - Something only one kind of hardware needs belongs in a distribution's module, not here. The core grows by generalising the contract.
-- Keep the core usable by every distribution: a change to an exported interface (`Backend`, `Module`, `CatalogEntry`, `Distribution`, `ModuleUi`, the client) is a change to all of them. Say so in the commit body.
+- Keep the core usable by every distribution: a change to an exported interface (`Backend`, `Module`, `CatalogEntry`, `Distribution`, the client, the frontends served) is a change to all of them. Say so in the commit body.
 
 ## Branches and commits
 
