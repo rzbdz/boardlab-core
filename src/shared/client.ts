@@ -170,7 +170,7 @@ export class BoardsClient {
     })
   }
 
-  /** Send a local file for `boot`, unless boardd has it already; returns the `sha256:<hex>` boot takes for it. */
+  /** Send a local file for `boot` or `flash`, unless boardd has it already; returns the `sha256:<hex>` they take for it. */
   async sendFile(path: string, onSent?: (size: number) => void): Promise<string> {
     const hasher = createHash('sha256')
     for await (const chunk of createReadStream(path)) hasher.update(chunk)
@@ -277,6 +277,8 @@ export class BoardsClient {
   stage(board: string, firmware: string, die?: string, token?: string | null) { return this.call<{ output: string }>('POST', '/api/stage', { board, firmware, die, token }) }
   boot(board: string, files: string[], die?: string, token?: string | null) { return this.call<{ output: string }>('POST', '/api/boot', { board, files, die, token }) }
   bootSdk(board: string, input: { sdk: string, method?: 'load' | 'download', variant?: string }, token?: string | null) { return this.call<{ output: string }>('POST', '/api/boot/sdk', { board, ...input, token }) }
+  /** Flash a package: a `url` the board's backend downloads, or a file sent first (`sendFile`'s `sha256:<hex>`). */
+  flashPackage(board: string, input: { url?: string, sha256?: string, flasher?: string }, token?: string | null) { return this.call<{ output: string }>('POST', '/api/flash/package', { board, ...input, token }) }
   scan(input: { slots?: number[], boards?: string[], confirmed: boolean }) { return this.call<Scan>('POST', '/api/scan', input) }
   scanStatus(id: string) { return this.call<Scan>('GET', `/api/scan?id=${encodeURIComponent(id)}`) }
   cancelScan(id: string) { return this.call<{ ok: true }>('POST', '/api/scan/cancel', { id }) }

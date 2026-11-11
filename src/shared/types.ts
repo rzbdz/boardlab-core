@@ -101,6 +101,8 @@ export interface BoardInLab {
   /** SDKs the lab can boot the board with (`boardlab boot --sdk`), and the line a running one last reported. */
   sdks: string[]
   progress: string | null
+  /** The lab can flash the board with a package from a link or a file sent to boardd (`boardlab flash <board> <url|file>`). */
+  canFlashPackage: boolean
 }
 
 /**

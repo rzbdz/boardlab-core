@@ -16,9 +16,10 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
   // someone refused never marks the board busy for the holder meanwhile.
   // It lasts as long as the lock: `signal` aborts once the lock is released or stolen. A load or a flash (`untilDone`)
   // is not stopped halfway: the board stays busy until it ends, so the next holder sees it is still being written.
-  const doing = <T>(name: string, kind: string, label: string, holder: string, body: any, run: (signal: AbortSignal) => Promise<T>, untilDone = false) => {
+  // `line` shows a progress line on the board while it runs.
+  const doing = <T>(name: string, kind: string, label: string, holder: string, body: any, run: (signal: AbortSignal, line: (text: string) => void) => Promise<T>, untilDone = false) => {
     const lease = lab.locks.authorize(name, who(holder, body))
-    return lab.kernel.doing([name], kind, label, holder, (_line, signal) => run(signal), { lease: untilDone ? null : lease.id })
+    return lab.kernel.doing([name], kind, label, holder, (line, signal) => run(signal, line), { lease: untilDone ? null : lease.id })
   }
   return [
     { method: 'GET', path: '/api', about: '列出所有接口和模块', handle: () => ({ endpoints: lab.api.list().map(item => `${item.method} ${item.path}`), described: lab.api.list(), modules: lab.modules() }) },
@@ -97,6 +98,13 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     { method: 'POST', path: '/api/boot/sdk', about: '用 SDK 的构建启动（load）或刷机（download）', handle: async ({ body, caller }) => {
         const name = board(body), method = body.method === 'download' ? 'download' : 'load'
         return { output: await doing(name, 'boot', method === 'download' ? '刷机中' : '启动中', caller.holder, body, () => lab.download.build(name, who(caller.holder, body), { sdk: required(body.sdk, 'sdk'), method, variant: optional(body.variant) }), true) }
+      },
+    },
+    {
+      method: 'POST', path: '/api/flash/package', about: '用刷机包刷机：url（http/https，后端自己下载）或传上来的文件（sha256），flasher 选刷机工具', handle: async ({ body, caller }) => {
+        const name = board(body)
+        const input = { url: optional(body.url), sha256: optional(body.sha256), flasher: optional(body.flasher) }
+        return { output: await doing(name, 'boot', '刷机中', caller.holder, body, (signal, line) => lab.download.flashPackage(name, who(caller.holder, body), input, signal, line), true) }
       },
     },
 

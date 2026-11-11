@@ -1,13 +1,13 @@
 /**
  * Loading boards through their download port, by the board's backend: one of boardd's own firmware files (`stage`), a
- * RAM boot of files in order (`boot`), or a named build the backend fetches itself (`build`). Only `build` with the
- * `download` method flashes; the rest run from RAM.
+ * RAM boot of files in order (`boot`), a named build the backend fetches itself (`build`), or a flash package
+ * (`flashPackage`). Only `build` with the `download` method and `flashPackage` flash; the rest run from RAM.
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { basename, isAbsolute } from 'node:path'
 import type { Firmware } from '../shared/types.ts'
-import type { BootFile, DownloadCapability, LabConfig, BoardTarget } from './backend.ts'
+import type { BootFile, DownloadCapability, FlashPackage, LabConfig, BoardTarget } from './backend.ts'
 import { BoardError } from './errors.ts'
 import { readFirmware, verifiedFirmware } from './firmware.ts'
 import type { BoardLab } from './lab.ts'
@@ -141,24 +141,73 @@ export class Download {
     const known = this.lab.backends.builds(board)
     if (known.length && !known.includes(input.sdk)) throw new BoardError('invalid', `${board} 不能跑 SDK ${input.sdk}（可以：${known.join('、')}）`)
     const detail = `${input.sdk} ${method === 'download' ? '刷机' : '内存启动'}${input.variant ? ` ${input.variant}` : ''}`
-    const progress = (line: string) => {
-      this.progressLines.set(board, line.replace(/^\s*\[\s*[\d.]+s\]\s*/, '').slice(0, 200))
-      const asked = line.match(/ACTION NEEDED: (.*)$/)
-      if (asked) this.lab.relay.attend(board, asked[1]!)
-      else if (/: (confirmed by a person|detected )/.test(line)) this.lab.relay.attend(board, null)
-      this.lab.kernel.changed(board)
-    }
     try {
-      const output = await builds.boot(route.config, route.target, { sdk: input.sdk, method, variant: input.variant ?? null }, progress)
+      const output = await builds.boot(route.config, route.target, { sdk: input.sdk, method, variant: input.variant ?? null }, this.follow(board))
       this.lab.kernel.record(lease.holder, board, method === 'download' ? 'flash' : 'boot', detail, true)
       return output
     } catch (error) {
       this.lab.kernel.record(lease.holder, board, method === 'download' ? 'flash' : 'boot', detail, false, (error as Error).message)
       throw new BoardError('hardware', `${detail}没有成功：${(error as Error).message}`)
-    } finally {
-      this.progressLines.delete(board)
-      this.lab.relay.attend(board, null)
-      this.unknown(board)
+    } finally { this.ended(board) }
+  }
+
+  /**
+   * Flash a board with a package: an http(s) `url` the backend downloads itself, or a file sent to boardd (`sha256`,
+   * bare or as `sha256:<hex>`). `flasher` names the backend's tool to write it with. `line` gets each progress line.
+   */
+  async flashPackage(board: string, caller: Caller, input: { url?: string | null, sha256?: string | null, flasher?: string | null }, signal?: AbortSignal, line?: (text: string) => void): Promise<string> {
+    const lease = this.lab.locks.authorize(board, caller)
+    const route = this.lab.backends.route(board)
+    const builds = route.backend.builds
+    if (!builds?.flash) throw new BoardError('invalid', `${board} 所在的后端 ${route.id} 不能用刷机包刷机`)
+    if (!input.url === !input.sha256) throw new BoardError('invalid', '刷机包要给 http(s) 链接或传上来的文件，二选一')
+    if (input.flasher && !NAME.test(input.flasher)) throw new BoardError('invalid', `刷机工具名不合法：${input.flasher}`)
+    const flasher = input.flasher || null
+    let pkg: FlashPackage, what: string
+    if (input.url) {
+      const url = packageUrl(input.url)
+      // The log names the package without its query, which may carry a signed URL's token.
+      pkg = { url: url.href, flasher }; what = `${url.origin}${url.pathname}`
+    } else {
+      const file = this.lab.files.resolve(input.sha256!.replace(/^sha256:/, ''))
+      pkg = { path: file.path, sha256: file.sha256, flasher }; what = `${basename(file.path)} ${file.sha256.slice(0, 12)}`
+    }
+    const detail = `刷机包 ${what}${flasher ? `（${flasher}）` : ''}`
+    try {
+      const output = await builds.flash(route.config, route.target, pkg, this.follow(board, line), signal)
+      this.lab.kernel.record(lease.holder, board, 'flash', detail, true)
+      return output
+    } catch (error) {
+      this.lab.kernel.record(lease.holder, board, 'flash', detail, false, (error as Error).message)
+      throw new BoardError('hardware', `${detail} 没有刷成功：${(error as Error).message}`)
+    } finally { this.ended(board) }
+  }
+
+  /** The progress of a backend's build or flash: shown on the board, with what a person is asked to do. */
+  private follow(board: string, line?: (text: string) => void) {
+    return (text: string) => {
+      const shown = text.replace(/^\s*\[\s*[\d.]+s\]\s*/, '').slice(0, 200)
+      this.progressLines.set(board, shown)
+      line?.(shown)
+      const asked = text.match(/ACTION NEEDED: (.*)$/)
+      if (asked) this.lab.relay.attend(board, asked[1]!)
+      else if (/: (confirmed by a person|detected )/.test(text)) this.lab.relay.attend(board, null)
+      this.lab.kernel.changed(board)
     }
   }
+
+  private ended(board: string) {
+    this.progressLines.delete(board)
+    this.lab.relay.attend(board, null)
+    this.unknown(board)
+  }
+}
+
+/** A package's address: http or https, with no login in it (a backend's host downloads it; logs show it). */
+function packageUrl(text: string): URL {
+  let url: URL
+  try { url = new URL(text.trim()) } catch { throw new BoardError('invalid', `刷机包链接不对：${text}`) }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new BoardError('invalid', `刷机包链接要以 http:// 或 https:// 开头：${text}`)
+  if (url.username || url.password) throw new BoardError('invalid', '刷机包链接里不能带账号密码')
+  return url
 }

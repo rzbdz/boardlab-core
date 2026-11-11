@@ -201,6 +201,7 @@ export class Backends {
         mediaBoot: device?.mediaBoot ? { method: device.mediaBoot.method, available: device.mediaBoot.available, why: device.mediaBoot.why ?? null } : null,
         attention: this.lab.relay.attention(board.name) ?? device?.attention ?? null, canConfirm: !!instance.backend.relay.confirm,
         sdks: device?.sdks ?? [], progress: this.lab.download.progress(board.name),
+        canFlashPackage: !!instance.backend.builds?.flash && !device?.empty,
       }
     } else if (instance.backend.serial.online) {
       for (const chip of board.chips) {

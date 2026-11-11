@@ -189,8 +189,8 @@ describe('remote labs', () => {
     expect(lab.calls).toEqual(['verify admin ubuntu@lab.test'])
     const listed = svc.boards.list().filter(board => board.lab)
     expect(listed.map(board => [board.name, board.lab, board.source, board.soc, board.slot])).toEqual([
-      ['lab1-sub0-0', { id: 'lab1', device: 'sub0-0', online: true, ip: '10.0.0.10', heldBy: null, leaseError: null, attention: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null }, 'lab', 'k3', null],
-      ['lab1-sub0-1', { id: 'lab1', device: 'sub0-1', online: true, ip: '10.0.0.11', heldBy: null, leaseError: null, attention: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null }, 'lab', 'k3', null],
+      ['lab1-sub0-0', { id: 'lab1', device: 'sub0-0', online: true, ip: '10.0.0.10', heldBy: null, leaseError: null, attention: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false }, 'lab', 'k3', null],
+      ['lab1-sub0-1', { id: 'lab1', device: 'sub0-1', online: true, ip: '10.0.0.11', heldBy: null, leaseError: null, attention: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false }, 'lab', 'k3', null],
     ])
     expect(listed.map(board => board.chips.map(chip => [chip.serialPath, chip.downloadUsbPath, chip.online, chip.alias]))).toEqual([[['/dev/ttyS_0', '1-2.1', true, null]], [['/dev/ttyS_1', '1-2.2', false, null]]])
     // A board whose system has not reported its model yet keeps the one it had.
@@ -529,6 +529,64 @@ describe('remote labs', () => {
     expect(svc.boards.get('lab1-sub0-0').lab?.progress).toBeNull()
     expect(svc.boards.detail('lab1-sub0-0').actions[0]).toMatchObject({ kind: 'flash', detail: 'sdk-a 刷机', ok: true })
     await expect(svc.download.build('com260', { holder: 'user:alice' }, { sdk: 'sdk-a' })).rejects.toThrow()
+  })
+
+  it('flashes a lab board with a package from a link or a file sent to boardd, busy until it ends, under the lock', async () => {
+    class PackageLab extends FakeLab {
+      flashed: unknown[] = []
+      finish: Array<() => void> = []
+      builds = {
+        boot: async () => '',
+        flash: (_config: LabConfig, target: BoardTarget, pkg: unknown, progress: (line: string) => void, signal?: AbortSignal) => new Promise<string>(resolve => {
+          this.flashed.push({ device: target.device, pkg, signal: !!signal })
+          progress('[  12.0s] flash rootfs 40%')
+          this.finish.push(() => resolve('job flash-3 succeeded'))
+        }),
+      }
+    }
+    const lab = new PackageLab()
+    const { svc } = labService(lab)
+    await enable(svc)
+    const board = 'lab1-sub0-0'
+    expect(svc.boards.get(board).lab?.canFlashPackage).toBe(true)
+    expect(svc.boards.get('com260').lab).toBeNull()
+    const url = 'https://images.example/k3/pkg.zip?token=secret'
+    await expect(call(svc, '/api/flash/package', 'claude:s1', { board, url })).rejects.toThrow(/请先拿/)
+    const { token } = await svc.locks.lock(board, 'claude:s1', '刷机')
+    const claude = { holder: 'claude:s1', token }
+    for (const [input, refused] of [
+      [{}, /二选一/], [{ url, sha256: sha('x') }, /二选一/], [{ url: 'ftp://images.example/pkg.zip' }, /http:\/\/ 或 https:\/\//],
+      [{ url: 'not a link' }, /链接不对/], [{ url: 'http://me:pw@images.example/pkg.zip' }, /账号密码/], [{ url, flasher: 'x; reboot' }, /刷机工具名不合法/],
+      [{ sha256: sha('never sent') }, /先传上来/],
+    ] as const) await expect(svc.download.flashPackage(board, claude, input)).rejects.toThrow(refused)
+    expect(lab.flashed).toEqual([])
+
+    // A link: the backend downloads it; the board shows it is being flashed, with the progress, until it ends.
+    const flashing = call(svc, '/api/flash/package', 'claude:s1', { board, token, url, flasher: 'tool-a' })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    expect(lab.flashed).toEqual([{ device: 'sub0-0', pkg: { url, flasher: 'tool-a' }, signal: true }])
+    expect(svc.boards.get(board).busy).toMatchObject({ kind: 'boot', label: '刷机中', by: 'claude:s1', line: 'flash rootfs 40%' })
+    expect(svc.boards.get(board).lab?.progress).toBe('flash rootfs 40%')
+    await expect(call(svc, '/api/reset', 'claude:s1', { board, token })).rejects.toThrow(/正在刷机/)
+    lab.finish[0]!()
+    expect(await flashing).toEqual({ output: 'job flash-3 succeeded' })
+    expect(svc.boards.get(board).busy).toBeNull()
+    expect(svc.boards.get(board).lab?.progress).toBeNull()
+    expect(svc.boards.detail(board).actions[0]).toMatchObject({ kind: 'flash', detail: '刷机包 https://images.example/k3/pkg.zip（tool-a）', ok: true })
+
+    // A file sent to boardd: the backend gets its path here and its sha256.
+    const content = 'flash package'
+    await svc.files.put('claude:s1', sha(content), 'pkg.zip', (async function* () { yield Buffer.from(content) })())
+    const sent = call(svc, '/api/flash/package', 'claude:s1', { board, token, sha256: `sha256:${sha(content)}` })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    expect(lab.flashed[1]).toEqual({ device: 'sub0-0', pkg: { path: svc.files.get(sha(content))!.path, sha256: sha(content), flasher: null }, signal: true })
+    lab.finish[1]!()
+    await sent
+    expect(svc.boards.detail(board).actions[0]).toMatchObject({ kind: 'flash', detail: `刷机包 pkg.zip ${sha(content).slice(0, 12)}`, ok: true })
+
+    // A backend that cannot flash packages says so.
+    await svc.locks.lock('com260', 'user:alice', '刷机')
+    await expect(svc.download.flashPackage('com260', { holder: 'user:alice' }, { url })).rejects.toThrow(/不能用刷机包刷机/)
   })
 
   it('works a lab board\'s relays and buttons one by one, under its lock', async () => {

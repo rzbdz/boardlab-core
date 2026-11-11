@@ -226,9 +226,20 @@ export interface PortsCapability {
   bind(config: LabConfig, host: string, ports: { console: string, usb: string }, name: string): Promise<void>
 }
 
+/**
+ * A flash package to write to a board: an http(s) `url` the backend downloads itself, or a file on this machine (`path`,
+ * with its `sha256`). `flasher` names the backend's tool to write it with; null lets the backend choose.
+ */
+export interface FlashPackage { url?: string, path?: string, sha256?: string | null, flasher?: string | null }
+
 /** For a backend that knows named builds (SDKs): booting or flashing a board with one, fetching the build itself. */
 export interface BuildsCapability {
   boot(config: LabConfig, target: BoardTarget, build: { sdk: string, method: 'load' | 'download', variant: string | null }, progress: (line: string) => void): Promise<string>
+  /**
+   * For a backend that can flash a whole package (an image archive its flasher writes to the board's storage): write
+   * `pkg` to the board, reporting progress lines (some with `NN%`). `signal` aborts it, for a backend that can stop.
+   */
+  flash?(config: LabConfig, target: BoardTarget, pkg: FlashPackage, progress: (line: string) => void, signal?: AbortSignal): Promise<string>
 }
 
 /** For a backend that can tell when things change. */
