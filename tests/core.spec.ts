@@ -605,6 +605,35 @@ describe('remote labs', () => {
     expect(svc.history().actions.find(action => action.kind === 'lab-rebuild')).toMatchObject({ detail: 'lab1 重新发现 h1', ok: true })
   })
 
+  it('shows a slot as being discovered while it is, and starts nothing else on it meanwhile', async () => {
+    let finish!: () => void, progress!: (line: string) => void
+    class SlotLab extends FakeLab {
+      constructor() {
+        super()
+        this.listed = [
+          { name: 'k3-a', slot: 'h1/s1', model: 'k3', online: true, serialPort: 'h1:s1', serialConnected: true, downloadUsbPath: null, ip: null },
+          { name: 'h1-s2', slot: 'h1/s2', empty: true, model: null, online: false, serialPort: 'h1:s2', serialConnected: true, downloadUsbPath: null, ip: null },
+        ]
+      }
+      discovery = {
+        discover: (_config: LabConfig, _options: unknown, report: (line: string) => void) => { progress = report; return new Promise<{ message: string, found: [] }>(resolve => { finish = () => resolve({ message: '没找到', found: [] }) }) },
+        register: async () => {},
+      }
+    }
+    const { svc } = labService(new SlotLab())
+    await enable(svc, { devices: '' })
+    const running = svc.backends.discover('user:alice', 'lab1', true, { slots: ['h1/s2'] })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(svc.boards.get('lab1-h1-s2').busy).toMatchObject({ kind: 'discover', label: '发现中', by: 'user:alice' })
+    expect(svc.boards.get('lab1-k3-a').busy).toBeNull()                    // only the slot asked for
+    progress('round 1: pulsing P13')
+    expect(svc.boards.get('lab1-h1-s2').busy?.line).toBe('round 1: pulsing P13')
+    await expect(svc.kernel.doing(['lab1-h1-s2'], 'reset', '复位中', 'user:bob', async () => {})).rejects.toThrow(/lab1-h1-s2 正在发现（user:alice/)
+    finish()
+    await running
+    expect(svc.boards.get('lab1-h1-s2').busy).toBeNull()
+  })
+
   it('refuses to rediscover with a backend that can only rebuild a whole host', async () => {
     class WholeLab extends FakeLab { discovery = { discover: async () => ({ message: '', found: [] }), register: async () => {}, rebuild: async () => ({ message: '', found: [] }) } }
     const { svc } = labService(new WholeLab())

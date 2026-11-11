@@ -4,7 +4,8 @@
  */
 import { EventEmitter } from 'node:events'
 import type { DatabaseSync } from 'node:sqlite'
-import type { BoardEvent } from '../shared/types.ts'
+import type { BoardEvent, Busy } from '../shared/types.ts'
+import { BoardError } from './errors.ts'
 import { addColumn } from './db.ts'
 
 export interface KernelOptions {
@@ -31,6 +32,31 @@ export class Kernel {
     this.now = options.now ?? Date.now
     this.sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)))
     this.events.setMaxListeners(100)
+  }
+
+  /** What is being done to each board right now (`doing`). */
+  readonly busy = new Map<string, Busy>()
+
+  /**
+   * Do `run` to `boards`, shown as busy on each of them while it runs (with its progress lines, through the `line`
+   * it is given). A board already busy is refused, so two operations never overlap on one board.
+   */
+  async doing<T>(boards: string[], kind: string, label: string, by: string, run: (line: (text: string) => void) => Promise<T>): Promise<T> {
+    const taken = boards.find(board => this.busy.has(board))
+    if (taken) {
+      const now = this.busy.get(taken)!
+      throw new BoardError('conflict', `${taken} 正在${now.label.replace(/中$/, '')}（${now.by}，${now.since.slice(11, 19)} 开始），等它完成`)
+    }
+    const entry: Busy = { kind, label, by, since: this.iso(), line: null }
+    for (const board of boards) this.busy.set(board, entry)
+    const changed = () => { if (boards.length === 1) this.changed(boards[0]!); else this.changed(null) }
+    changed()
+    try {
+      return await run(text => { entry.line = text; changed() })
+    } finally {
+      for (const board of boards) if (this.busy.get(board) === entry) this.busy.delete(board)
+      changed()
+    }
   }
 
   /** Make a module's tables: `sql` creates them if missing, `columns` adds what tables made by older versions lack. */

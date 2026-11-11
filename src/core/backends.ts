@@ -401,7 +401,11 @@ export class Backends {
     const badSlot = (options.slots ?? []).find(slot => !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}\/s\d+$/.test(slot))
     if (badSlot) throw new BoardError('invalid', `槽位要写成 <主机>/s<N>：${badSlot}`)
     const discovery = backend.discovery
-    return this.finding(actor, id, 'lab-discover',
+    // The slots it looks in show as being discovered: those asked for, else the empty ones (on the host asked for).
+    const on = this.onLab(id)
+    const targets = options.slots?.length ? on.filter(([, device]) => options.slots!.includes(device.slot ?? '')).map(([name]) => name)
+      : on.filter(([, device]) => device.empty && (!options.host || device.slot?.startsWith(`${options.host}/`))).map(([name]) => name)
+    return this.finding(actor, id, 'lab-discover', targets, '发现中',
       options.human ? `开始人工发现${options.host ? `（${options.host}）` : ''}：按提示逐块让未登记的板子进下载模式` : '开始发现板子',
       `${id}${options.human ? ` 人工${options.host ? ` ${options.host}` : ''}` : ''}${options.slots?.length ? ` ${options.slots.join(',')}` : ''}`,
       (progress, registered) => discovery.discover(this.config(id), { human: !!options.human, host: options.host ?? null, slots: options.slots ?? [] }, progress, registered))
@@ -423,11 +427,15 @@ export class Backends {
     if (!host || !HOST.test(host)) throw new BoardError('invalid', `主机名不合法：${host || '（空）'}`)
     if (!keepInUse) this.assertNoneHeld(id, name => { const slot = this.devices.get(name)?.slot; return !!slot && !slot.startsWith(`${host}/`) })
     const [start, detail] = keepInUse ? [`开始重新发现 ${host}：保留在用的板子，只重做变动的`, `${id} 重新发现 ${host}`] : [`开始重建 ${host}：按现在的接线重新发现它的板子`, `${id} 重建 ${host}`]
-    const result = await this.finding(actor, id, 'lab-rebuild', start, detail,
+    const targets = this.onLab(id).filter(([name, device]) => device.slot?.startsWith(`${host}/`) && !(keepInUse && (this.lab.locks.held(name) || device.heldBy))).map(([name]) => name)
+    const result = await this.finding(actor, id, 'lab-rebuild', targets, keepInUse ? '重新发现中' : '重建中', start, detail,
       (progress, registered) => rebuild(this.config(id), host, progress, registered, { keepInUse }))
     await this.sync(id, actor).catch(() => {})
     return result
   }
+
+  /** The boards of instance `id` here, with what its backend last said of each. */
+  private onLab(id: string) { return [...this.devices].filter(([name]) => name.startsWith(`${id}-`)) }
 
   /** Nobody holds a board of instance `id` that `ignore` does not exempt, here or in the backend. */
   private assertNoneHeld(id: string, ignore: (board: string) => boolean) {
@@ -439,9 +447,10 @@ export class Backends {
 
   /**
    * Run a backend's search for boards (a discovery or a rebuild): one at a time per instance, its progress on the page,
-   * each board it registers listed at once, and what it could not register left as proposals for a person.
+   * each board it registers listed at once, and what it could not register left as proposals for a person. The boards
+   * and slots it may touch (`targets`) show it as their state while it runs, and nothing else starts on them.
    */
-  private async finding(actor: string, id: string, kind: string, start: string, detail: string,
+  private async finding(actor: string, id: string, kind: string, targets: string[], label: string, start: string, detail: string,
     search: (progress: (line: string) => void, registered: (device: string) => void) => Promise<{ message: string, found: LabFinding[] }>) {
     if (this.discoveries.get(id)?.running) throw new BoardError('conflict', `实验室 ${id} 已经在发现板子`)
     const report = (line: string, running = true) => { this.discoveries.set(id, { running, line, at: this.lab.kernel.iso() }); this.lab.kernel.changed(null) }
@@ -450,8 +459,10 @@ export class Backends {
     const registered: string[] = []
     // Each board the backend registers as it goes is listed at once, while the search goes on.
     const onRegistered = (device: string) => { registered.push(device); void this.sync(id, actor).catch(() => {}) }
-    try { result = await search(line => report(line), onRegistered) }
+    const run = (line: (text: string) => void) => search(text => { report(text); line(text) }, onRegistered)
+    try { result = targets.length ? await this.lab.kernel.doing(targets, kind === 'lab-discover' ? 'discover' : 'rebuild', label, actor, run) : await run(() => {}) }
     catch (error) {
+      if (error instanceof BoardError && error.code === 'conflict') { report(`没开始：${error.message}`, false); throw error }
       report(`失败：${(error as Error).message}`, false)
       this.lab.kernel.record(actor, null, kind, detail, false, (error as Error).message)
       throw new BoardError('hardware', (error as Error).message)

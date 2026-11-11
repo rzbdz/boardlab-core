@@ -11,7 +11,8 @@ function gateHint(gateToken: string | null) {
 
 function leaseText(board: Board) {
   const queue = board.waiters.length ? `；排队：${board.waiters.map((waiter, index) => `${index + 1}. ${waiter.holder}`).join(' ')}` : ''
-  return board.lease ? `${board.lease.holder} 使用中（${board.lease.purpose}）${queue}` : `空闲${queue}`
+  const busy = board.busy ? `；${board.busy.label}（${board.busy.by}）${board.busy.line ? `：${board.busy.line}` : ''}` : ''
+  return (board.lease ? `${board.lease.holder} 使用中（${board.lease.purpose}）` : '空闲') + busy + queue
 }
 
 export function printBoards(boards: Board[]) {

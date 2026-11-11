@@ -144,7 +144,10 @@ export class Locks {
       if (result.lease) {
         // A follower that must agree (a backend leasing the board too) refuses the lock by failing.
         this.followers.forEach((follower, index) => { if (!follower.binding) void this.follow(index, target) })
-        const refusals = await Promise.all(this.followers.map((follower, index) => follower.binding ? this.follow(index, target) : null))
+        // Until the lab agrees the board shows as being locked, and nothing that needs the lab's lease starts.
+        const agree = () => Promise.all(this.followers.map((follower, index) => follower.binding ? this.follow(index, target) : null))
+        const refusals = this.followers.some(follower => follower.binding) && !this.k.busy.has(target)
+          ? await this.k.doing([target], 'lock', '拿锁中', holder, agree) : await agree()
         const refused = refusals.find(Boolean)
         if (refused && this.held(target)?.id === result.lease.id) {
           this.end(result.lease, 'released', `实验室拒绝：${refused}`)

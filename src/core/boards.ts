@@ -68,7 +68,7 @@ export class Boards {
         baseMac: str(row.base_mac), soc: str(row.soc), notes: str(row.notes), source: row.source as Board['source'],
         mode: row.mode as BoardMode, lastSeenAt: str(row.last_seen_at), backend: record.backend,
         chips: chips.filter(chip => chip.board === name).map(chip => ({ ...chip })), lease: leases.get(name) ?? null,
-        waiters: waiters.filter(waiter => waiter.board === name), lab: null,
+        waiters: waiters.filter(waiter => waiter.board === name), busy: this.lab.kernel.busy.get(name) ?? null, lab: null,
       }
       for (const view of this.views) view(board, record)
       return board

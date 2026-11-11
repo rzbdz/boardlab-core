@@ -17,6 +17,20 @@ export interface Lease {
 
 export interface Waiter { id: string, board: string, holder: string, purpose: string, queuedAt: string }
 
+/**
+ * What is being done to a board right now (reset, download mode, boot, discovery, …), from when boardd starts it
+ * until it ends: every page and client sees the same in-between state, and another operation on the board waits.
+ */
+export interface Busy {
+  kind: string
+  /** What a person reads: `复位中`, `发现中`. */
+  label: string
+  by: string
+  since: string
+  /** The latest progress line, while there is one. */
+  line: string | null
+}
+
 export interface Chip {
   board: string
   die: string
@@ -45,6 +59,8 @@ export interface Board {
   chips: Chip[]
   lease: Lease | null
   waiters: Waiter[]
+  /** What boardd is doing to it right now. */
+  busy: Busy | null
   lastSeenAt: string | null
   /** The backend instance the board is on: `local` (this machine), or a lab's id. */
   backend: string
