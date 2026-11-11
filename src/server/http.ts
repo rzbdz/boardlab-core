@@ -217,7 +217,8 @@ export async function serve(lab: BoardLab, options: ServeOptions): Promise<{ htt
 
   const http: Server[] = []
   for (const host of hosts) {
-    const server = createServer(handle)
+    // A large file (a flash package) may take longer to send than Node's five-minute request limit.
+    const server = createServer({ requestTimeout: 0 }, handle)
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(options.port, host, resolve) })
     http.push(server)
   }

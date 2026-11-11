@@ -1,6 +1,7 @@
 /**
- * Files remote CLIs send to boardd (boot images, files for SDK work), kept under their sha256: the content is checked
- * against it as it arrives, a file already here is not stored twice, and files unused for three days are removed.
+ * Files remote CLIs and the page send to boardd (boot images, flash packages, files for SDK work), kept under their
+ * sha256: the content is checked against it as it arrives, a file already here is not stored twice, and files unused for
+ * three days are removed.
  */
 import { createHash, randomUUID } from 'node:crypto'
 import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from 'node:fs'
@@ -34,7 +35,7 @@ export class Files {
     return file
   }
 
-  async put(actor: string, sha256: string, name: string, body: AsyncIterable<Buffer>, limit = 1024 * 1024 * 1024): Promise<{ sha256: string, size: number, stored: boolean }> {
+  async put(actor: string, sha256: string, name: string, body: AsyncIterable<Buffer>, limit = 16 * 1024 * 1024 * 1024): Promise<{ sha256: string, size: number, stored: boolean }> {
     if (!this.dir) throw new BoardError('invalid', '这个 boardd 不接收文件')
     if (!SHA256.test(sha256)) throw new BoardError('invalid', `sha256 不对：${sha256}`)
     const safe = basename(name || 'file').replace(/[^A-Za-z0-9._+-]/g, '_').replace(/^\.+/, '_').slice(0, 120) || 'file'
