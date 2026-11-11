@@ -25,21 +25,32 @@ export class Relay {
     this.lab.kernel.changed(board)
   }
 
-  reset(target: string, caller: Caller) { return this.control(target, caller, 'reset') }
-  fastboot(target: string, caller: Caller) { return this.control(target, caller, 'fastboot') }
+  /**
+   * Ask a person on behalf of one run until `done`. Once the lock it runs under ends (`signal`) the ask is withdrawn and
+   * the run asks nothing more, so it never touches what the next holder's run asks.
+   */
+  asking(board: string, signal?: AbortSignal) {
+    const live = () => !signal?.aborted
+    signal?.addEventListener('abort', () => this.attend(board, null), { once: true })
+    return { notice: (message: string | null) => { if (live()) this.attend(board, message) }, done: () => { if (live()) this.attend(board, null) } }
+  }
 
-  async control(target: string, caller: Caller, kind: 'reset' | 'fastboot') {
+  /** `signal` stops a backend still waiting (for a person, say): the lock it runs under ended. */
+  reset(target: string, caller: Caller, signal?: AbortSignal) { return this.control(target, caller, 'reset', signal) }
+  fastboot(target: string, caller: Caller, signal?: AbortSignal) { return this.control(target, caller, 'fastboot', signal) }
+
+  async control(target: string, caller: Caller, kind: 'reset' | 'fastboot', signal?: AbortSignal) {
     const lease = this.lab.locks.authorize(target, caller)
     const route = this.lab.backends.route(target)
     const action = kind === 'reset' ? 'reset' : 'download'
     const detail = route.backend.relay.describe?.(route.target, action) ?? `${route.id} ${route.target.device}`
-    const notice = (message: string | null) => this.attend(target, message)
+    const { notice, done } = this.asking(target, signal)
     let message: string | null = null
     try {
-      if (kind === 'reset') message = (await route.backend.relay.reset(route.config, route.target, notice)) ?? null
+      if (kind === 'reset') message = (await route.backend.relay.reset(route.config, route.target, notice, signal)) ?? null
       else {
         // A backend that tells the download port only once it appears hands it back here.
-        const port = await route.backend.relay.enterDownload(route.config, route.target, notice)
+        const port = await route.backend.relay.enterDownload(route.config, route.target, notice, signal)
         if (port && route.isBoard) {
           this.lab.boards.upsertChip(target, route.target.die, { download_usb_path: port })
           message = `下载口 ${port}`
@@ -49,7 +60,7 @@ export class Relay {
       this.lab.kernel.record(lease.holder, target, kind, detail, false, (error as Error).message)
       throw error instanceof BoardError ? error : new BoardError('hardware', (error as Error).message)
     } finally {
-      this.attend(target, null)
+      done()
     }
     this.lab.kernel.record(lease.holder, target, kind, detail, true, message)
     if (route.isBoard) this.lab.boards.setMode(target, kind === 'reset' ? 'normal' : 'fastboot')

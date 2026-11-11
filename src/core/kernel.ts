@@ -5,7 +5,7 @@
 import { EventEmitter } from 'node:events'
 import type { DatabaseSync } from 'node:sqlite'
 import type { BoardEvent, Busy } from '../shared/types.ts'
-import { BusyError } from './errors.ts'
+import { BoardError, BusyError } from './errors.ts'
 import { addColumn } from './db.ts'
 
 export interface KernelOptions {
@@ -36,12 +36,17 @@ export class Kernel {
 
   /** What is being done to each board right now (`doing`). */
   readonly busy = new Map<string, Busy>()
+  /** The lease each of them runs under, if any, and how to stop it. */
+  private readonly running = new Map<Busy, { lease: string | null, stop: AbortController }>()
 
   /**
    * Do `run` to `boards` (or to a lab, as `lab:<id>`), shown as busy on each of them while it runs (with its progress lines, through the `line`
-   * it is given). A board already busy is refused, so two operations never overlap on one board.
+   * it is given). A board already busy is refused, so two operations never overlap on one board. One done under a lock
+   * (`lease`) holds the boards only as long as the lock: once it is released or stolen (`leaseEnded`) the boards are
+   * free for the next holder and `run`'s signal aborts.
    */
-  async doing<T>(boards: string[], kind: string, label: string, by: string, run: (line: (text: string) => void) => Promise<T>): Promise<T> {
+  async doing<T>(boards: string[], kind: string, label: string, by: string, run: (line: (text: string) => void, signal: AbortSignal) => Promise<T>,
+    options: { lease?: string | null } = {}): Promise<T> {
     const taken = boards.find(board => this.busy.has(board))
     if (taken) {
       const now = this.busy.get(taken)!
@@ -49,13 +54,28 @@ export class Kernel {
     }
     const entry: Busy = { kind, label, by, since: this.iso(), line: null }
     for (const board of boards) this.busy.set(board, entry)
+    const stop = new AbortController()
+    this.running.set(entry, { lease: options.lease ?? null, stop })
     const changed = () => { if (boards.length === 1) this.changed(boards[0]!); else this.changed(null) }
     changed()
     try {
-      return await run(text => { entry.line = text; changed() })
+      return await run(text => { entry.line = text; changed() }, stop.signal)
     } finally {
+      this.running.delete(entry)
       for (const board of boards) if (this.busy.get(board) === entry) this.busy.delete(board)
       changed()
+    }
+  }
+
+  /** A lock ended: what ran under it no longer keeps its boards busy, and is told to stop. */
+  leaseEnded(lease: string) {
+    for (const [entry, run] of this.running) {
+      if (run.lease !== lease) continue
+      this.running.delete(entry)
+      const boards = [...this.busy].filter(([, busy]) => busy === entry).map(([board]) => board)
+      for (const board of boards) this.busy.delete(board)
+      run.stop.abort(new BoardError('locked', `${boards.join('、') || '板子'}的锁已经释放或被抢走，${entry.label.replace(/中$/, '')}停下了`))
+      if (boards.length === 1) this.changed(boards[0]!); else this.changed(null)
     }
   }
 

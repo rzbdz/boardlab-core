@@ -834,6 +834,49 @@ describe('busy boards', () => {
     await expect(call(svc, '/api/boards/remove', 'user:bob', { name: 'com260' })).rejects.toMatchObject({ code: 'locked' })
     expect(seen).toEqual([])
   })
+
+  it('last only as long as the lock: once it is stolen the next holder starts at once, and the old run is told to stop', async () => {
+    class WaitingLab extends FakeLab {
+      waiting: Array<{ signal?: AbortSignal, done: () => void }> = []
+      constructor() {
+        super()
+        // A reset waiting for a person, which goes on until it is let go.
+        this.relay.reset = (_config, _target, notice, signal) => new Promise<void>(done => { notice?.('press RESET'); this.waiting.push({ signal, done }) })
+      }
+    }
+    const lab = new WaitingLab()
+    const { svc } = labService(lab)
+    await enable(svc)
+    const board = 'lab1-sub0-0'
+    const { token } = await svc.locks.lock(board, 'claude:s1', '调试')
+    const first = call(svc, '/api/reset', 'claude:s1', { board, token })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    expect(svc.boards.get(board).busy).toMatchObject({ kind: 'reset', by: 'claude:s1' })
+    expect(svc.boards.get(board).lab?.attention).toBe('press RESET')
+    const stolen = svc.locks.steal(board, 'user:bob', '要用')
+    expect(svc.boards.get(board).busy).toBeNull()
+    expect(svc.boards.get(board).lab?.attention).toBeNull()               // nobody is asked for the old reset any more
+    expect(lab.waiting[0]!.signal?.aborted).toBe(true)
+    const second = call(svc, '/api/reset', 'user:bob', { board, token: stolen.token })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    expect(svc.boards.get(board).busy).toMatchObject({ kind: 'reset', by: 'user:bob' })
+    // The old run ending late leaves the new one shown, and what it asks.
+    lab.waiting[0]!.done()
+    await first
+    expect(svc.boards.get(board).busy).toMatchObject({ kind: 'reset', by: 'user:bob' })
+    expect(svc.boards.get(board).lab?.attention).toBe('press RESET')
+    lab.waiting[1]!.done()
+    await second
+    expect(svc.boards.get(board).busy).toBeNull()
+    // A lock given back frees the board the same way.
+    const third = call(svc, '/api/reset', 'user:bob', { board, token: stolen.token })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    svc.locks.unlock(board, { holder: 'user:bob', token: stolen.token })
+    expect(svc.boards.get(board).busy).toBeNull()
+    expect(lab.waiting[2]!.signal?.aborted).toBe(true)
+    lab.waiting[2]!.done()
+    await third
+  })
 })
 
 const on = (device: string): BoardTarget => ({ board: `lab1-${device}`, device, lease: null, die: 'die0', usbPath: null, port: null, gate: null })

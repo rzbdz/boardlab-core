@@ -147,7 +147,7 @@ export class Locks {
         // Until the lab agrees the board shows as being locked, and nothing that needs the lab's lease starts.
         const agree = () => Promise.all(this.followers.map((follower, index) => follower.binding ? this.follow(index, target) : null))
         const refusals = this.followers.some(follower => follower.binding) && !this.k.busy.has(target)
-          ? await this.k.doing([target], 'lock', '拿锁中', holder, agree) : await agree()
+          ? await this.k.doing([target], 'lock', '拿锁中', holder, agree, { lease: result.lease.id }) : await agree()
         const refused = refusals.find(Boolean)
         if (refused && this.held(target)?.id === result.lease.id) {
           this.end(result.lease, 'released', `实验室拒绝：${refused}`)
@@ -236,6 +236,8 @@ export class Locks {
 
   end(lease: Pick<Lease, 'id'>, status: Lease['status'], reason: string) {
     this.k.db.prepare('UPDATE leases SET status=?, ended_at=?, end_reason=? WHERE id=?').run(status, this.k.iso(), reason, lease.id)
+    // What the holder was doing on the board stops holding it up for whoever comes next.
+    this.k.leaseEnded(lease.id)
     const row = this.k.db.prepare('SELECT board FROM leases WHERE id=?').get(lease.id)
     if (row) queueMicrotask(() => this.endings.forEach(listener => listener(String(row.board))))
   }

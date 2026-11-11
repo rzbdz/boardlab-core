@@ -298,7 +298,7 @@ export class Backends {
    * record; a new name comes back at the next listing as the same slot's board, which keeps its lock. Returns the
    * board's name afterwards.
    */
-  async refresh(board: string, caller: Caller, options: { name?: string | null, rename?: boolean } = {}): Promise<{ board: string, message: string }> {
+  async refresh(board: string, caller: Caller, options: { name?: string | null, rename?: boolean } = {}, signal?: AbortSignal): Promise<{ board: string, message: string }> {
     const lease = this.lab.locks.authorize(board, caller)
     const route = this.route(board)
     const refresh = route.backend.inventory?.refresh
@@ -307,15 +307,16 @@ export class Backends {
     if (options.name && !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/.test(options.name)) throw new BoardError('invalid', `板名不合法：${options.name}`)
     const detail = options.name ? `改名为 ${options.name}` : options.rename ? '按读到的型号改名' : null
     let out: { device: string, message: string }
+    const { notice, done } = this.lab.relay.asking(board, signal)
     try {
       out = await refresh(route.config, route.target, options, line => {
         const asked = line.match(/ACTION NEEDED: (.*)$/)
-        if (asked) this.lab.relay.attend(board, asked[1]!)
-      })
+        if (asked) notice(asked[1]!)
+      }, signal)
     } catch (error) {
       this.lab.kernel.record(lease.holder, board, 'refresh', detail, false, (error as Error).message)
       throw new BoardError('hardware', (error as Error).message)
-    } finally { this.lab.relay.attend(board, null) }
+    } finally { done() }
     await this.sync(route.id).catch(() => {})
     const now = str(this.lab.kernel.db.prepare('SELECT name FROM boards WHERE lab=? AND lab_device=?').get(route.id, out.device)?.name) ?? board
     this.lab.kernel.record(lease.holder, now, 'refresh', detail, true, out.message)

@@ -96,19 +96,22 @@ export interface LabHolder { holder: string, purpose: string, token: string | nu
 /** `notice` gets what a person is asked to do while a board reset by hand waits for them, and null once it is done. */
 export type Notice = (message: string | null) => void
 
-/** The relay: restarting boards. */
+/**
+ * The relay: restarting boards. `signal` aborts once the lock the restart runs under is released or stolen: a backend
+ * still waiting (for a person, say) should give up then.
+ */
 export interface RelayCapability {
   /**
    * Check that the board can do it and say what will be pressed, for the action log; throws when it cannot. Without it
    * the log names the backend and its device.
    */
   describe?(target: BoardTarget, action: 'reset' | 'download'): string
-  reset(config: LabConfig, target: BoardTarget, notice?: Notice): Promise<string | void>
+  reset(config: LabConfig, target: BoardTarget, notice?: Notice, signal?: AbortSignal): Promise<string | void>
   /**
    * Restart the board into its boot ROM's download mode. A backend that only learns which download port is the board's
    * by watching it appear returns that port.
    */
-  enterDownload(config: LabConfig, target: BoardTarget, notice?: Notice): Promise<string | void>
+  enterDownload(config: LabConfig, target: BoardTarget, notice?: Notice, signal?: AbortSignal): Promise<string | void>
   /** Tell the backend that the person did what a waiting reset asked of them. */
   confirm?(config: LabConfig, target: BoardTarget, note: string): Promise<string>
 }
@@ -168,9 +171,10 @@ export interface InventoryCapability {
   devices(config: LabConfig): Promise<LabDevice[]>
   /**
    * Read the board in a slot again after someone swapped it: identify it and update the backend's record of it, under
-   * its lease. `name` renames it, `rename` names it after what was read. Returns its name afterwards.
+   * its lease. `name` renames it, `rename` names it after what was read. Returns its name afterwards. `signal` aborts
+   * once that lease is released or stolen.
    */
-  refresh?(config: LabConfig, target: BoardTarget, options: { name?: string | null, rename?: boolean }, progress: (line: string) => void): Promise<{ device: string, message: string }>
+  refresh?(config: LabConfig, target: BoardTarget, options: { name?: string | null, rename?: boolean }, progress: (line: string) => void, signal?: AbortSignal): Promise<{ device: string, message: string }>
   /** For a backend that keeps a board registry: forget a board there. boardd only asks while nobody holds it. */
   remove?(config: LabConfig, device: string): Promise<void>
 }
