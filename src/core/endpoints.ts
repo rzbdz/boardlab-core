@@ -12,8 +12,12 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
   // A board by its name or its slot (`<host>/s3`, `slot:5`).
   const board = (body: any) => lab.boards.resolve(required(body.board, 'board'))
   const named = (value: string | null, what = 'board') => lab.boards.resolve(required(value, what))
-  // An operation on one board, shown on it while it runs.
-  const doing = <T>(name: string, kind: string, label: string, holder: string, run: () => Promise<T>) => lab.kernel.doing([name], kind, label, holder, run)
+  // An operation on one board under its lock, shown on it while it runs. Only the lock's holder gets that far, so
+  // someone refused never marks the board busy for the holder meanwhile.
+  const doing = <T>(name: string, kind: string, label: string, holder: string, body: any, run: () => Promise<T>) => {
+    lab.locks.authorize(name, who(holder, body))
+    return lab.kernel.doing([name], kind, label, holder, run)
+  }
   return [
     { method: 'GET', path: '/api', about: '列出所有接口和模块', handle: () => ({ endpoints: lab.api.list().map(item => `${item.method} ${item.path}`), described: lab.api.list(), modules: lab.modules() }) },
     { method: 'GET', path: '/api/modules', about: '装了哪些模块', handle: () => lab.modules() },
@@ -37,8 +41,8 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     { method: 'POST', path: '/api/steal', about: '抢锁（只有人可以，要写原因）', handle: ({ body, caller }) => lab.locks.steal(board(body), caller.holder, String(body.reason ?? '')) },
 
     // ---------- relay ----------
-    { method: 'POST', path: '/api/reset', about: '复位', handle: async ({ body, caller }) => { const name = board(body); await doing(name, 'reset', '复位中', caller.holder, () => lab.relay.reset(name, who(caller.holder, body))) } },
-    { method: 'POST', path: '/api/fastboot', about: '进下载模式', handle: async ({ body, caller }) => { const name = board(body); await doing(name, 'fastboot', '进下载模式中', caller.holder, () => lab.relay.fastboot(name, who(caller.holder, body))) } },
+    { method: 'POST', path: '/api/reset', about: '复位', handle: async ({ body, caller }) => { const name = board(body); await doing(name, 'reset', '复位中', caller.holder, body, () => lab.relay.reset(name, who(caller.holder, body))) } },
+    { method: 'POST', path: '/api/fastboot', about: '进下载模式', handle: async ({ body, caller }) => { const name = board(body); await doing(name, 'fastboot', '进下载模式中', caller.holder, body, () => lab.relay.fastboot(name, who(caller.holder, body))) } },
     { method: 'GET', path: '/api/relay', about: '板子的继电器和按钮（后端能单独控制时）', handle: ({ query }) => lab.relay.channels(named(query.get('board'))) },
     {
       method: 'POST', path: '/api/relay', about: '控制板子的一个继电器或按钮：on、off、toggle、pulse、press、release、click（要拿锁）',
@@ -80,17 +84,17 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     { method: 'POST', path: '/api/send', about: '往串口发一行，可以等某个输出', handle: ({ body, caller }) => lab.consoles.send(board(body), who(caller.holder, body), { die: body.die, text: String(body.text ?? ''), newline: body.newline, wait: body.wait, timeoutMs: body.timeoutMs }) },
 
     // ---------- download ----------
-    { method: 'POST', path: '/api/stage', about: '往内存加载 boardd 自带的固件', handle: async ({ body, caller }) => { const name = board(body); return { output: await doing(name, 'stage', '加载固件中', caller.holder, () => lab.download.stage(name, who(caller.holder, body), { die: body.die, firmware: required(body.firmware, 'firmware') })) } } },
+    { method: 'POST', path: '/api/stage', about: '往内存加载 boardd 自带的固件', handle: async ({ body, caller }) => { const name = board(body); return { output: await doing(name, 'stage', '加载固件中', caller.holder, body, () => lab.download.stage(name, who(caller.holder, body), { die: body.die, firmware: required(body.firmware, 'firmware') })) } } },
     {
       method: 'POST', path: '/api/boot', about: '按顺序加载文件，从内存启动', handle: async ({ body, caller }) => {
         if (!Array.isArray(body.files) || body.files.some((file: unknown) => typeof file !== 'string')) throw new BoardError('invalid', 'files 要是文件路径数组')
         const name = board(body)
-        return { output: await doing(name, 'boot', '启动中', caller.holder, () => lab.download.boot(name, who(caller.holder, body), { die: body.die, files: body.files })) }
+        return { output: await doing(name, 'boot', '启动中', caller.holder, body, () => lab.download.boot(name, who(caller.holder, body), { die: body.die, files: body.files })) }
       },
     },
     { method: 'POST', path: '/api/boot/sdk', about: '用 SDK 的构建启动（load）或刷机（download）', handle: async ({ body, caller }) => {
         const name = board(body), method = body.method === 'download' ? 'download' : 'load'
-        return { output: await doing(name, 'boot', method === 'download' ? '刷机中' : '启动中', caller.holder, () => lab.download.build(name, who(caller.holder, body), { sdk: required(body.sdk, 'sdk'), method, variant: optional(body.variant) })) }
+        return { output: await doing(name, 'boot', method === 'download' ? '刷机中' : '启动中', caller.holder, body, () => lab.download.build(name, who(caller.holder, body), { sdk: required(body.sdk, 'sdk'), method, variant: optional(body.variant) })) }
       },
     },
 
@@ -109,9 +113,9 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
 
     // ---------- inventory ----------
     { method: 'POST', path: '/api/boards/add', about: '手工登记板子', handle: ({ body, caller }) => { lab.boards.add(caller.holder, body) } },
-    { method: 'POST', path: '/api/boards/remove', about: '移除板子', handle: async ({ body, caller }) => { const name = named(body.name, 'name'); await doing(name, 'remove', '移除中', caller.holder, () => lab.boards.remove(caller.holder, name)) } },
+    { method: 'POST', path: '/api/boards/remove', about: '移除板子', handle: async ({ body, caller }) => { const name = named(body.name, 'name'); await lab.kernel.doing([lab.boards.free(name)], 'remove', '移除中', caller.holder, () => lab.boards.remove(caller.holder, name)) } },
     { method: 'POST', path: '/api/board', about: '改板子的备注或槽位', handle: ({ body, caller }) => { lab.boards.update(caller.holder, named(body.name, 'name'), { notes: body.notes, slot: body.slot }) } },
-    { method: 'POST', path: '/api/boards/refresh', about: '槽位里换了板子以后重新读取它（要拿锁；name 改名，rename 按读到的改名）', handle: ({ body, caller }) => { const name = board(body); return doing(name, 'refresh', '读取中', caller.holder, () => lab.backends.refresh(name, who(caller.holder, body), { name: optional(body.name), rename: body.rename === true })) } },
+    { method: 'POST', path: '/api/boards/refresh', about: '槽位里换了板子以后重新读取它（要拿锁；name 改名，rename 按读到的改名）', handle: ({ body, caller }) => { const name = board(body); return doing(name, 'refresh', '读取中', caller.holder, body, () => lab.backends.refresh(name, who(caller.holder, body), { name: optional(body.name), rename: body.rename === true })) } },
     { method: 'POST', path: '/api/proposals', about: '应用或拒绝改动建议', handle: async ({ body, caller }) => { await lab.proposals.resolve(caller.holder, body.ids ?? [], body.decision === 'apply' ? 'apply' : 'reject', body.names && typeof body.names === 'object' ? body.names : {}) } },
 
     // ---------- backends ----------

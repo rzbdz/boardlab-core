@@ -136,10 +136,16 @@ export class Boards {
     this.lab.kernel.changed(input.name)
   }
 
+  /** The board's name, while nobody holds it. */
+  free(name: string): string {
+    const held = this.lab.locks.held(name)
+    if (held) throw new BoardError('locked', `${name} 正被 ${held.holder} 使用`)
+    return name
+  }
+
   /** Take a board off the list, once nobody holds it; a backend with a registry of its own forgets it there first. */
   async remove(actor: string, name: string) {
-    const board = this.get(name)
-    if (board.lease) throw new BoardError('locked', `${name} 正被 ${board.lease.holder} 使用`)
+    const board = this.get(this.free(name))
     const detail = await this.lab.backends.release(actor, board)
     transaction(this.lab.kernel.db, () => { this.lab.locks.forget(name); this.drop(name) })
     this.lab.kernel.record(actor, name, 'remove', detail, true)

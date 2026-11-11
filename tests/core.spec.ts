@@ -813,6 +813,29 @@ describe('remote labs', () => {
   })
 })
 
+/** Call an endpoint as `holder`, the way the HTTP gateway does. */
+const call = (svc: BoardLab, path: string, holder: string, body: Record<string, unknown>) =>
+  Promise.resolve().then(() => svc.api.match('POST', path)!.endpoint.handle({ body, query: new URLSearchParams(), params: {}, caller: { holder, local: true }, signal: new AbortController().signal, upload: null }))
+
+describe('busy boards', () => {
+  it('show busy only for whoever may do the operation, so someone refused never holds up the holder', async () => {
+    const { svc, here } = coreLab()
+    await svc.locks.lock('com260', 'user:alice', '调试')
+    const seen: unknown[] = []
+    svc.events.on('event', event => { if (event.type === 'changed') seen.push(svc.kernel.busy.get('com260') ?? null) })
+    // Bob's reset and Alice's arrive together: his is refused before the board shows busy, hers goes ahead.
+    const [bob, alice] = await Promise.allSettled([call(svc, '/api/reset', 'user:bob', { board: 'com260' }), call(svc, '/api/reset', 'user:alice', { board: 'com260' })])
+    expect(bob).toMatchObject({ status: 'rejected', reason: { code: 'locked' } })
+    expect(alice.status).toBe('fulfilled')
+    expect(here.resets).toEqual(['com260'])
+    expect(seen.filter(Boolean).every(busy => (busy as { by: string }).by === 'user:alice')).toBe(true)
+    // Removing a held board is refused the same way, before it shows as being removed.
+    seen.length = 0
+    await expect(call(svc, '/api/boards/remove', 'user:bob', { name: 'com260' })).rejects.toMatchObject({ code: 'locked' })
+    expect(seen).toEqual([])
+  })
+})
+
 const on = (device: string): BoardTarget => ({ board: `lab1-${device}`, device, lease: null, die: 'die0', usbPath: null, port: null, gate: null })
 
 describe('modules', () => {
