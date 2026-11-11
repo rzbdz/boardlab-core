@@ -805,10 +805,20 @@ describe('boardd configuration', () => {
 
 describe('the bare distribution', () => {
   it('has the core\'s commands and no module\'s', () => {
-    const help = createCli({ groups: [], catalog: [] }).usage()
-    expect(help).toMatch(/lock <board>/)
-    expect(help).toMatch(/serve /)
-    expect(help).not.toMatch(/^ {2}(scan|sdk|bsp)\b/m)
+    const cli = createCli({ groups: [], catalog: [] })
+    const all = cli.usage('--all')
+    expect(all).toMatch(/lock <board>/)
+    expect(all).toMatch(/serve /)
+    expect(all).not.toMatch(/^ {2}(scan|sdk|bsp)\b/m)
+    // The overview: the everyday commands, then one line per group; a group or a command on its own.
+    const overview = cli.usage()
+    expect(overview).toMatch(/常用：/)
+    expect(overview).toMatch(/^ {2}boards +锁、复位、串口、启动、日志：list show lock/m)
+    expect(overview).toMatch(/^ {2}setup +状态、版本.*：status version install remote serve/m)
+    expect(overview.split('\n').length).toBeLessThan(25)
+    expect(cli.usage('labs')).toMatch(/^实验室：\n {2}lab kinds/)
+    expect(cli.usage('reset')).toMatch(/reset <board>/)
+    expect(cli.usage('nope')).toMatch(/没有这个命令或分组：nope/)
   })
 })
 

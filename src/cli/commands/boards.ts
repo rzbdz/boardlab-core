@@ -259,4 +259,4 @@ async function boot({ client, args, flag, json, out, remote, target, token }: Pa
   out(result, () => console.log(result.output))
 }
 
-export const boardCommands: CommandGroup = { title: '板子', commands }
+export const boardCommands: CommandGroup = { id: 'boards', title: '板子', summary: '锁、复位、串口、启动、日志', commands }

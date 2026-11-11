@@ -65,4 +65,4 @@ const commands: Command[] = [
   },
 ]
 
-export const labCommands: CommandGroup = { title: '实验室', commands }
+export const labCommands: CommandGroup = { id: 'labs', title: '实验室', summary: '添加实验室、发现和重建、空闲端口', commands }

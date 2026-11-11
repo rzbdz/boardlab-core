@@ -19,8 +19,11 @@ export interface Command {
   run(context: CommandContext): Promise<void> | void
 }
 
-/** Commands under one heading of `boardlab help`. */
-export interface CommandGroup { title: string, commands: Command[] }
+/**
+ * Commands under one heading of `boardlab help`: `id` names the group for `boardlab help <id>`, `summary` is its line in
+ * the overview.
+ */
+export interface CommandGroup { title: string, commands: Command[], id?: string, summary?: string }
 
 export interface CommandContext {
   /** What followed the command name: positional words, and every raw argument (for commands that pass them on). */

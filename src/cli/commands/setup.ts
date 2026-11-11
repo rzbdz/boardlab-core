@@ -121,4 +121,51 @@ const remote: Command = {
   run: ({ args, flags, json }) => remoteCommand(args, flags, json),
 }
 
-export const setupCommands: CommandGroup = { title: '安装和运行', commands: [install, remote, serve] }
+export const setupCommands: CommandGroup = { id: 'setup', title: '安装和运行', summary: '状态、版本、安装、连哪台 boardd、运行 boardd', commands: [install, remote, serve] }
+
+/** This CLI's own version: VERSION and REVISION beside an installed boardlab's dist/, or the distribution's package.json. */
+function cliVersion(): { version: string, revision: string } {
+  const read = (path: string | null) => { try { return path ? readFileSync(path, 'utf8').trim() : null } catch { return null } }
+  const version = read(shipped('VERSION')) ?? (() => { try { return JSON.parse(read(shipped('package.json')) ?? '{}').version ?? 'dev' } catch { return 'dev' } })()
+  return { version, revision: read(shipped('REVISION')) ?? 'dev' }
+}
+
+const version: Command = {
+  name: 'version', noBoard: true,
+  usage: ['version\t这个 boardlab 命令行的版本，和它连的 boardd 的版本（有新版时说一声）'],
+  async run({ client, out }) {
+    const mine = cliVersion()
+    let boardd: { version?: string, revision?: string, newer?: boolean, latest?: { version: string } | null } | null = null, error: string | null = null
+    try { boardd = await client.call('GET', '/api/system/version') } catch (failure) { error = (failure as Error).message }
+    out({ cli: mine, boardd, error }, () => {
+      console.log(`boardlab ${mine.version}（${mine.revision}）`)
+      if (boardd?.version) console.log(`boardd   ${boardd.version}（${boardd.revision}）${boardd.newer && boardd.latest ? `，有新版 ${boardd.latest.version}：boardlab update` : ''}`)
+      else console.log(`boardd   ${error ? `连不上：${error}` : '没有版本信息（老版本，或者没装 system 模块）'}`)
+    })
+  },
+}
+
+const status: Command = {
+  name: 'status', noBoard: true,
+  usage: ['status\t一眼看全：连的是哪台 boardd、你是谁、板子和锁、实验室是否在线、有没有新版'],
+  async run({ client, holder, remote, out }) {
+    const state = await client.state()
+    let v: { version?: string, revision?: string, newer?: boolean, latest?: { version: string } | null } | null = null
+    try { v = await client.call('GET', '/api/system/version') } catch {}
+    const real = state.boards.filter(board => !board.lab?.empty)
+    const mine = real.filter(board => board.lease?.holder === holder)
+    const busy = real.filter(board => board.lease && board.lease.holder !== holder)
+    const attention = real.filter(board => board.lab?.attention)
+    out({ boardd: client.transport.label, remote, you: holder, version: v, boards: real.length, mine: mine.map(b => b.name), busy: busy.map(b => b.name), attention: attention.map(b => b.name), labs: state.labs }, () => {
+      console.log(`boardd   ${client.transport.label}${v?.version ? `  ${v.version}（${v.revision}）` : ''}${v?.newer && v.latest ? `  有新版 ${v.latest.version}：boardlab update` : ''}`)
+      console.log(`你       ${holder}`)
+      console.log(`板子     ${real.length} 块：空闲 ${real.length - mine.length - busy.length}，你拿着 ${mine.length}，别人在用 ${busy.length}${attention.length ? `，${attention.length} 块等人操作` : ''}`)
+      for (const board of mine) console.log(`  你的   ${board.name}（${board.lease!.purpose}）`)
+      for (const board of attention) console.log(`  等人   ${board.name}：${board.lab!.attention}`)
+      for (const lab of state.labs) console.log(`实验室   ${lab.id}  ${!lab.enabled ? '没开' : lab.verifyOk === false ? `连不上：${lab.verifyMessage}` : lab.syncOk === false ? `同步失败：${lab.syncMessage}` : `在线，${lab.syncMessage ?? ''}`}`)
+      if (!state.labs.length) console.log('实验室   还没有：网页的设置里添加（或 boardlab lab add）')
+    })
+  },
+}
+
+setupCommands.commands.unshift(status, version)
