@@ -18,6 +18,9 @@ const out = resolve(option('out', 'dist'))
 const cli = option('cli', join(core, 'bare/boardlab.ts'))
 
 await mkdir(out, { recursive: true })
-await build({ entryPoints: { cli, client: join(core, 'src/shared/client.ts') }, outdir: out, bundle: true, splitting: true, format: 'esm', platform: 'node', target: 'node24', sourcemap: true, banner: { js: '#!/usr/bin/env node' } })
+await build({ entryPoints: { cli, client: join(core, 'src/shared/client.ts') }, outdir: out, bundle: true, splitting: true, format: 'esm', platform: 'node', target: 'node24', sourcemap: true, banner: {
+  // CommonJS dependencies bundled into ES modules still call require(): give every file one.
+  js: "#!/usr/bin/env node\nimport { createRequire as __boardlabCreateRequire } from 'node:module'; const require = __boardlabCreateRequire(import.meta.url);",
+} })
 await chmod(join(out, 'cli.js'), 0o755)
 console.log(`Built the boardlab CLI and its client into ${out}.`)
