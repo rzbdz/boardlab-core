@@ -129,6 +129,8 @@ export type LabFields = Partial<Record<'url' | 'username' | 'password' | 'jump',
 export interface LabSettings {
   id: string
   kind: string
+  /** The kind it was added as at runtime (it can be removed); null for one boardd's configuration names. */
+  addedAs: string | null
   /** What using the lab involves, from its driver. */
   about: string
   fields: LabFields

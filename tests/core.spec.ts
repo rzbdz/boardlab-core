@@ -144,6 +144,39 @@ describe('holders', () => {
   })
 })
 
+describe('lab kinds', () => {
+  it('adds labs of a kind a module offers at runtime, keeps them across restarts, and removes them while none of their boards is held', async () => {
+    const made: string[] = []
+    const kindModule: Module = { id: 'kinds', title: 'kinds', setup: lab => lab.backends.offer({ kind: 'fake', title: '假实验室', about: '测试用', create: id => { made.push(id); return new FakeLab() } }) }
+    const file = join(dir, 'kinds.sqlite')
+    const first = new BoardLab({ db: openDatabase(file), modules: [kindModule] })
+    expect(first.backends.kindsOffered()).toEqual([{ kind: 'fake', title: '假实验室', about: '测试用' }])
+    expect(() => first.backends.add('user:alice', 'lab 1', 'fake')).toThrow(/实验室名/)
+    expect(() => first.backends.add('user:alice', 'lab1', 'nope')).toThrow(/没有这种实验室/)
+    expect(first.backends.add('user:alice', 'lab1', 'fake')).toMatchObject({ id: 'lab1', kind: '测试实验室', addedAs: 'fake', enabled: false })
+    expect(() => first.backends.add('user:alice', 'lab1', 'fake')).toThrow(/已经有/)
+    await first.backends.configure('user:alice', 'lab1', { enabled: true, url: 'bspd+http://127.0.0.1:8765', username: 'admin', password: 'lab-password', devices: '' })
+    await first.backends.sync('lab1')
+    // Made again from what was kept, when boardd starts over.
+    const again = new BoardLab({ db: openDatabase(file), modules: [kindModule] })
+    expect(made).toEqual(['lab1', 'lab1'])
+    expect(again.backends.labSettings()).toMatchObject([{ id: 'lab1', addedAs: 'fake', enabled: true, url: 'bspd+http://127.0.0.1:8765' }])
+    const { token } = await again.locks.lock('lab1-sub0-0', 'user:bob', '调试')
+    await expect(again.backends.removeLab('user:alice', 'lab1')).rejects.toThrow(/正被 user:bob 使用/)
+    again.locks.unlock('lab1-sub0-0', { holder: 'user:bob', token })
+    await again.backends.removeLab('user:alice', 'lab1')
+    expect(again.backends.labSettings()).toEqual([])
+    expect(again.boards.list().filter(board => board.name.startsWith('lab1-'))).toEqual([])
+    expect(new BoardLab({ db: openDatabase(file), modules: [kindModule] }).backends.labSettings()).toEqual([])
+  })
+
+  it('takes a lab address of http, https, ssh or a backend\'s own scheme on them, and nothing else', async () => {
+    const { svc } = labService()
+    for (const url of ['file:///etc/passwd', 'javascript:alert(1)']) await expect(enable(svc, { url })).rejects.toThrow(/http、https 或 ssh/)
+    for (const url of ['ssh://root@host', 'bspd+http://127.0.0.1:8765']) expect((await enable(svc, { url })).url).toBe(url)
+  })
+})
+
 describe('remote labs', () => {
   it('lists a lab\'s boards in its device range once enabled, and never reports the password', async () => {
     const { svc, lab } = labService()

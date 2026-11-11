@@ -17,6 +17,21 @@ export interface Instance {
   backend: Backend
   /** Configured on the page with access settings and switched on there; the default one has none. */
   configurable: boolean
+  /** The kind it was added as, at runtime (see `offer`); null for one a module registered itself. */
+  kind: string | null
+}
+
+/**
+ * A kind of lab a module offers, so people add labs of it at runtime (on the page or with the CLI) instead of naming
+ * them in boardd's configuration. What setting one up takes (a form, an install job) is the module's own business,
+ * done through its views and API; the core only keeps the list of labs and makes each one's backend.
+ */
+export interface LabKind {
+  kind: string
+  title: string
+  /** One line on what a lab of this kind is. */
+  about: string
+  create(id: string): Backend
 }
 
 /** A lock target as its backend addresses it, with what reaching the backend takes. */
@@ -56,11 +71,59 @@ export class Backends {
 
   // ---------- instances ----------
 
-  register(id: string, backend: Backend, options: { configurable?: boolean, isDefault?: boolean } = {}) {
+  register(id: string, backend: Backend, options: { configurable?: boolean, isDefault?: boolean, kind?: string } = {}) {
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(id)) throw new Error(`backend id ${id}`)
     if (this.instances.has(id)) throw new Error(`backend ${id} is registered twice`)
-    this.instances.set(id, { id, backend, configurable: options.configurable ?? true })
+    this.instances.set(id, { id, backend, configurable: options.configurable ?? true, kind: options.kind ?? null })
     if (options.isDefault) this.defaultId = id
+  }
+
+  // ---------- kinds: labs added at runtime ----------
+
+  private readonly kinds = new Map<string, LabKind>()
+
+  /** A module offers a kind of lab; the labs of it added before are made again. */
+  offer(kind: LabKind) {
+    if (this.kinds.has(kind.kind)) throw new Error(`lab kind ${kind.kind} is offered twice`)
+    this.kinds.set(kind.kind, kind)
+    for (const added of this.added()) if (added.kind === kind.kind && !this.instances.has(added.id)) this.register(added.id, kind.create(added.id), { kind: kind.kind })
+  }
+
+  kindsOffered(): Array<{ kind: string, title: string, about: string }> { return [...this.kinds.values()].map(({ kind, title, about }) => ({ kind, title, about })) }
+
+  private added(): Array<{ id: string, kind: string }> {
+    try { return JSON.parse(this.lab.kernel.setting('labs.added') ?? '[]') } catch { return [] }
+  }
+
+  /** Add a lab of an offered kind; it starts switched off, for its module to set up and switch on. */
+  add(actor: string, id: string, kind: string): LabSettings {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(id)) throw new BoardError('invalid', `实验室名只能用字母、数字、横线和下划线，最长 32：${id}`)
+    const offered = this.kinds.get(kind)
+    if (!offered) throw new BoardError('invalid', `没有这种实验室：${kind}（有：${[...this.kinds.keys()].join('、') || '（无）'}）`)
+    if (this.instances.has(id)) throw new BoardError('conflict', `已经有实验室 ${id}`)
+    this.register(id, offered.create(id), { kind })
+    this.lab.kernel.setSetting('labs.added', JSON.stringify([...this.added(), { id, kind }]))
+    this.lab.kernel.record(actor, null, 'lab-add', `${id}（${offered.title}）`, true, null)
+    this.lab.kernel.changed(null)
+    return this.labSetting(id)
+  }
+
+  /** Remove a lab added at runtime: its boards go, so none may be held. */
+  async removeLab(actor: string, id: string): Promise<void> {
+    const instance = this.get(id)
+    if (!instance.kind) throw new BoardError('invalid', `实验室 ${id} 是在 boardd 的配置里写的，不能在这里删`)
+    const held = this.heldIn(id)
+    if (held) throw new BoardError('locked', `${String(held.board)} 正被 ${String(held.holder)} 使用，放锁以后才能删实验室`)
+    this.watches.get(id)?.()
+    this.watches.delete(id)
+    transaction(this.lab.kernel.db, () => {
+      this.dropBoards(id, () => true)
+      for (const key of ['enabled', 'url', 'username', 'password', 'jump', 'devices', 'synced_at', 'sync_ok', 'sync_message', 'verified_at', 'verify_ok', 'verify_message']) this.settings(id).set(key, null)
+      this.lab.kernel.setSetting('labs.added', JSON.stringify(this.added().filter(item => item.id !== id)))
+    })
+    this.instances.delete(id)
+    this.lab.kernel.record(actor, null, 'lab-remove', id, true, null)
+    this.lab.kernel.changed(null)
   }
 
   list(): Instance[] { return [...this.instances.values()] }
@@ -207,12 +270,12 @@ export class Backends {
   // ---------- settings ----------
 
   labSettings(): LabSettings[] {
-    return this.list().filter(instance => instance.configurable).map(({ id, backend }) => {
+    return this.list().filter(instance => instance.configurable).map(({ id, backend, kind: addedAs }) => {
       const { get, flag } = this.settings(id)
       const url = get('url')
       const fields = backend.fields ?? {}
       return {
-        id, kind: backend.kind, about: backend.about ?? '', fields, canDiscover: !!backend.discovery, canRebuild: !!backend.discovery?.rebuild, canRediscover: !!backend.discovery?.rebuild && !!backend.discovery.keepsInUse, canRemove: !!backend.inventory?.remove, canBind: !!backend.ports, canRelay: !!backend.channels,
+        id, kind: backend.kind, addedAs, about: backend.about ?? '', fields, canDiscover: !!backend.discovery, canRebuild: !!backend.discovery?.rebuild, canRediscover: !!backend.discovery?.rebuild && !!backend.discovery.keepsInUse, canRemove: !!backend.inventory?.remove, canBind: !!backend.ports, canRelay: !!backend.channels,
         hosts: [...new Set([...this.devices].filter(([name]) => name.startsWith(`${id}-`)).map(([, device]) => device.host).filter((host): host is string => !!host))].sort(),
         discovery: this.discoveries.get(id) ?? null, enabled: get('enabled') === '1', url, username: get('username'), hasPassword: !!get('password'),
         jump: get('jump'), defaultJump: url && fields.jump ? backend.defaultJump?.(new URL(url)) ?? null : null, devices: get('devices'),
@@ -272,7 +335,8 @@ export class Backends {
     if (input.url?.trim()) {
       let parsed: URL
       try { parsed = new URL(input.url.trim()) } catch { throw new BoardError('invalid', '实验室地址不合法') }
-      if (!/^https?:$/.test(parsed.protocol)) throw new BoardError('invalid', '实验室地址须是 http 或 https')
+      // http(s), ssh, or a backend's own scheme on them (`bspd+http:`); never file: or javascript:.
+      if (!/^([a-z][a-z0-9.-]*\+)?(https?|ssh):$/.test(parsed.protocol)) throw new BoardError('invalid', '实验室地址须是 http、https 或 ssh')
       url = parsed.toString().replace(/\/$/, '')
     }
     const jump = input.jump?.trim() || null

@@ -9,7 +9,7 @@ import { Duplex } from 'node:stream'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import type {
-  BoardChannels, BoardDetail, HaDiscovery, HaSettings, LabPorts, Lease, LockResult, Scan, SendResult, Slot, State,
+  BoardChannels, BoardDetail, HaDiscovery, HaSettings, LabPorts, LabSettings, Lease, LockResult, Scan, SendResult, Slot, State,
 } from './types.ts'
 
 export const DEFAULT_PORT = 38127
@@ -273,6 +273,9 @@ export class BoardsClient {
   setHaEnabled(enabled: boolean) { return this.call<HaSettings>('POST', '/api/ha/enabled', { enabled }) }
   testHa() { return this.call<HaSettings>('POST', '/api/ha/test') }
   /** After re-cabling: have the lab start `host` over (forget its boards, find them again). */
+  labKinds() { return this.call<Array<{ kind: string, title: string, about: string }>>('GET', '/api/labs/kinds') }
+  addLab(id: string, kind: string) { return this.call<LabSettings>('POST', '/api/labs/add', { id, kind }) }
+  removeLab(id: string) { return this.call<{ ok: true }>('POST', '/api/labs/remove', { id }) }
   rebuildLab(id: string, host: string, keepInUse = false) { return this.call<{ message: string, proposals: number, registered?: string[] }>('POST', '/api/labs/rebuild', { id, host, confirmed: true, keepInUse }) }
   discoverLab(id: string, options: { human?: boolean, host?: string, slots?: string[] } = {}) { return this.call<{ message: string, proposals: number, registered?: string[] }>('POST', '/api/labs/discover', { id, confirmed: true, ...options }) }
   /** Read the board in a slot again after a swap; returns its name afterwards. */

@@ -4,10 +4,25 @@ import { confirm, type Command, type CommandGroup } from '../command.ts'
 const commands: Command[] = [
   {
     name: 'lab', noBoard: true, usage: [
+      'lab kinds\t可以添加的实验室种类',
+      'lab add <实验室> --kind <种类>\t添加一个实验室（之后在网页的设置里完成它的设置，比如装好主机）',
+      'lab remove <实验室> [--yes]\t删除一个添加的实验室和它的板子（不能有人拿着锁）',
       'lab discover <实验室> [--slot <主机>/s<N>,…] [--yes] [--human [--host <主机>]]\t让实验室在空槽位上找板子（会复位没登记的线），找到一块登记一块；--slot 只找这些槽位；--human：没接复位线的板子，由人按提示逐块进下载模式',
       'lab rebuild <实验室> --host <主机> [--keep-used] [--yes]\t重新布线以后用：忘掉这台主机上发现过的板子和槽位，按现在的接线重新发现（以前用过的复位线先试，沿用原来的名字）；--keep-used 保留在用的板子，只去掉串口不见的、找空闲串口上的（别人拿着板子时也能用）',
     ],
     async run({ client, args, flag, flags, out }) {
+      if (args[0] === 'kinds') { const kinds = await client.labKinds(); return out(kinds, () => { for (const kind of kinds) console.log(`${kind.kind}\t${kind.title}：${kind.about}`) }) }
+      if (args[0] === 'add' && args[1]) {
+        const kind = flag('kind')
+        if (!kind) throw new Error('添加实验室要指定种类：--kind <种类>（boardlab lab kinds 列出）')
+        const added = await client.addLab(args[1], kind)
+        return out(added, () => console.log(`添加了实验室 ${added.id}（${added.kind}）：到网页的设置里完成它的设置`))
+      }
+      if (args[0] === 'remove' && args[1]) {
+        if (!flags.has('yes') && !(await confirm(`删除实验室 ${args[1]}？它的板子从 boardlab 里去掉。`))) throw new Error('删除实验室需要确认（交互确认或 --yes）')
+        const result = await client.removeLab(args[1])
+        return out(result, () => console.log(`删除了实验室 ${args[1]}`))
+      }
       if (args[0] === 'rebuild' && args[1]) {
         const host = flag('host')
         if (!host) throw new Error('重建要指定主机：--host <主机>')
@@ -17,7 +32,7 @@ const commands: Command[] = [
         const result = await client.rebuildLab(args[1], host, keep)
         return out(result, () => console.log(result.message))
       }
-      if (args[0] !== 'discover' || !args[1]) throw new Error('lab 子命令：discover <实验室> | rebuild <实验室> --host <主机>')
+      if (args[0] !== 'discover' || !args[1]) throw new Error('lab 子命令：kinds | add <实验室> --kind <种类> | remove <实验室> | discover <实验室> | rebuild <实验室> --host <主机>')
       const slots = flag('slot')?.split(',').map(item => item.trim()).filter(Boolean)
       if (!flags.has('yes') && !(await confirm(`发现板子可能复位实验室 ${args[1]} 里的板子。继续？`))) throw new Error('发现板子需要确认（交互确认或 --yes）')
       const result = await client.discoverLab(args[1], { human: flags.has('human'), host: flag('host'), slots })
