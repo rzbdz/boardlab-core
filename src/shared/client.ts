@@ -129,7 +129,21 @@ export class BoardsClient {
     return this.transport.request(method, path, { ...(this.holder ? { 'x-boards-holder': this.holder } : {}), ...headers })
   }
 
-  call<T>(method: 'GET' | 'POST', path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  /**
+   * One call. A read that loses its connection before any answer (an ssh tunnel coming up, a proxy restarting) is
+   * tried once more; a write never is, since it may have been done.
+   */
+  async call<T>(method: 'GET' | 'POST', path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    try { return await this.once<T>(method, path, body, signal) }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (method !== 'GET' || signal?.aborted || !(code === 'ECONNRESET' || code === 'EPIPE' || /socket hang up/.test((error as Error).message))) throw error
+      await new Promise(resolve => setTimeout(resolve, 300))
+      return this.once<T>(method, path, body, signal)
+    }
+  }
+
+  private once<T>(method: 'GET' | 'POST', path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     const payload = body === undefined ? undefined : JSON.stringify(body)
     return new Promise((resolve, reject) => {
       // A length rather than chunks: proxies in front of boardd (a site's hub) may read only sized bodies.

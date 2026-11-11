@@ -605,6 +605,21 @@ describe('remote labs', () => {
     expect(svc.history().actions.find(action => action.kind === 'lab-rebuild')).toMatchObject({ detail: 'lab1 重新发现 h1', ok: true })
   })
 
+  it('reads again once when the connection drops before an answer, and never writes twice', async () => {
+    let seen = 0
+    const server = createHttpServer((req, res) => { if (seen++ === 0) { req.socket.destroy(); return } res.setHeader('content-type', 'application/json'); res.end('{"ok":true}') })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const port = (server.address() as { port: number }).port
+    const client = new BoardsClient({ label: 'test', request: (method, path, headers) => request({ host: '127.0.0.1', port, method, path, headers }) })
+    try {
+      expect(await client.call('GET', '/api/state')).toEqual({ ok: true })
+      expect(seen).toBe(2)
+      seen = 0
+      await expect(client.call('POST', '/api/lock', {})).rejects.toThrow(/socket hang up/)
+      expect(seen).toBe(1)
+    } finally { server.close() }
+  })
+
   it('shows a slot as being discovered while it is, and starts nothing else on it meanwhile', async () => {
     let finish!: () => void, progress!: (line: string) => void
     class SlotLab extends FakeLab {
