@@ -147,6 +147,8 @@ export interface LabSettings {
   kind: string
   /** The kind it was added as at runtime (it can be removed); null for one boardd's configuration names. */
   addedAs: string | null
+  /** What is being done to the lab itself right now (its module installing it, say): `Kernel.doing` on `lab:<id>`. */
+  busy: Busy | null
   /** What using the lab involves, from its driver. */
   about: string
   fields: LabFields

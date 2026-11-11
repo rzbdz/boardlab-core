@@ -647,6 +647,12 @@ describe('remote labs', () => {
     finish()
     await running
     expect(svc.boards.get('lab1-h1-s2').busy).toBeNull()
+    // A lab itself can be busy too (its module installing it), shown in its settings.
+    let done!: () => void
+    const installing = svc.kernel.doing(['lab:lab1'], 'install', '安装中', 'user:alice', () => new Promise<void>(resolve => { done = resolve }))
+    expect(svc.backends.labSettings()[0]!.busy).toMatchObject({ label: '安装中' })
+    done(); await installing
+    expect(svc.backends.labSettings()[0]!.busy).toBeNull()
   })
 
   it('refuses to rediscover with a backend that can only rebuild a whole host', async () => {

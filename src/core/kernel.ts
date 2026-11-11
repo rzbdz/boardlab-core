@@ -38,7 +38,7 @@ export class Kernel {
   readonly busy = new Map<string, Busy>()
 
   /**
-   * Do `run` to `boards`, shown as busy on each of them while it runs (with its progress lines, through the `line`
+   * Do `run` to `boards` (or to a lab, as `lab:<id>`), shown as busy on each of them while it runs (with its progress lines, through the `line`
    * it is given). A board already busy is refused, so two operations never overlap on one board.
    */
   async doing<T>(boards: string[], kind: string, label: string, by: string, run: (line: (text: string) => void) => Promise<T>): Promise<T> {

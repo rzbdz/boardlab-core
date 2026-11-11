@@ -277,7 +277,7 @@ export class Backends {
       return {
         id, kind: backend.kind, addedAs, about: backend.about ?? '', fields, canDiscover: !!backend.discovery, canRebuild: !!backend.discovery?.rebuild, canRediscover: !!backend.discovery?.rebuild && !!backend.discovery.keepsInUse, canRemove: !!backend.inventory?.remove, canBind: !!backend.ports, canRelay: !!backend.channels,
         hosts: [...new Set([...this.devices].filter(([name]) => name.startsWith(`${id}-`)).map(([, device]) => device.host).filter((host): host is string => !!host))].sort(),
-        discovery: this.discoveries.get(id) ?? null, enabled: get('enabled') === '1', url, username: get('username'), hasPassword: !!get('password'),
+        discovery: this.discoveries.get(id) ?? null, busy: this.lab.kernel.busy.get(`lab:${id}`) ?? null, enabled: get('enabled') === '1', url, username: get('username'), hasPassword: !!get('password'),
         jump: get('jump'), defaultJump: url && fields.jump ? backend.defaultJump?.(new URL(url)) ?? null : null, devices: get('devices'),
         verifiedAt: get('verified_at'), verifyOk: flag('verify_ok'), verifyMessage: get('verify_message'),
         syncedAt: get('synced_at'), syncOk: flag('sync_ok'), syncMessage: get('sync_message'),
