@@ -331,7 +331,7 @@ describe('remote labs', () => {
     expect(output).toContain('job boot-1 succeeded')
   })
 
-  it('lets a lab with its own registry find new boards and forget them, only while none is held', async () => {
+  it('lets a lab with its own registry find new boards while others are held, and forget a board only while nobody holds it', async () => {
     class RegistryLab extends FakeLab {
       async discover(_config: LabConfig, options: { human?: boolean, host?: string | null }, progress: (line: string) => void) {
         progress('ACTION NEEDED (board 1): put ONE unregistered board into download mode')
@@ -356,7 +356,8 @@ describe('remote labs', () => {
     expect(svc.backends.labSettings()[0]).toMatchObject({ canDiscover: true, canRemove: true })
     await expect(svc.backends.discover('user:alice', 'lab1', false)).rejects.toThrow(/需要用户确认/)
     const { token } = await svc.locks.lock('lab1-sub0-0', 'claude:s1', '调试')
-    await expect(svc.backends.discover('user:alice', 'lab1', true)).rejects.toThrow(/lab1-sub0-0 正被 claude:s1 使用/)
+    // Finding boards uses only free lines and consoles: a board in use does not stop it.
+    expect(await svc.backends.discover('user:alice', 'lab1', true)).toMatchObject({ message: '发现 1 块新板子' })
     await expect(svc.boards.remove('user:alice', 'lab1-sub0-0')).rejects.toThrow(/正被 claude:s1 使用/)
     svc.locks.unlock('lab1-sub0-0', { holder: 'claude:s1', token })
     const seen: string[] = []
@@ -389,7 +390,7 @@ describe('remote labs', () => {
     await enable(svc, { devices: '' })
     expect(svc.boards.list().map(board => board.name)).toContain('lab1-tmp-lab-9-ttyUSB5')
     await expect(svc.backends.bind('user:alice', 'lab1', { host: 'lab-9', console: 'x; rm -rf /', usb: 'usb:1-3' })).rejects.toThrow(/不合法/)
-    expect(lab.calls.filter(call => !call.startsWith('verify'))).toEqual(['discover human lab-9', 'register sub0-9 {"console":"c9"}', 'remove sub0-9', 'bind lab-9 /dev/ttyUSB5 usb:1-3 tmp-lab-9-ttyUSB5'])
+    expect(lab.calls.filter(call => !call.startsWith('verify'))).toEqual(['discover gpio', 'discover human lab-9', 'register sub0-9 {"console":"c9"}', 'remove sub0-9', 'bind lab-9 /dev/ttyUSB5 usb:1-3 tmp-lab-9-ttyUSB5'])
   })
 
   it('shows what a person must do while a lab board\'s reset waits for them, and lets them confirm', async () => {
@@ -579,7 +580,7 @@ describe('remote labs', () => {
     await expect(svc.backends.rebuild('user:alice', 'lab1', true, 'h1', true)).rejects.toThrow(/只能整台重建/)
   })
 
-  it('lets a person pair a board by hand while others are held: it resets nothing', async () => {
+  it('finds new boards while others are held, by reset lines or by a person pairing them', async () => {
     const lab = new FakeLab()
     const asked: unknown[] = []
     ;(lab as unknown as { discovery: unknown }).discovery = {
@@ -589,11 +590,10 @@ describe('remote labs', () => {
     const { svc } = labService(lab)
     await enable(svc)
     await svc.locks.lock('lab1-sub0-0', 'user:bob', '调试')
-    // Pulsing reset lines would reset held boards: refused.
-    await expect(svc.backends.discover('user:alice', 'lab1', true, {})).rejects.toThrow(/lab1-sub0-0 正被 user:bob 使用/)
-    // A person pressing RESET on the new board themselves: fine.
+    // The backend pulses only reset lines no board uses, so a held board does not stop it.
+    expect((await svc.backends.discover('user:alice', 'lab1', true, {})).message).toBe('配对了 1 块')
     expect((await svc.backends.discover('user:alice', 'lab1', true, { human: true, host: 'h1' })).message).toBe('配对了 1 块')
-    expect(asked).toEqual([{ human: true, host: 'h1', slots: [] }])
+    expect(asked).toEqual([{ human: false, host: null, slots: [] }, { human: true, host: 'h1', slots: [] }])
   })
 
   it('names boards by their slot, keeps a slot\'s lock when its board is registered or swapped, and reads a swapped board again', async () => {

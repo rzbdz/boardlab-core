@@ -191,8 +191,10 @@ export interface LeaseCapability {
 export interface DiscoveryCapability {
   /**
    * Look for new boards. A backend that can registers each the moment it is found and says so through `registered`;
-   * the rest are reported as findings for a person to review as proposals, and applying one calls `register`. It may
-   * reset boards, so boardd only runs it on a person's confirmation while none of the backend's boards is held.
+   * the rest are reported as findings for a person to review as proposals, and applying one calls `register`. It looks
+   * only on what no registered board uses (free reset lines, consoles and download ports), so it never touches a board
+   * in use and boardd runs it while boards are held; it may reset what is plugged into the free lines, so boardd asks
+   * a person to confirm first.
    */
   discover(config: LabConfig, options: LabDiscovery, progress: (line: string) => void, registered?: (device: string) => void): Promise<{ message: string, found: LabFinding[] }>
   /** Register a board a scan found, under `name` (the backend's own name for it). */
