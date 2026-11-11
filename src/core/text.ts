@@ -1,8 +1,11 @@
 /** Small helpers shared by the core and modules. */
 const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(\x07|\x1b\\)|\x1b[@-Z\\-_]/g
 
-/** Holders are `user:` (a person), `claude:`, `dsh:` or `workspace:` (agents and tools acting for one). */
-export const HOLDER = /^(user|claude|dsh|workspace):[^\s]{1,120}$/
+/**
+ * Holders are `user:<name>` (a person), or `<kind>:<task>` for an agent or tool acting for one: `claude:`, `codex:`,
+ * `opencode:`, `dsh:`, `workspace:` and the like. Boards held by `boardlab:` are held by another boardd for someone.
+ */
+export const HOLDER = /^[a-z][a-z0-9-]{0,31}:[^\s]{1,120}$/
 export const BOARD_NAME = /^[A-Za-z0-9_.-]{1,64}$/
 export const isHuman = (holder: string) => holder.startsWith('user:')
 /** Printable text only: ANSI sequences and control bytes go, so a K3 ROM banner's leading NULs cannot cut stored text short. */

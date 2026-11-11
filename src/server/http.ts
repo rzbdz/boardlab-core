@@ -11,12 +11,13 @@ import { extname, join } from 'node:path'
 import { Api, EventStream, FileReply, TextReply, type Caller, type Emit, type Endpoint } from '../core/api.ts'
 import { BoardError } from '../core/errors.ts'
 import type { BoardLab } from '../core/lab.ts'
+import { HOLDER } from '../core/text.ts'
 
 const STATUS: Record<BoardError['code'], number> = { 'not-found': 404, invalid: 400, locked: 423, forbidden: 403, conflict: 409, hardware: 502 }
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.map': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png' }
 const HOLDER_HEADER = 'x-boards-holder'
 const USER_HEADER = 'x-boards-user'
-const AGENT = /^(user|claude|dsh|workspace):[^\s]{1,120}$/
+const AGENT = HOLDER
 
 /**
  * `origins` are the addresses the page is also served at through a reverse proxy (`https://example.org`), whose

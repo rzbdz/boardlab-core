@@ -136,6 +136,14 @@ function shipFirmware(purpose: string, content: string, soc = 'k3') {
   return join(firmwareDir, `${purpose}.bin`)
 }
 
+describe('holders', () => {
+  it('takes any agent kind as a holder, and never another person through the holder header', async () => {
+    const { HOLDER } = await import('../src/core/text.ts')
+    for (const ok of ['user:alice', 'claude:fix-mmc', 'codex:uboot-net-fix', 'opencode:ci-smoke', 'dsh:pcie', 'boardlab:user:bob']) expect(HOLDER.test(ok)).toBe(true)
+    for (const bad of ['alice', 'Claude:x', 'user:', 'claude:has space', 'a-very-long-kind-name-of-more-than-32:x']) expect(HOLDER.test(bad)).toBe(false)
+  })
+})
+
 describe('remote labs', () => {
   it('lists a lab\'s boards in its device range once enabled, and never reports the password', async () => {
     const { svc, lab } = labService()
