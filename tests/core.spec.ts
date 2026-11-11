@@ -482,6 +482,26 @@ describe('remote labs', () => {
     expect(lab.consoles).toHaveLength(2)
   })
 
+  it('keeps a board that is being flashed busy until the flash ends, even once its lock is stolen', async () => {
+    let finish!: () => void
+    class FlashLab extends FakeLab {
+      builds = { boot: () => new Promise<string>(resolve => { finish = () => resolve('flashed') }) }
+    }
+    const lab = new FlashLab()
+    lab.listed = lab.listed.map(device => ({ ...device, sdks: ['sdk-a'] }))
+    const { svc } = labService(lab)
+    await enable(svc)
+    const board = 'lab1-sub0-0'
+    const { token } = await svc.locks.lock(board, 'claude:s1', '刷机')
+    const flashing = call(svc, '/api/boot/sdk', 'claude:s1', { board, token, sdk: 'sdk-a', method: 'download' })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    const stolen = svc.locks.steal(board, 'user:bob', '要用')
+    expect(svc.boards.get(board).busy).toMatchObject({ kind: 'boot', label: '刷机中', by: 'claude:s1' })
+    await expect(call(svc, '/api/reset', 'user:bob', { board, token: stolen.token })).rejects.toThrow(/正在刷机/)
+    finish(); await flashing.catch(() => {})
+    expect(svc.boards.get(board).busy).toBeNull()
+  })
+
   it('boots or flashes a lab board with an SDK, the lab fetching the build, under the lock', async () => {
     class SdkLab extends FakeLab {
       boots: unknown[] = []
