@@ -535,12 +535,15 @@ describe('remote labs', () => {
     class PackageLab extends FakeLab {
       flashed: unknown[] = []
       finish: Array<() => void> = []
+      /** Flashes end at once, for the CLI. */
+      quick = false
       builds = {
         boot: async () => '',
         flash: (_config: LabConfig, target: BoardTarget, pkg: unknown, progress: (line: string) => void, signal?: AbortSignal) => new Promise<string>(resolve => {
           this.flashed.push({ device: target.device, pkg, signal: !!signal })
           progress('[  12.0s] flash rootfs 40%')
-          this.finish.push(() => resolve('job flash-3 succeeded'))
+          if (this.quick) resolve('job flash-4 succeeded')
+          else this.finish.push(() => resolve('job flash-3 succeeded'))
         }),
       }
     }
@@ -584,6 +587,21 @@ describe('remote labs', () => {
     await sent
     expect(svc.boards.detail(board).actions[0]).toMatchObject({ kind: 'flash', detail: `刷机包 pkg.zip ${sha(content).slice(0, 12)}`, ok: true })
 
+    // The CLI sends a file here first and hands a link on as it is.
+    svc.locks.steal(board, 'user:alice', '换我来刷')
+    const running = await serve(svc, { port: 47000 + Math.floor(Math.random() * 1000), socketPath: join(dir, 'boardd.sock'), uiDir: null })
+    const file = join(dir, 'other-pkg.zip')
+    writeFileSync(file, 'another package')
+    const quiet = { log: console.log, error: console.error }
+    console.log = () => {}; console.error = () => {}
+    try {
+      lab.quick = true
+      await main(['flash', board, file, '--flasher', 'tool-b', '--state-dir', dir, '--as', 'user:alice'])
+      await main(['flash', board, url, '--state-dir', dir, '--as', 'user:alice'])
+    } finally { Object.assign(console, quiet); await running.close() }
+    expect(lab.flashed.slice(2).map(item => (item as { pkg: unknown }).pkg)).toEqual([
+      { path: svc.files.get(sha('another package'))!.path, sha256: sha('another package'), flasher: 'tool-b' }, { url, flasher: null },
+    ])
     // A backend that cannot flash packages says so.
     await svc.locks.lock('com260', 'user:alice', '刷机')
     await expect(svc.download.flashPackage('com260', { holder: 'user:alice' }, { url })).rejects.toThrow(/不能用刷机包刷机/)
@@ -1035,6 +1053,7 @@ describe('the bare distribution', () => {
     expect(overview.split('\n').length).toBeLessThan(25)
     expect(cli.usage('labs')).toMatch(/^实验室：\n {2}lab kinds/)
     expect(cli.usage('reset')).toMatch(/reset <board>/)
+    expect(cli.usage('flash')).toMatch(/flash <board> <链接\|文件> \[--flasher <工具>\][\s\S]*flash <board> --sdk <SDK>/)
     expect(cli.usage('nope')).toMatch(/没有这个命令或分组：nope/)
   })
 })

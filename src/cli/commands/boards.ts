@@ -196,12 +196,19 @@ const commands: Command[] = [
   {
     name: 'boot',
     usage: [
-      'boot <board> --sdk <SDK> [--method load|download] [--variant V] | flash <board> --sdk <SDK>\t后端能取构建产物的板子用 SDK 的产物内存启动或刷机，板子所在主机自己去构建服务器取',
+      'boot <board> --sdk <SDK> [--method load|download] [--variant V]\t后端能取构建产物的板子用 SDK 的产物内存启动或刷机，板子所在主机自己去构建服务器取',
       'boot <board>[.<die>] <固件名|文件>...\t按顺序把 FSBL、U-Boot/OpenSBI、内核加载到内存启动，不写板子；只改内核时：boot <board> fsbl u-boot-opensbi <Image.itb>',
     ],
     run: context => boot(context, 'boot'),
   },
-  { name: 'flash', usage: [], run: context => boot(context, 'flash') },
+  {
+    name: 'flash',
+    usage: [
+      'flash <board> <链接|文件> [--flasher <工具>]\t用刷机包刷机（要拿锁）：http(s) 链接由板子所在主机下载，本机的文件先传给 boardd；--flasher 选刷机工具',
+      'flash <board> --sdk <SDK> [--variant V]\t用 SDK 的产物刷机，同 boot --sdk <SDK> --method download',
+    ],
+    run: context => boot(context, 'flash'),
+  },
   {
     name: 'proposals', usage: ['proposals [apply|reject] [<id>...|--all] [--name <板名>]\t扫描和发现找到的改动建议；只能复位的槽位上的新板子要用 --name 起名'],
     async run({ client, args, flag, flags, out }) {
@@ -237,11 +244,23 @@ const commands: Command[] = [
   { name: 'export', usage: [], async run({ client }) { process.stdout.write(await client.exportToml()) } },
 ]
 
-/** `boot` and `flash`: with --sdk the backend boots or flashes the board with an SDK's build, fetching it itself. */
+/**
+ * `boot` and `flash`: with --sdk the backend boots or flashes the board with an SDK's build, fetching it itself; `flash`
+ * with a link or a file flashes that package.
+ */
 async function boot({ client, args, flag, json, out, remote, target, token }: Parameters<Command['run']>[0], command: 'boot' | 'flash') {
   const { board, die } = target()
+  if (command === 'flash' && !flag('sdk')) {
+    const from = args[1]
+    if (!from || args.length > 2) throw new Error('用法：boardlab flash <board> <链接|文件> [--flasher <工具>]，或 boardlab flash <board> --sdk <SDK>')
+    // A link is downloaded by the board's backend; a file here is sent to boardd first (once per content).
+    const link = /^[a-z][a-z0-9+.-]*:\/\//i.test(from)
+    const sha256 = link ? undefined : await client.sendFile(resolve(from), size => { if (!json) console.error(`已传 ${from}（${size} 字节）`) })
+    if (!json) console.error(`${board}：刷机包 ${from}，要几分钟…`)
+    const result = await client.flashPackage(board, { ...(link ? { url: from } : { sha256 }), flasher: flag('flasher') }, token())
+    return out(result, () => console.log(result.output))
+  }
   if (flag('sdk') || command === 'flash') {
-    if (!flag('sdk')) throw new Error('用法：boardlab flash <board> --sdk <SDK> [--variant V]')
     const method = command === 'flash' || flag('method') === 'download' ? 'download' : 'load'
     if (!json) console.error(`${board}：${method === 'download' ? '刷机' : '内存启动'} ${flag('sdk')}，板子所在主机自己从构建服务器取产物…`)
     const result = await client.bootSdk(board, { sdk: flag('sdk')!, method, variant: flag('variant') }, token())
