@@ -4,3 +4,8 @@ export type BoardErrorCode = 'not-found' | 'invalid' | 'locked' | 'forbidden' | 
 export class BoardError extends Error {
   constructor(readonly code: BoardErrorCode, message: string) { super(message) }
 }
+
+/** An operation refused because the board is busy with another one (`Kernel.doing`): nothing of it started. */
+export class BusyError extends BoardError {
+  constructor(message: string) { super('conflict', message) }
+}

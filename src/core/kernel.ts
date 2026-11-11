@@ -5,7 +5,7 @@
 import { EventEmitter } from 'node:events'
 import type { DatabaseSync } from 'node:sqlite'
 import type { BoardEvent, Busy } from '../shared/types.ts'
-import { BoardError } from './errors.ts'
+import { BusyError } from './errors.ts'
 import { addColumn } from './db.ts'
 
 export interface KernelOptions {
@@ -45,7 +45,7 @@ export class Kernel {
     const taken = boards.find(board => this.busy.has(board))
     if (taken) {
       const now = this.busy.get(taken)!
-      throw new BoardError('conflict', `${taken} 正在${now.label.replace(/中$/, '')}（${now.by}，${now.since.slice(11, 19)} 开始），等它完成`)
+      throw new BusyError(`${taken} 正在${now.label.replace(/中$/, '')}（${now.by}，${now.since.slice(11, 19)} 开始），等它完成`)
     }
     const entry: Busy = { kind, label, by, since: this.iso(), line: null }
     for (const board of boards) this.busy.set(board, entry)

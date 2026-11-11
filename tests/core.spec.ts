@@ -13,6 +13,7 @@ import { consoleKeys, createCli, parseArgs } from '../src/cli/main.ts'
 import { openDatabase } from '../src/core/db.ts'
 import { BoardLab, inLoadOrder } from '../src/core/lab.ts'
 import { main } from '../bare/boardlab.ts'
+import { BoardError } from '../src/core/errors.ts'
 import type { LabFields } from '../src/shared/types.ts'
 import type { Module } from '../src/core/module.ts'
 import type { ConsoleSession } from '../src/core/console.ts'
@@ -653,6 +654,28 @@ describe('remote labs', () => {
     expect(svc.backends.labSettings()[0]!.busy).toMatchObject({ label: '安装中' })
     done(); await installing
     expect(svc.backends.labSettings()[0]!.busy).toBeNull()
+  })
+
+  it('tells a search that never started, its slot busy, from one that failed on a conflict of its own', async () => {
+    let fail: Error | null = null
+    class SlotLab extends FakeLab {
+      constructor() { super(); this.listed = [{ name: 'h1-s2', slot: 'h1/s2', empty: true, model: null, online: false, serialPort: 'h1:s2', serialConnected: true, downloadUsbPath: null, ip: null }] }
+      discovery = { discover: async () => { if (fail) throw fail; return { message: '没找到', found: [] } }, register: async () => {} }
+    }
+    const { svc } = labService(new SlotLab())
+    await enable(svc, { devices: '' })
+    const discovery = () => svc.backends.labSettings()[0]!.discovery
+    let done!: () => void
+    const resetting = svc.kernel.doing(['lab1-h1-s2'], 'reset', '复位中', 'user:bob', () => new Promise<void>(resolve => { done = resolve }))
+    await expect(svc.backends.discover('user:alice', 'lab1', true, { slots: ['h1/s2'] })).rejects.toThrow(/正在复位/)
+    expect(discovery()?.line).toMatch(/^没开始：/)
+    done(); await resetting
+    expect(svc.history().actions.some(action => action.kind === 'lab-discover')).toBe(false)
+    // The backend's own conflict, mid-search, is a failure, and recorded.
+    fail = new BoardError('conflict', 'the host is probing already')
+    await expect(svc.backends.discover('user:alice', 'lab1', true, { slots: ['h1/s2'] })).rejects.toThrow(/probing already/)
+    expect(discovery()?.line).toBe('失败：the host is probing already')
+    expect(svc.history().actions.find(action => action.kind === 'lab-discover')).toMatchObject({ ok: false, message: 'the host is probing already' })
   })
 
   it('refuses to rediscover with a backend that can only rebuild a whole host', async () => {

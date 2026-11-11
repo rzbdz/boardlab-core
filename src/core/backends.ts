@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import type { Board, LabPorts, LabSettings, Proposal } from '../shared/types.ts'
 import { DEVICE_PATTERN, deviceFilter, JUMP, type Backend, type BoardTarget, type LabConfig, type LabDevice, type LabDiscovery, type LabFinding, type LabNews, type LabSlots } from './backend.ts'
 import { transaction } from './db.ts'
-import { BoardError } from './errors.ts'
+import { BoardError, BusyError } from './errors.ts'
 import type { BoardLab } from './lab.ts'
 import type { Caller } from './locks.ts'
 import { BOARD_NAME, str } from './text.ts'
@@ -462,7 +462,7 @@ export class Backends {
     const run = (line: (text: string) => void) => search(text => { report(text); line(text) }, onRegistered)
     try { result = targets.length ? await this.lab.kernel.doing(targets, kind === 'lab-discover' ? 'discover' : 'rebuild', label, actor, run) : await run(() => {}) }
     catch (error) {
-      if (error instanceof BoardError && error.code === 'conflict') { report(`没开始：${error.message}`, false); throw error }
+      if (error instanceof BusyError) { report(`没开始：${error.message}`, false); throw error }
       report(`失败：${(error as Error).message}`, false)
       this.lab.kernel.record(actor, null, kind, detail, false, (error as Error).message)
       throw new BoardError('hardware', (error as Error).message)
