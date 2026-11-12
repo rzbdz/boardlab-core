@@ -95,9 +95,18 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
         return { output: await doing(name, 'boot', '启动中', caller.holder, body, () => lab.download.boot(name, who(caller.holder, body), { die: body.die, files: body.files }), true) }
       },
     },
+    {
+      method: 'GET', path: '/api/boot/breaks', about: '一个 SDK 的启动流程可以在哪停下（recipe 里的 breaker），调试 U-Boot、内核时用',
+      handle: ({ query }) => {
+        const name = named(query.get('board')), sdk = required(query.get('sdk'), 'sdk')
+        const route = lab.backends.route(name), breaks = route.backend.builds?.breaks
+        if (!breaks) return { load: [], download: [] }
+        return breaks(route.config, sdk)
+      },
+    },
     { method: 'POST', path: '/api/boot/sdk', about: '用 SDK 的构建启动（load）或刷机（download）', handle: async ({ body, caller }) => {
         const name = board(body), method = body.method === 'download' ? 'download' : 'load'
-        return { output: await doing(name, 'boot', method === 'download' ? '刷机中' : '启动中', caller.holder, body, () => lab.download.build(name, who(caller.holder, body), { sdk: required(body.sdk, 'sdk'), method, variant: optional(body.variant) }), true) }
+        return { output: await doing(name, 'boot', method === 'download' ? '刷机中' : '启动中', caller.holder, body, () => lab.download.build(name, who(caller.holder, body), { sdk: required(body.sdk, 'sdk'), method, variant: optional(body.variant), brk: optional(body.brk) }), true) }
       },
     },
     {

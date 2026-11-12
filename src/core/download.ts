@@ -130,19 +130,20 @@ export class Download {
    * Boot a board with a named build: from RAM (`load`) or by flashing it (`download`). The backend gets the build to the
    * board itself (bsp: the board host pulls it from the build server), so nothing passes through here.
    */
-  async build(board: string, caller: Caller, input: { sdk: string, method?: 'load' | 'download', variant?: string | null }): Promise<string> {
+  async build(board: string, caller: Caller, input: { sdk: string, method?: 'load' | 'download', variant?: string | null, brk?: string | null }): Promise<string> {
     const lease = this.lab.locks.authorize(board, caller)
     const route = this.lab.backends.route(board)
     const builds = route.backend.builds
     if (!builds) throw new BoardError('invalid', `${board} 所在的后端 ${route.id} 不能用 SDK 启动板子；用 boardlab boot ${board} <文件>… 从文件启动`)
     if (!NAME.test(input.sdk)) throw new BoardError('invalid', `SDK 名不合法：${input.sdk}`)
     if (input.variant && !NAME.test(input.variant)) throw new BoardError('invalid', `variant 不合法：${input.variant}`)
+    if (input.brk && !NAME.test(input.brk)) throw new BoardError('invalid', `break point 不合法：${input.brk}`)
     const method = input.method ?? 'load'
     const known = this.lab.backends.builds(board)
     if (known.length && !known.includes(input.sdk)) throw new BoardError('invalid', `${board} 不能跑 SDK ${input.sdk}（可以：${known.join('、')}）`)
-    const detail = `${input.sdk} ${method === 'download' ? '刷机' : '内存启动'}${input.variant ? ` ${input.variant}` : ''}`
+    const detail = `${input.sdk} ${method === 'download' ? '刷机' : '内存启动'}${input.variant ? ` ${input.variant}` : ''}${input.brk ? ` 停在 ${input.brk}` : ''}`
     try {
-      const output = await builds.boot(route.config, route.target, { sdk: input.sdk, method, variant: input.variant ?? null }, this.follow(board))
+      const output = await builds.boot(route.config, route.target, { sdk: input.sdk, method, variant: input.variant ?? null, brk: input.brk ?? null }, this.follow(board))
       this.lab.kernel.record(lease.holder, board, method === 'download' ? 'flash' : 'boot', detail, true)
       return output
     } catch (error) {

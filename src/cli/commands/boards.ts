@@ -196,7 +196,7 @@ const commands: Command[] = [
   {
     name: 'boot',
     usage: [
-      'boot <board> --sdk <SDK> [--method load|download] [--variant V]\t后端能取构建产物的板子用 SDK 的产物内存启动或刷机，板子所在主机自己去构建服务器取',
+      'boot <board> --sdk <SDK> [--method load|download] [--variant V] [--break 名字]\t后端能取构建产物的板子用 SDK 的产物内存启动或刷机，板子所在主机自己去构建服务器取',
       'boot <board>[.<die>] <固件名|文件>...\t按顺序把 FSBL、U-Boot/OpenSBI、内核加载到内存启动，不写板子；只改内核时：boot <board> fsbl u-boot-opensbi <Image.itb>',
     ],
     run: context => boot(context, 'boot'),
@@ -263,7 +263,7 @@ async function boot({ client, args, flag, json, out, remote, target, token }: Pa
   if (flag('sdk') || command === 'flash') {
     const method = command === 'flash' || flag('method') === 'download' ? 'download' : 'load'
     if (!json) console.error(`${board}：${method === 'download' ? '刷机' : '内存启动'} ${flag('sdk')}，板子所在主机自己从构建服务器取产物…`)
-    const result = await client.bootSdk(board, { sdk: flag('sdk')!, method, variant: flag('variant') }, token())
+    const result = await client.bootSdk(board, { sdk: flag('sdk')!, method, variant: flag('variant'), ...(flag('break') ? { brk: flag('break')! } : {}) }, token())
     return out(result, () => console.log(result.output))
   }
   const files = args.slice(1)

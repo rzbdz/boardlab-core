@@ -234,7 +234,9 @@ export interface FlashPackage { url?: string, path?: string, sha256?: string | n
 
 /** For a backend that knows named builds (SDKs): booting or flashing a board with one, fetching the build itself. */
 export interface BuildsCapability {
-  boot(config: LabConfig, target: BoardTarget, build: { sdk: string, method: 'load' | 'download', variant: string | null }, progress: (line: string) => void): Promise<string>
+  boot(config: LabConfig, target: BoardTarget, build: { sdk: string, method: 'load' | 'download', variant: string | null, brk?: string | null }, progress: (line: string) => void): Promise<string>
+  /** Where an SDK's boot recipe can stop early (`breaker: NAME` in the recipe), for debugging one stage on its own. */
+  breaks?(config: LabConfig, sdk: string): Promise<{ load: string[], download: string[] }>
   /**
    * For a backend that can flash a whole package (an image archive its flasher writes to the board's storage): write
    * `pkg` to the board, reporting progress lines (some with `NN%`). `signal` aborts it, for a backend that can stop.
