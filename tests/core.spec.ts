@@ -9,7 +9,7 @@ import { createServer as createHttpServer, request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BoardsClient, sshTransport, webTransport } from '../src/shared/client.ts'
-import { consoleKeys, createCli, parseArgs } from '../src/cli/main.ts'
+import { agentHolder, consoleKeys, createCli, defaultHolder, parseArgs } from '../src/cli/main.ts'
 import { openDatabase } from '../src/core/db.ts'
 import { BoardLab, inLoadOrder } from '../src/core/lab.ts'
 import { main } from '../bare/boardlab.ts'
@@ -139,6 +139,26 @@ function shipFirmware(purpose: string, content: string, soc = 'k3') {
 }
 
 describe('holders', () => {
+  it('acts as the agent it runs in unless told otherwise, never as the person at the machine', () => {
+    const keys = ['CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'AI_AGENT'] as const
+    const saved = new Map(keys.map(key => [key, process.env[key]]))
+    try {
+      for (const key of keys) delete process.env[key]
+      expect(defaultHolder('alice')).toBe('user:alice')
+      expect(agentHolder()).toBeNull()
+      process.env.AI_AGENT = 'opencode_1-2_agent'
+      expect(defaultHolder('alice')).toBe('agent:opencode_1-2_agent')
+      process.env.CLAUDECODE = '1'; process.env.CLAUDE_CODE_SESSION_ID = 'abc-123'
+      expect(defaultHolder('alice')).toBe('claude:abc-123')
+      expect(agentHolder()).toBe('claude:abc-123')
+      // A session id that cannot be a holder's name falls back rather than making an invalid one.
+      process.env.CLAUDE_CODE_SESSION_ID = 'a b'
+      expect(defaultHolder('alice')).toBe('agent:opencode_1-2_agent')
+    } finally {
+      for (const key of keys) { const value = saved.get(key); if (value === undefined) delete process.env[key]; else process.env[key] = value }
+    }
+  })
+
   it('takes any agent kind as a holder, and never another person through the holder header', async () => {
     const { HOLDER } = await import('../src/core/text.ts')
     for (const ok of ['user:alice', 'claude:fix-mmc', 'codex:uboot-net-fix', 'opencode:ci-smoke', 'dsh:pcie', 'boardlab:user:bob']) expect(HOLDER.test(ok)).toBe(true)

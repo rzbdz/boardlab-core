@@ -32,7 +32,26 @@ function linesOf(group: CommandGroup): string[] {
   }))
 }
 const groupId = (group: CommandGroup) => group.id ?? group.commands[0]?.name ?? group.title
-const FOOT = '持有人默认是 user:$USER；agent 用 --as claude:<会话> 或环境变量 BOARDS_HOLDER。'
+const FOOT = '持有人默认是运行它的 agent 自己（claude:<会话> 或 agent:<工具>），否则是本机用户 user:$USER；--as 或 BOARDS_HOLDER 覆盖。'
+
+/**
+ * The holder commands act as when neither `--as` nor BOARDS_HOLDER says: the agent this process runs in, else the
+ * person at the machine. An agent must never show up as the person: its locks, history and feedback would be theirs.
+ */
+export function defaultHolder(person?: string): string {
+  const session = process.env.CLAUDE_CODE_SESSION_ID
+  if (process.env.CLAUDECODE === '1' && session && /^[^\s]{1,120}$/.test(session)) return `claude:${session}`
+  // Other agents set AI_AGENT (for example `claude-code_2-1-322_agent`): a name of its own, not the person's.
+  const agent = process.env.AI_AGENT?.trim().split(/\s+/)[0]
+  if (agent && /^[A-Za-z0-9_.-]{1,60}$/.test(agent)) return `agent:${agent}`
+  return `user:${person ?? process.env.USER ?? 'unknown'}`
+}
+
+/** The agent holder this process should use, when it runs inside an agent (else null). */
+export function agentHolder(): string | null {
+  const holder = defaultHolder('-')
+  return holder.startsWith('user:') ? null : holder
+}
 
 /**
  * `boardlab help`: the everyday commands and one line per group; `help <group>` a group's commands, `help <command>`
@@ -123,8 +142,12 @@ async function run(argv: string[], COMMANDS: Map<string, Command>, usage: (topic
 
   // Run by boardd for a client (BOARDS_PROXIED): always against that boardd's own socket.
   const transport = flag('state-dir') || process.env.BOARDS_PROXIED ? unixTransport(socketPathFor(stateDir)) : defaultTransport(socketPathFor(stateDir))
-  // Through a remote boardd you are the person it knows you as (your login there).
-  const holder = flag('as') ?? process.env.BOARDS_HOLDER ?? `user:${transport.person ?? process.env.USER ?? 'unknown'}`
+  // Through a remote boardd you are the person it knows you as (your login there); inside an agent you are that agent.
+  const holder = flag('as') ?? process.env.BOARDS_HOLDER ?? defaultHolder(transport.person)
+  const agent = agentHolder()
+  if (agent && holder.startsWith('user:')) {
+    console.error(`boardlab：以 ${holder} 的身份操作：锁、队列、历史和反馈会记在人名下。agent 要用自己的身份，例如 --as ${agent} 或 export BOARDS_HOLDER=<你的工具>:<会话>。`)
+  }
   const client = new BoardsClient(transport, holder)
   const remote = !client.transport.label.startsWith('/')
   // A remote boardd's lock tokens are kept with this user's configuration, not in a state directory.
