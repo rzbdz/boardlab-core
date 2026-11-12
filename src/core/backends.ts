@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto'
 import type { Board, LabPorts, LabSettings, Proposal } from '../shared/types.ts'
 import { DEVICE_PATTERN, deviceFilter, JUMP, type Backend, type BoardTarget, type LabConfig, type LabDevice, type LabDiscovery, type LabFinding, type LabNews, type LabSlots } from './backend.ts'
 import { transaction } from './db.ts'
+import { renameBoard } from './rename.ts'
 import { BoardError, BusyError } from './errors.ts'
 import type { BoardLab } from './lab.ts'
 import type { Caller } from './locks.ts'
@@ -324,6 +325,19 @@ export class Backends {
     this.lab.boards.setMode(now, 'unknown')
     this.lab.kernel.changed(now)
     return { board: now, message: out.message }
+  }
+
+  /**
+   * Rename a board everywhere: the backend's own record (a lab's DUT and console alias, this machine's serial-mux
+   * daemons), boardd's board and chips, its lock, queue, actions and proposals. While someone holds it, only they may
+   * rename it and the lock goes with it; a busy board cannot be renamed. A lab board's name keeps the lab's prefix
+   * (giving `foo` renames `bsp-foo`). Returns the name afterwards. See rename.ts.
+   */
+  rename(actor: string, board: string, to: string, caller: Caller): Promise<{ board: string, message: string }> {
+    return renameBoard({
+      lab: this.lab, devices: this.devices, leaseErrors: this.leaseErrors,
+      route: (target, die) => this.route(target, die), sync: id => this.sync(id),
+    }, actor, board, to, caller)
   }
 
   /**
@@ -671,7 +685,10 @@ export class Backends {
         listed.add(name)
         const soc = device.soc?.toLowerCase() ?? (device.model && /^k\d+$/i.test(device.model) ? device.model.toLowerCase() : null)
         db.prepare(`INSERT INTO boards(name, product, soc, source, lab, lab_device, lab_slot, last_seen_at) VALUES(?,?,?,'lab',?,?,?,?)
-          ON CONFLICT(name) DO UPDATE SET product=COALESCE(excluded.product, boards.product), soc=COALESCE(excluded.soc, boards.soc), lab_slot=excluded.lab_slot, last_seen_at=excluded.last_seen_at`)
+          ON CONFLICT(name) DO UPDATE SET
+            product=CASE WHEN boards.product_manual THEN boards.product ELSE COALESCE(excluded.product, boards.product) END,
+            soc=CASE WHEN boards.product_manual THEN boards.soc ELSE COALESCE(excluded.soc, boards.soc) END,
+            lab_slot=excluded.lab_slot, last_seen_at=excluded.last_seen_at`)
           .run(name, device.model, soc, id, address, device.slot ?? null, seen)
         // A download port learned when the board last entered download mode stays until the backend names another.
         this.lab.boards.upsertChip(name, 'die0', { serial_path: device.serialPort, last_seen_at: seen, ...(device.downloadUsbPath ? { download_usb_path: device.downloadUsbPath } : {}) })

@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { chmodSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 
-const SCHEMA_VERSION = 6
+const SCHEMA_VERSION = 7
 
 export function openDatabase(file: string): DatabaseSync {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
@@ -44,6 +44,9 @@ export function openDatabase(file: string): DatabaseSync {
       id TEXT PRIMARY KEY, scan_id TEXT NOT NULL, kind TEXT NOT NULL, board TEXT, slot INTEGER,
       summary TEXT NOT NULL, change TEXT NOT NULL, status TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS board_models (
+      name TEXT PRIMARY KEY, last_used_at TEXT NOT NULL, uses INTEGER NOT NULL DEFAULT 1
+    );
     -- Firmware used to be registered here; it now ships in firmware/.
     DROP TABLE IF EXISTS images;
   `)
@@ -56,6 +59,8 @@ export function openDatabase(file: string): DatabaseSync {
   addColumn(db, 'boards', 'lab_token', 'TEXT')
   // Version 6 keeps the slot a lab board sits in, its second name.
   addColumn(db, 'boards', 'lab_slot', 'TEXT')
+  // Version 7 keeps a model someone typed in themselves, so a scan or a lab listing does not replace it.
+  addColumn(db, 'boards', 'product_manual', 'INTEGER NOT NULL DEFAULT 0')
   db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`)
   return db
 }

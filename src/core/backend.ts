@@ -179,6 +179,24 @@ export interface InventoryCapability {
   remove?(config: LabConfig, device: string): Promise<void>
 }
 
+/**
+ * A backend that keeps a board's name itself (a lab's registry, serial-mux daemons named after boards): rename it
+ * there too, so the old name is gone from everywhere and the console follows.
+ */
+export interface RenameCapability {
+  /**
+   * The backend renames one thing per chip (a local serial-mux alias) rather than the whole board. boardd calls
+   * `rename` once per chip, with `target.die`, and the board is renamed after all of them succeed.
+   */
+  perChip?: boolean
+  /**
+   * Rename the backend's record: `target.device` is the old name (here the board's, in a lab the device's, without the
+   * lab's prefix) and `to` the new one. Returns the backend's own name for it afterwards (`device`) and, for a
+   * per-chip rename, the new serial alias.
+   */
+  rename(config: LabConfig, target: BoardTarget, to: string): Promise<{ device?: string, alias?: string, message?: string }>
+}
+
 /** For a backend with leases of its own: a lease held for every lock on its boards. */
 export interface LeaseCapability {
   /**
@@ -277,6 +295,8 @@ export interface Backend {
   /** Let go of the operation running on a board (a boot stuck at a wait, a flash nobody wants): it ends soon. */
   cancel?(config: LabConfig, target: BoardTarget): Promise<string>
   news?: NewsCapability
+  /** A backend whose own record names the board: renaming it there too. */
+  rename?: RenameCapability
 }
 
 /** `user@host` or `user@host:port`, the form of a backend's jump-host setting. */

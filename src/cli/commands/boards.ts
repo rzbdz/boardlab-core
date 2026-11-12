@@ -150,6 +150,36 @@ const commands: Command[] = [
     async run({ client, args, out, target }) { const result = await client.confirm(target().board, args.slice(1).join(' ')); out(result, () => console.log(result.message)) },
   },
   {
+    name: 'rename', usage: ['rename <board|槽位> <新名字>\t给板子改名：实验室里的名字、串口名、锁、队列和历史一起改（拿着锁或空闲时；实验室板子会自动带上实验室前缀）'],
+    async run({ client, args, out, target, token, keepToken }) {
+      const { board } = target()
+      const name = args.slice(1).join(' ').trim()
+      if (!name) throw new Error('要给新名字：boardlab rename <board> <新名字>')
+      const old = token(board)
+      const result = await client.renameBoard(board, name, old)
+      if (old) { keepToken(board, null); keepToken(result.board, old) }
+      out(result, () => console.log(`${board} 改名为 ${result.board}${result.message && result.message !== `${board} → ${result.board}` ? `：${result.message}` : ''}`))
+    },
+  },
+  {
+    name: 'model', usage: ['model <board> <型号>\t记下板子的型号（--clear 清掉）；填过的型号会记下来，下次出现在下拉列表里'],
+    async run({ client, args, flags, out, target }) {
+      const { board } = target()
+      const clear = flags.has('clear')
+      const product = args.slice(1).join(' ').trim()
+      if (!clear && !product) throw new Error('要给型号：boardlab model <board> <型号>')
+      await client.setModel(board, clear ? null : product)
+      out({ board, product: clear ? null : product }, () => console.log(clear ? `${board} 的型号清掉了` : `${board} 的型号：${product}`))
+    },
+  },
+  {
+    name: 'models', noBoard: true, usage: ['models\t列出人们填过的型号，最近用的在前'],
+    async run({ client, out }) {
+      const result = await client.models()
+      out(result, () => console.log(result.models.length ? result.models.join('\n') : '还没有人填过型号'))
+    },
+  },
+  {
     name: 'console',
     usage: [
       'console <board>[.<die>] [--human]\t串口终端：拿着锁时可以直接输入（Ctrl-C 也发给板子），Ctrl-A Ctrl-X 退出（同 picocom）；--human：人在键盘前，不查锁直接输入（agent 不要用）',

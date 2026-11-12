@@ -14,14 +14,14 @@ import { openDatabase } from '../src/core/db.ts'
 import { BoardLab, inLoadOrder } from '../src/core/lab.ts'
 import { main } from '../bare/boardlab.ts'
 import { BoardError } from '../src/core/errors.ts'
-import type { LabFields } from '../src/shared/types.ts'
+import { API_VERSION, type LabFields } from '../src/shared/types.ts'
 import type { Module } from '../src/core/module.ts'
 import type { ConsoleSession } from '../src/core/console.ts'
 import { serve } from '../src/server/http.ts'
 import { RawReply } from '../src/core/api.ts'
 import { parseConfig } from '../src/server/config.ts'
 import { createModules, instances, type CatalogEntry } from '../src/server/catalog.ts'
-import { deviceFilter, type Backend, type BoardTarget, type DownloadCapability, type LabConfig, type LabDevice, type PortTiming, type RelayCapability } from '../src/core/backend.ts'
+import { deviceFilter, type Backend, type BoardTarget, type DownloadCapability, type LabConfig, type LabDevice, type PortTiming, type RelayCapability, type RenameCapability } from '../src/core/backend.ts'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'boardlab-core-')) })
@@ -108,8 +108,8 @@ class FakeLab implements Backend {
   async present(_config: LabConfig, usbPath: string) { return !this.gone.has(usbPath) }
 }
 
-function coreLab(options: { lab?: Backend, now?: () => number } = {}) {
-  const here = new Here()
+function coreLab<H extends Backend = Here>(options: { lab?: Backend, here?: H, now?: () => number } = {}) {
+  const here = (options.here ?? new Here()) as H
   const lab = options.lab ?? new FakeLab()
   const svc = new BoardLab({
     db: openDatabase(join(dir, 'lab.sqlite')), now: options.now, sleep: async () => {}, firmwareDir: join(dir, 'firmware'), filesDir: join(dir, 'files'),
@@ -927,6 +927,114 @@ describe('remote labs', () => {
 const call = (svc: BoardLab, path: string, holder: string, body: Record<string, unknown>) =>
   Promise.resolve().then(() => svc.api.match('POST', path)!.endpoint.handle({ body, query: new URLSearchParams(), params: {}, caller: { holder, local: true }, signal: new AbortController().signal, upload: null }))
 
+describe('renaming a board', () => {
+  it('renames it everywhere here: the serial alias, the lock, the queue and its history; only its holder or nobody can', async () => {
+    class RenamingHere extends Here {
+      renamed: Array<{ board: string, die: string, to: string }> = []
+      rename: RenameCapability = {
+        perChip: true,
+        rename: async (_config, target, to) => { this.renamed.push({ board: target.board, die: target.die, to }); return { alias: to } },
+      }
+    }
+    const here = new RenamingHere()
+    const { svc } = coreLab({ here })
+    const left = await svc.locks.lock('com260', 'claude:s1', '调试')
+    await svc.locks.lock('com260', 'user:bob', '排队', { queue: 'join' })
+    // While someone holds it, a rename needs their lock (an agent its token, a person being that person).
+    await expect(svc.backends.rename('claude:s2', 'com260', 'k3b', { holder: 'claude:s2', token: null })).rejects.toThrow(/正被 claude:s1 使用/)
+    const result = await svc.backends.rename('claude:s1', 'com260', 'k3b', { holder: 'claude:s1', token: left.token })
+    expect(result).toEqual({ board: 'k3b', message: 'com260 → k3b' })
+    expect(here.renamed).toEqual([{ board: 'com260', die: 'die0', to: 'k3b' }])
+    expect(() => svc.boards.get('com260')).toThrow(/没有这块板/)
+    const board = svc.boards.get('k3b')
+    expect(board.lease?.holder).toBe('claude:s1')
+    expect(board.waiters.map(waiter => waiter.holder)).toEqual(['user:bob'])
+    expect(board.chips[0]!.alias).toBe('k3b')
+    // Its history came with it, the rename is in it, and so is the old name it had.
+    expect(svc.boards.detail('k3b').actions.map(action => action.kind)).toEqual(expect.arrayContaining(['add', 'rename']))
+    expect(svc.boards.detail('k3b').actions.find(action => action.kind === 'rename')?.message).toBe('com260 → k3b')
+    // A name that is taken is refused before anything is renamed.
+    svc.boards.add('user:alice', { name: 'taken' })
+    await expect(svc.backends.rename('claude:s1', 'k3b', 'taken', { holder: 'claude:s1', token: left.token })).rejects.toThrow(/已有板子 taken/)
+  })
+
+  it('rolls back the chips it already renamed when one of them fails', async () => {
+    class HalfHere extends Here {
+      calls: string[] = []
+      rename: RenameCapability = {
+        perChip: true,
+        rename: async (_config, target, to) => {
+          this.calls.push(`${target.port}→${to}`)
+          if (to === 'bad' && target.die === 'die1') throw new Error('那个串口没了')
+          return { alias: to }
+        },
+      }
+    }
+    const here = new HalfHere()
+    const { svc } = coreLab({ here })
+    svc.boards.add('user:alice', { name: 'twin', chips: [{ serialPath: '/dev/a', alias: 'twin' }, { serialPath: '/dev/b', alias: 'twin-die1' }] })
+    await expect(svc.backends.rename('user:alice', 'twin', 'bad', { holder: 'user:alice', token: null })).rejects.toThrow(/改名失败：那个串口没了/)
+    // The chip renamed before the failure was put back: nothing changed anywhere, and the retry starts from the old name.
+    expect(here.calls).toEqual(['twin→bad', 'twin-die1→bad', 'bad→twin'])
+    expect(svc.boards.get('twin').chips.map(chip => chip.alias)).toEqual(['twin', 'twin-die1'])
+    expect(svc.history().actions[0]).toMatchObject({ kind: 'rename', ok: false })
+  })
+
+  it('renames a lab board under the lab\'s prefix, its DUT keeping the lab\'s own name, and says what the lab did', async () => {
+    class RenamingLab extends FakeLab {
+      renamed: Array<{ device: string, to: string }> = []
+      rename: RenameCapability = {
+        rename: async (_config, target, to) => {
+          this.renamed.push({ device: target.device, to })
+          this.listed = this.listed.map(device => device.name === target.device ? { ...device, name: to } : device)
+          return { device: to, message: `${target.device} → ${to}（实验室里也改了）` }
+        },
+      }
+    }
+    const lab = new RenamingLab()
+    const { svc } = labService(lab)
+    await enable(svc)
+    const held = await svc.locks.lock('lab1-sub0-0', 'claude:s1', '调试')
+    const result = await svc.backends.rename('claude:s1', 'lab1-sub0-0', 'k3alpha', { holder: 'claude:s1', token: held.token })
+    expect(result).toEqual({ board: 'lab1-k3alpha', message: 'sub0-0 → k3alpha（实验室里也改了）' })
+    // The lab is told the device's own name, without boardd's prefix.
+    expect(lab.renamed).toEqual([{ device: 'sub0-0', to: 'k3alpha' }])
+    const board = svc.boards.get('lab1-k3alpha')
+    expect(board.lab?.device).toBe('k3alpha')
+    expect(board.lease?.holder).toBe('claude:s1')
+    expect(() => svc.boards.get('lab1-sub0-0')).toThrow(/没有这块板/)
+    // Written with the prefix it is kept as it is.
+    const again = await svc.backends.rename('claude:s1', 'lab1-k3alpha', 'lab1-other', { holder: 'claude:s1', token: held.token })
+    expect(again.board).toBe('lab1-other')
+    // An empty slot has nothing to rename.
+    lab.listed.push({ name: 'sub0-9', model: null, online: true, serialPort: null, serialConnected: false, downloadUsbPath: null, ip: null, slot: 's9', empty: true })
+    await svc.backends.sync('lab1')
+    await expect(svc.backends.rename('claude:s1', 'lab1-sub0-9', 'x', { holder: 'claude:s1', token: held.token })).rejects.toThrow(/空槽位/)
+  })
+
+  it('remembers a model someone typed in, offers it first next time, and lets no listing replace it until it is cleared', async () => {
+    const { svc, lab } = labService()
+    svc.boards.update('user:alice', 'com260', { product: 'k3-pico-itx' })
+    expect(svc.boards.get('com260').product).toBe('k3-pico-itx')
+    expect(svc.boards.models()).toEqual(['k3-pico-itx'])
+    svc.boards.add('user:alice', { name: 'k1x', product: 'k1x-deb1' })
+    expect(svc.boards.models()).toContain('k1x-deb1')
+    // Used again, it is the first offered.
+    svc.boards.update('user:alice', 'com260', { product: 'k3-pico-itx' })
+    expect(svc.boards.models()[0]).toBe('k3-pico-itx')
+    await enable(svc)
+    // A model typed in for a lab board stays when the lab lists the board again.
+    svc.boards.update('user:alice', 'lab1-sub0-0', { product: 'k3-custom' })
+    await svc.backends.sync('lab1')
+    expect(svc.boards.get('lab1-sub0-0').product).toBe('k3-custom')
+    expect(lab.listed[0]!.model).toBe('k3')
+    // Cleared, it is the lab's own again.
+    svc.boards.update('user:alice', 'lab1-sub0-0', { product: null })
+    await svc.backends.sync('lab1')
+    expect(svc.boards.get('lab1-sub0-0').product).toBe('k3')
+  })
+})
+
 describe('busy boards', () => {
   it('show busy only for whoever may do the operation, so someone refused never holds up the holder', async () => {
     const { svc, here } = coreLab()
@@ -1118,6 +1226,21 @@ describe('boardd API', () => {
       expect(file.headers['content-disposition']).toBe('attachment; filename="lab1-sub0-0-202611100900-202611101000.log"')
       expect(file.body).toBe('[2026-11-10 09:00:00] from the lab\n')
       expect((await get('/api/logs?board=lab1-sub0-0&since=yesterday')).status).toBe(400)
+    } finally { await running.close() }
+  })
+
+  it('says which release and API version it is, for clients that must match it', async () => {
+    const port = 39000 + Math.floor(Math.random() * 400)
+    const svc = service()
+    const running = await serve(svc, { port, socketPath: join(dir, 'version.sock'), uiDir: null, version: '0.4.0rc1', revision: 'abc1234' })
+    const get = (path: string) => new Promise<{ status: number, body: string }>(resolve => {
+      request({ host: '127.0.0.1', port, path }, res => { let body = ''; res.on('data', chunk => { body += chunk }); res.on('end', () => resolve({ status: res.statusCode!, body })) }).end()
+    })
+    try {
+      expect(JSON.parse((await get('/api/version')).body)).toEqual({ version: '0.4.0rc1', revision: 'abc1234', api: API_VERSION })
+      // The models people typed in are offered to every page.
+      svc.boards.update('user:alice', 'com260', { product: 'k3-typed' })
+      expect(JSON.parse((await get('/api/models')).body)).toEqual({ models: ['k3-typed'] })
     } finally { await running.close() }
   })
 

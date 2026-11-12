@@ -12,6 +12,7 @@ import { Api, EventStream, FileReply, RawReply, TextReply, type Caller, type Emi
 import { BoardError } from '../core/errors.ts'
 import type { BoardLab } from '../core/lab.ts'
 import { HOLDER } from '../core/text.ts'
+import { API_VERSION } from '../shared/types.ts'
 
 const STATUS: Record<BoardError['code'], number> = { 'not-found': 404, invalid: 400, locked: 423, forbidden: 403, conflict: 409, hardware: 502 }
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.map': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png' }
@@ -24,17 +25,28 @@ const AGENT = HOLDER
  * writes are accepted; the proxy forwards with `Host: 127.0.0.1:<port>`. `uiDir` is the UI to serve (null: none).
  * `docsDir` holds the help pages (`<name>.md`) the page and the CLI show (null: none).
  */
-export interface ServeOptions { port: number, hosts?: string[], origins?: string[], socketPath: string, uiDir: string | null, cli?: string, stateDir?: string, docsDir?: string | null }
+export interface ServeOptions {
+  port: number, hosts?: string[], origins?: string[], socketPath: string, uiDir: string | null, cli?: string, stateDir?: string, docsDir?: string | null,
+  /** This boardd's release, and the HTTP API version it serves (see GET /api/version). */
+  version?: string, revision?: string,
+  /**
+   * Whether this process makes the Unix socket (default): one boardd. Under a supervisor it is false — the socket is
+   * shared by every worker, so a worker neither removes nor re-permissions it.
+   */
+  ownSocket?: boolean,
+}
 /**
  * What the gateway's own endpoints need from how boardd runs: its own CLI (to run commands for older clients), state
  * directory, and help pages.
  */
-type GatewayOptions = { cli?: string, stateDir?: string, docsDir?: string | null }
+type GatewayOptions = { cli?: string, stateDir?: string, docsDir?: string | null, version?: string, revision?: string }
 
 export function createApi(lab: BoardLab, options: GatewayOptions = {}): (request: IncomingMessage, response: ServerResponse, caller: Caller) => Promise<void> {
   // The gateway's own endpoints, served beside the lab's; its index lists both.
   const own = new Api()
   own.add('gateway', [cliEndpoint(options), ...docsEndpoints(options.docsDir ?? null), {
+    method: 'GET', path: '/api/version', about: 'boardd 的版本和它提供的 API 版本', handle: () => ({ version: options.version ?? 'dev', revision: options.revision ?? 'dev', api: API_VERSION }),
+  }, {
     method: 'GET', path: '/api', about: '列出所有接口和模块', handle: () => {
       const described = [...lab.api.list().filter(item => item.path !== '/api'), ...own.list()].sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method))
       return { endpoints: described.map(item => `${item.method} ${item.path}`), described, modules: lab.modules() }
@@ -208,7 +220,7 @@ function serveStatic(uiDir: string, pathname: string, response: ServerResponse) 
 export async function serve(lab: BoardLab, options: ServeOptions): Promise<{ http: Server[], unix: Server, close(): Promise<void> }> {
   const listFrontends = () => readFrontends(options.uiDir)
   const current = (list: Frontends) => { const chosen = lab.kernel.setting(FRONTEND_SETTING); return chosen && list.frontends.some(item => item.name === chosen) ? chosen : list.default }
-  const api = createApi(lab, { cli: options.cli, stateDir: options.stateDir, docsDir: options.docsDir })
+  const api = createApi(lab, { cli: options.cli, stateDir: options.stateDir, docsDir: options.docsDir, version: options.version, revision: options.revision })
   const human = `user:${userInfo().username}`
   const hosts = [...new Set(['127.0.0.1', ...(options.hosts ?? [])])]
   const allowed = new Set([...hosts, 'localhost'].map(host => `${host}:${options.port}`))
@@ -257,9 +269,12 @@ export async function serve(lab: BoardLab, options: ServeOptions): Promise<{ htt
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(options.port, host, resolve) })
     http.push(server)
   }
-  if (existsSync(options.socketPath)) unlinkSync(options.socketPath)
+  // Under a supervisor the socket belongs to the workers together: the supervisor made its directory and removed a
+  // stale one before the first worker started it.
+  const ownSocket = options.ownSocket ?? true
+  if (ownSocket && existsSync(options.socketPath)) unlinkSync(options.socketPath)
   await new Promise<void>(resolve => unix.listen(options.socketPath, resolve))
-  chmodSync(options.socketPath, 0o600)
+  if (ownSocket) chmodSync(options.socketPath, 0o600)
   const closeServer = (server: Server) => new Promise<void>(done => { server.closeAllConnections(); server.close(() => done()) })
   return { http, unix, close: async () => { await Promise.all([...http, unix].map(closeServer)) } }
 }

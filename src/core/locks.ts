@@ -306,10 +306,12 @@ export class Locks {
     if (row) queueMicrotask(() => this.endings.forEach(listener => listener(String(row.board))))
   }
 
-  /** A board renamed: its lock and queue go with it. */
+  /** A board renamed: its lock, queue and any request to let go of it go with it. */
   rename(from: string, to: string) {
     this.k.db.prepare('UPDATE leases SET board=? WHERE board=?').run(to, from)
     this.k.db.prepare('UPDATE lease_waiters SET board=? WHERE board=?').run(to, from)
+    const pending = this.yields.get(from)
+    if (pending) { this.yields.delete(from); pending.request.board = to; this.yields.set(to, pending) }
   }
 
   /** A target gone for good: nobody waits for it any more. */

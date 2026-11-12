@@ -126,11 +126,12 @@ export class Boards {
       if (this.exists(input.name)) throw new BoardError('conflict', `已有板子 ${input.name}`)
       if (input.slot != null && db.prepare('SELECT 1 FROM boards WHERE slot=?').get(input.slot)) throw new BoardError('conflict', `槽位 ${input.slot} 已有别的板子`)
       const product = input.product ?? null
-      db.prepare(`INSERT INTO boards(name, slot, product, soc, source) VALUES(?,?,?,?,'manual')`).run(input.name, input.slot ?? null, product, product ? socOf(product) : null)
+      db.prepare(`INSERT INTO boards(name, slot, product, soc, source, product_manual) VALUES(?,?,?,?,'manual',?)`).run(input.name, input.slot ?? null, product, product ? socOf(product) : null, product ? 1 : 0)
       ;(input.chips ?? []).forEach((chip, index) => {
         db.prepare('INSERT INTO chips(board, die, serial_path, alias, download_usb_path, usb_id) VALUES(?,?,?,?,?,?)')
           .run(input.name, chip.die ?? `die${index}`, chip.serialPath ?? null, chip.alias ?? null, chip.downloadUsbPath ?? null, chip.usbId ?? null)
       })
+      this.rememberModel(product)
       this.lab.kernel.record(actor, input.name, 'add', input.slot != null ? `槽位 ${input.slot}` : null, true)
     })
     this.lab.kernel.changed(input.name)
@@ -155,7 +156,7 @@ export class Boards {
   /** Delete a board's record, chips included. */
   drop(name: string) { this.lab.kernel.db.prepare('DELETE FROM boards WHERE name=?').run(name) }
 
-  update(actor: string, name: string, patch: { notes?: string | null, slot?: number | null }) {
+  update(actor: string, name: string, patch: { notes?: string | null, slot?: number | null, product?: string | null }) {
     if (this.get(name).lab && patch.slot !== undefined) throw new BoardError('invalid', `${name} 在实验室里，没有控制槽位`)
     const db = this.lab.kernel.db
     if (patch.notes !== undefined) db.prepare('UPDATE boards SET notes=? WHERE name=?').run(patch.notes, name)
@@ -163,8 +164,25 @@ export class Boards {
       try { db.prepare('UPDATE boards SET slot=? WHERE name=?').run(patch.slot, name) }
       catch { throw new BoardError('conflict', `槽位 ${patch.slot} 已有别的板子`) }
     }
+    if (patch.product !== undefined) {
+      const product = patch.product?.trim() || null
+      db.prepare('UPDATE boards SET product=?, soc=?, product_manual=? WHERE name=?').run(product, product ? socOf(product) : null, product ? 1 : 0, name)
+      this.rememberModel(product)
+    }
     this.lab.kernel.record(actor, name, 'edit', JSON.stringify(patch), true)
     this.lab.kernel.changed(name)
+  }
+
+  /** Models people typed in themselves, most recently used first: the page's dropdown. */
+  models(): string[] {
+    return this.lab.kernel.db.prepare('SELECT name FROM board_models ORDER BY last_used_at DESC, uses DESC, name').all().map(row => String(row.name))
+  }
+
+  /** Remember a model someone typed in, so it is offered next time. */
+  private rememberModel(product: string | null) {
+    if (!product) return
+    this.lab.kernel.db.prepare(`INSERT INTO board_models(name, last_used_at, uses) VALUES(?,?,1)
+      ON CONFLICT(name) DO UPDATE SET last_used_at=excluded.last_used_at, uses=uses+1`).run(product, this.lab.kernel.iso())
   }
 
   setMode(name: string, mode: BoardMode) { this.lab.kernel.db.prepare('UPDATE boards SET mode=? WHERE name=?').run(mode, name) }
@@ -178,9 +196,12 @@ export class Boards {
     }
   }
 
-  /** Chips follow through the foreign key; the lock and the queue are carried over too. */
+  /** Chips follow through the foreign key; the lock, the queue, the actions and the proposals are carried over too. */
   rename(from: string, to: string) {
-    this.lab.kernel.db.prepare('UPDATE boards SET name=? WHERE name=?').run(to, from)
+    const db = this.lab.kernel.db
+    db.prepare('UPDATE boards SET name=? WHERE name=?').run(to, from)
+    db.prepare('UPDATE actions SET board=? WHERE board=?').run(to, from)
+    db.prepare('UPDATE proposals SET board=? WHERE board=?').run(to, from)
     this.lab.locks.rename(from, to)
   }
 

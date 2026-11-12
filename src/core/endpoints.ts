@@ -156,7 +156,21 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     // ---------- inventory ----------
     { method: 'POST', path: '/api/boards/add', about: '手工登记板子', handle: ({ body, caller }) => { lab.boards.add(caller.holder, body) } },
     { method: 'POST', path: '/api/boards/remove', about: '移除板子', handle: async ({ body, caller }) => { const name = named(body.name, 'name'); await lab.kernel.doing([lab.boards.free(name)], 'remove', '移除中', caller.holder, () => lab.boards.remove(caller.holder, name)) } },
-    { method: 'POST', path: '/api/board', about: '改板子的备注或槽位', handle: ({ body, caller }) => { lab.boards.update(caller.holder, named(body.name, 'name'), { notes: body.notes, slot: body.slot }) } },
+    {
+      method: 'POST', path: '/api/board', about: '改板子的备注、槽位或型号（product 为空则清掉；填过的型号会记下来，下次出现在下拉列表里）',
+      handle: ({ body, caller }) => {
+        const patch: { notes?: string | null, slot?: number | null, product?: string | null } = { notes: body.notes, slot: body.slot }
+        if ('product' in body) patch.product = body.product === null ? null : String(body.product)
+        lab.boards.update(caller.holder, named(body.name, 'name'), patch)
+      },
+    },
+    {
+      method: 'POST', path: '/api/board/rename', about: '给板子改名（全链路：板子、串口名、锁、队列、历史和它所在实验室的名字一起改；要拿着锁或板子空闲时）',
+      handle: ({ body, caller }) => lab.backends.rename(caller.holder, named(body.board, 'board'), required(body.name, 'name'), {
+        holder: caller.holder, token: typeof body.token === 'string' ? body.token : null,
+      }),
+    },
+    { method: 'GET', path: '/api/models', about: '人们自己填过的板子型号，最近用的在前（给下拉列表）', handle: () => ({ models: lab.boards.models() }) },
     { method: 'POST', path: '/api/boards/refresh', about: '槽位里换了板子以后重新读取它（要拿锁；name 改名，rename 按读到的改名）', handle: ({ body, caller }) => { const name = board(body); return doing(name, 'refresh', '读取中', caller.holder, body, signal => lab.backends.refresh(name, who(caller.holder, body), { name: optional(body.name), rename: body.rename === true }, signal)) } },
     { method: 'POST', path: '/api/proposals', about: '应用或拒绝改动建议', handle: async ({ body, caller }) => { await lab.proposals.resolve(caller.holder, body.ids ?? [], body.decision === 'apply' ? 'apply' : 'reject', body.names && typeof body.names === 'object' ? body.names : {}) } },
 

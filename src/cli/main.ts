@@ -69,7 +69,7 @@ interface Args { positional: string[], flags: Map<string, string | true> }
 export function parseArgs(argv: string[]): Args {
   const positional: string[] = []
   const flags = new Map<string, string | true>()
-  const booleans = new Set(['json', 'wait', 'yes', 'raw', 'all', 'confirm', 'token-stdin', 'password-stdin', 'help', 'human', 'agents', 'interactive', 'global', 'no-ui'])
+  const booleans = new Set(['json', 'wait', 'yes', 'raw', 'all', 'confirm', 'token-stdin', 'password-stdin', 'help', 'human', 'agents', 'interactive', 'global', 'no-ui', 'clear', 'supervisor', 'worker'])
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!
     if (arg === '-i') { flags.set('interactive', true); continue }

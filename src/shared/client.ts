@@ -322,6 +322,12 @@ export class BoardsClient {
   discoverLab(id: string, options: { human?: boolean, host?: string, slots?: string[] } = {}) { return this.call<{ message: string, proposals: number, registered?: string[] }>('POST', '/api/labs/discover', { id, confirmed: true, ...options }) }
   /** Read the board in a slot again after a swap; returns its name afterwards. */
   refresh(board: string, options: { name?: string, rename?: boolean } = {}, token?: string | null) { return this.call<{ board: string, message: string }>('POST', '/api/boards/refresh', { board, ...options, token }) }
+  /** Rename a board everywhere (backend, chips and serial names, lock, queue, history); returns its name afterwards. */
+  renameBoard(board: string, name: string, token?: string | null) { return this.call<{ board: string, message: string }>('POST', '/api/board/rename', { board, name, token }) }
+  /** Models people typed in themselves, most recent first. */
+  models() { return this.call<{ models: string[] }>('GET', '/api/models') }
+  /** Set or clear a board's model; a set one is remembered for the dropdown. */
+  setModel(board: string, product: string | null) { return this.call<{ ok: true }>('POST', '/api/board', { name: board, product }) }
   labSlots(id: string, fresh = true) { return this.call<LabPorts>('GET', `/api/labs/slots?id=${encodeURIComponent(id)}${fresh ? '&fresh=1' : ''}`) }
   bindLab(id: string, input: { host: string, console: string, usb: string, name?: string }) { return this.call<{ board: string }>('POST', '/api/labs/bind', { id, ...input }) }
   removeBoard(name: string) { return this.call<{ ok: true }>('POST', '/api/boards/remove', { name }) }

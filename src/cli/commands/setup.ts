@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { BoardsClient, DEFAULT_PORT, remoteConfigPath, socketPathFor, transportFor, type RemoteConfig } from '../../shared/client.ts'
+import { API_VERSION } from '../../shared/types.ts'
 import type { Command, CommandGroup } from '../command.ts'
 import { shipped } from '../shipped.ts'
 
@@ -88,8 +89,9 @@ const serve: Command = {
   usage: [
     `serve [--port ${DEFAULT_PORT}] [--host <额外监听地址,…>] [--origin <反向代理的网页地址,…>] [--state-dir <dir>]`,
     '      [--config <boardd.json>] [--modules <模块,…>] [--ui <网页目录> | --no-ui]\t运行 boardd：装哪些模块和设置见 --config（默认 <state-dir>/boardd.json，没有就全装）；--ui 换一个网页，--no-ui 只提供 /api',
+    '      --supervisor\t自己守着端口和 socket，装后代（--worker）跑 boardd；更新时新一代接手新连接，旧的跑完已有连接和任务再退',
   ],
-  async run({ flag, flags, stateDir, catalog }) {
+  async run({ flag, flags, argv, stateDir, catalog }) {
     const { startBoardd } = await import('../../server/main.ts')
     // The default UI built with boardlab, another one given, or none (an API-only boardd).
     const uiDir = flags.has('no-ui') ? null : flag('ui') ? resolve(flag('ui')!) : shipped('dist/ui', dir => existsSync(join(dir, 'index.html')) || existsSync(join(dir, 'frontends.json')))
@@ -99,9 +101,21 @@ const serve: Command = {
     // boardd runs this same CLI for older clients' unknown commands (POST /api/cli).
     const cli = process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : undefined
     const modules = flag('modules')?.split(',').map(id => id.trim()).filter(Boolean)
-    const boardd = await startBoardd({ stateDir, catalog, shipped: path => shipped(path), port: flag('port') ? Number(flag('port')) : undefined, hosts, origins, uiDir, firmwareDir, cli, config: flag('config'), modules })
+    const { version, revision } = cliVersion()
+    if (flags.has('supervisor')) {
+      if (!cli) throw new Error('serve --supervisor 需要从装好的 CLI 文件运行')
+      const { supervise } = await import('../../server/supervisor.ts')
+      return supervise({ stateDir, cli, args: argv.filter(arg => arg !== '--supervisor' && arg !== '--worker'), version, revision })
+    }
+    const boardd = await startBoardd({ stateDir, catalog, shipped: path => shipped(path), port: flag('port') ? Number(flag('port')) : undefined, hosts, origins, uiDir, firmwareDir, cli, config: flag('config'), modules, version, revision, worker: flags.has('worker') })
     console.log(`boardd 已启动：${boardd.hosts.map(host => `http://${host}:${boardd.port}/`).join('  ')}  socket ${socketPathFor(stateDir)}${boardd.uiDir ? '' : flags.has('no-ui') ? '（不带网页）' : '（网页未构建）'}`)
     console.log(`模块：${boardd.lab.modules().map(item => item.id).join(', ') || '（无）'}${boardd.config.source ? `（配置 ${boardd.config.source}）` : ''}`)
+    if (flags.has('worker')) {
+      process.send?.({ type: 'ready', version, revision })
+      // The supervisor starts a new worker and asks this one to stop taking background work; its existing connections
+      // (console and event streams) and the tasks it runs live on until they end.
+      process.on('message', message => { if ((message as { type?: string } | undefined)?.type === 'drain') boardd.lab.stop() })
+    }
     const stop = async () => { await boardd.close(); process.exit(0) }
     process.on('SIGINT', stop); process.on('SIGTERM', stop)
   },
@@ -137,10 +151,14 @@ const version: Command = {
     const mine = cliVersion()
     let boardd: { version?: string, revision?: string, newer?: boolean, latest?: { version: string } | null } | null = null, error: string | null = null
     try { boardd = await client.call('GET', '/api/system/version') } catch (failure) { error = (failure as Error).message }
-    out({ cli: mine, boardd, error }, () => {
+    // The API version a boardd serves: a client and a boardd of different ones are upgraded to the same release.
+    let api: { version: string, revision: string, api: number } | null = null
+    try { api = await client.call('GET', '/api/version') } catch {}
+    out({ cli: mine, boardd, api, error }, () => {
       console.log(`boardlab ${mine.version}（${mine.revision}）`)
       if (boardd?.version) console.log(`boardd   ${boardd.version}（${boardd.revision}）${boardd.newer && boardd.latest ? `，有新版 ${boardd.latest.version}：boardlab update` : ''}`)
       else console.log(`boardd   ${error ? `连不上：${error}` : '没有版本信息（老版本，或者没装 system 模块）'}`)
+      if (api && api.api !== API_VERSION) console.log(`接口     这个 CLI 用 API ${API_VERSION}，boardd 提供 ${api.api}：把两边升级到同一个版本再用`)
     })
   },
 }

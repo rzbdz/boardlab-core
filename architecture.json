@@ -32,7 +32,8 @@
       ],
       "entries": [
         "src/server/main.ts",
-        "src/server/catalog.ts"
+        "src/server/catalog.ts",
+        "src/server/supervisor.ts"
       ]
     },
     "bare": {

@@ -1,5 +1,11 @@
 /** Wire types shared by boardd, the CLI, the web UI and the DSH plugin. */
 
+/**
+ * The HTTP API's version. It goes up only for a change an older client cannot live with; boardd keeps serving older
+ * clients for the versions it can, and `GET /api/version` lets a client see what it is talking to.
+ */
+export const API_VERSION = 1
+
 export type LeaseStatus = 'held' | 'released' | 'stolen'
 export type BoardMode = 'unknown' | 'normal' | 'resetting' | 'fastboot'
 export type BoardSource = 'import' | 'scan' | 'manual' | 'lab'

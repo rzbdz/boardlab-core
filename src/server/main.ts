@@ -25,6 +25,11 @@ export interface BoarddOptions {
   config?: string
   /** Load these modules (with their settings from the configuration) instead of the configuration's list. */
   modules?: string[]
+  /** This release's version and revision, for `GET /api/version`. */
+  version?: string
+  revision?: string
+  /** One worker under a supervisor: it shares the Unix socket with the other workers. */
+  worker?: boolean
 }
 
 export async function startBoardd(options: BoarddOptions) {
@@ -43,7 +48,7 @@ export async function startBoardd(options: BoarddOptions) {
   const port = options.port ?? DEFAULT_PORT
   // One frontend (index.html at the top), or several (frontends.json, see http.ts).
   const uiDir = options.uiDir && (existsSync(join(options.uiDir, 'index.html')) || existsSync(join(options.uiDir, 'frontends.json'))) ? options.uiDir : null
-  const server = await serve(lab, { port, hosts: options.hosts, origins: options.origins, cli: options.cli, stateDir: options.stateDir, socketPath: socketPathFor(options.stateDir), uiDir, docsDir: options.shipped?.('docs/help') ?? null })
+  const server = await serve(lab, { port, hosts: options.hosts, origins: options.origins, cli: options.cli, stateDir: options.stateDir, socketPath: socketPathFor(options.stateDir), uiDir, docsDir: options.shipped?.('docs/help') ?? null, version: options.version, revision: options.revision, ownSocket: !options.worker })
   return {
     lab, port, uiDir, config, hosts: ['127.0.0.1', ...(options.hosts ?? [])],
     async close() { lab.stop(); await server.close(); db.close() },
