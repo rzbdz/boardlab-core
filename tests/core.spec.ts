@@ -18,6 +18,7 @@ import type { LabFields } from '../src/shared/types.ts'
 import type { Module } from '../src/core/module.ts'
 import type { ConsoleSession } from '../src/core/console.ts'
 import { serve } from '../src/server/http.ts'
+import { RawReply } from '../src/core/api.ts'
 import { parseConfig } from '../src/server/config.ts'
 import { createModules, instances, type CatalogEntry } from '../src/server/catalog.ts'
 import { deviceFilter, type Backend, type BoardTarget, type DownloadCapability, type LabConfig, type LabDevice, type PortTiming, type RelayCapability } from '../src/core/backend.ts'
@@ -1130,6 +1131,36 @@ describe('boardd API', () => {
       expect(JSON.parse((await get('/api/frontends')).body).current).toBe('plain')
       expect(svc.history().actions[0]).toMatchObject({ kind: 'frontend', detail: 'plain' })
       expect((await get('/api/frontends?name=gone')).status).toBe(400)           // listed but not built
+    } finally { await running.close() }
+  })
+
+  it('passes a reply on as it comes, for every path under an endpoint that ends in /*', async () => {
+    const svc = service()
+    const seen: Array<{ rest: string, accept: unknown }> = []
+    let more: (() => void) | null = null
+    svc.api.add('test-pass', [{
+      method: 'GET', path: '/api/pass/:id/*', about: 'pass a reply on',
+      handle: ({ params, headers }) => {
+        seen.push({ rest: params['*']!, accept: headers?.accept })
+        if (params['*'] !== '/live') return new RawReply(201, { 'content-type': 'text/plain', 'x-from': params.id! }, (async function* () { yield 'a'; yield Buffer.from('b') })())
+        return new RawReply(200, { 'content-type': 'text/event-stream' }, (async function* () { yield 'data: 1\n\n'; await new Promise<void>(resolve => { more = resolve }); yield 'data: 2\n\n' })())
+      },
+    }])
+    expect(() => svc.api.add('test-bad', [{ method: 'GET', path: '/api/x/*/y', about: '', handle: () => null }])).toThrow('endpoint path')
+    const port = 39500 + Math.floor(Math.random() * 400)
+    const running = await serve(svc, { port, socketPath: join(dir, 'pass.sock'), uiDir: null })
+    try {
+      const plain = await fetch(`http://127.0.0.1:${port}/api/pass/h1/static/a%20b.css?v=1`, { headers: { Accept: 'text/css' } })
+      expect([plain.status, plain.headers.get('x-from'), await plain.text()]).toEqual([201, 'h1', 'ab'])
+      expect((await fetch(`http://127.0.0.1:${port}/api/pass/h1`)).status).toBe(201)
+      expect(seen.slice(0, 2)).toEqual([{ rest: '/static/a%20b.css', accept: 'text/css' }, { rest: '', accept: '*/*' }])
+      // An event stream is passed on chunk by chunk, not when it ends.
+      const live = await fetch(`http://127.0.0.1:${port}/api/pass/h1/live`)
+      const reader = live.body!.getReader()
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe('data: 1\n\n')
+      more!()
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe('data: 2\n\n')
+      expect((await reader.read()).done).toBe(true)
     } finally { await running.close() }
   })
 

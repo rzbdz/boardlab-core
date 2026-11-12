@@ -8,7 +8,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { chmodSync, createReadStream, existsSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { extname, join } from 'node:path'
-import { Api, EventStream, FileReply, TextReply, type Caller, type Emit, type Endpoint } from '../core/api.ts'
+import { Api, EventStream, FileReply, RawReply, TextReply, type Caller, type Emit, type Endpoint } from '../core/api.ts'
 import { BoardError } from '../core/errors.ts'
 import type { BoardLab } from '../core/lab.ts'
 import { HOLDER } from '../core/text.ts'
@@ -50,7 +50,7 @@ export function createApi(lab: BoardLab, options: GatewayOptions = {}): (request
     response.on('close', () => { if (!response.writableFinished) abort.abort() })
     try {
       const body = !raw && request.method !== 'GET' ? await readJson(request) : {}
-      const reply = await found.endpoint.handle({ body, query: url.searchParams, params: found.params, caller, signal: abort.signal, upload: raw ? request : null })
+      const reply = await found.endpoint.handle({ body, query: url.searchParams, params: found.params, headers: request.headers, caller, signal: abort.signal, upload: raw ? request : null })
       await answer(response, reply, abort)
     } catch (error) {
       if (raw) request.resume()
@@ -65,6 +65,14 @@ async function answer(response: ServerResponse, reply: unknown, abort: AbortCont
   if (reply instanceof TextReply) {
     response.writeHead(200, { 'Content-Type': reply.type, ...(reply.filename ? { 'Content-Disposition': `attachment; filename="${reply.filename.replace(/[^A-Za-z0-9._-]/g, '_')}"` } : {}) })
     return void response.end(reply.text)
+  }
+  if (reply instanceof RawReply) {
+    response.writeHead(reply.status, reply.headers)
+    if (!reply.body) return void response.end()
+    // Each chunk as it comes (an event stream stays live), until the caller goes.
+    try { for await (const chunk of reply.body) { if (abort.signal.aborted) break; response.write(chunk) } }
+    finally { if (!response.writableEnded) response.end() }
+    return
   }
   if (reply instanceof FileReply) {
     response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': String(statSync(reply.path).size) })

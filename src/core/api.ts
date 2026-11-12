@@ -12,8 +12,10 @@ export interface ApiRequest {
   /** The JSON body (POST), or {}. */
   body: any
   query: URLSearchParams
-  /** Path parameters (`/api/files/:sha256`). */
+  /** Path parameters (`/api/files/:sha256`); `*` is the rest of a path that ends in `/*`, as sent (`/a/b`, or ''). */
   params: Record<string, string>
+  /** The request's headers, lower-case, for endpoints that pass a request on (absent where there are none). */
+  headers?: Record<string, string | string[] | undefined>
   caller: Caller
   /** Aborted when the caller goes away. */
   signal: AbortSignal
@@ -32,6 +34,10 @@ export class TextReply {
   /** `filename`: offered as a download under this name (Content-Disposition: attachment). */
   constructor(readonly text: string, readonly type = 'text/plain; charset=utf-8', readonly filename?: string) {}
 }
+/** A reply passed on as it came from elsewhere: its status, headers and body, streamed (a proxied page or event stream). */
+export class RawReply {
+  constructor(readonly status: number, readonly headers: Record<string, string>, readonly body: AsyncIterable<Buffer | string> | null) {}
+}
 /** A reply that is a file's bytes. */
 export class FileReply {
   constructor(readonly path: string) {}
@@ -41,13 +47,13 @@ export type Method = 'GET' | 'POST' | 'PUT'
 
 export interface Endpoint {
   method: Method
-  /** `/api/...`, with `:name` for a path parameter. */
+  /** `/api/...`, with `:name` for a path parameter, and ending in `/*` to take every path below it too (`params['*']`). */
   path: string
   /** What it does, for `GET /api`. */
   about: string
   /** What the body is: JSON (the default for POST) or raw bytes (the default for PUT). */
   body?: 'json' | 'raw'
-  /** Returns the reply: JSON data (undefined is `{ok: true}`), or a TextReply, FileReply or EventStream. */
+  /** Returns the reply: JSON data (undefined is `{ok: true}`), or a TextReply, FileReply, RawReply or EventStream. */
   handle(request: ApiRequest): unknown
 }
 
@@ -59,10 +65,13 @@ export class Api {
   /** Add a module's endpoints; a method and path may be served once. */
   add(module: string, endpoints: Endpoint[]) {
     for (const endpoint of endpoints) {
-      if (!/^\/api(\/[A-Za-z0-9_.:-]+)*$/.test(endpoint.path)) throw new Error(`endpoint path ${endpoint.path}`)
+      if (!/^\/api(\/[A-Za-z0-9_.:-]+)*(\/\*)?$/.test(endpoint.path)) throw new Error(`endpoint path ${endpoint.path}`)
       if (this.endpoints.some(item => item.method === endpoint.method && item.path === endpoint.path)) throw new Error(`${endpoint.method} ${endpoint.path} is served twice`)
       const keys: string[] = []
-      const pattern = new RegExp(`^${endpoint.path.replace(/[.]/g, '\\.').replace(/:([A-Za-z0-9_]+)/g, (_, key: string) => { keys.push(key); return '([^/]+)' })}$`)
+      const rest = endpoint.path.endsWith('/*')
+      const fixed = rest ? endpoint.path.slice(0, -2) : endpoint.path
+      const pattern = new RegExp(`^${fixed.replace(/[.]/g, '\\.').replace(/:([A-Za-z0-9_]+)/g, (_, key: string) => { keys.push(key); return '([^/]+)' })}${rest ? '(/.*)?' : ''}$`)
+      if (rest) keys.push('*')
       this.endpoints.push({ ...endpoint, module, pattern, keys })
     }
   }
@@ -71,7 +80,7 @@ export class Api {
     for (const endpoint of this.endpoints) {
       if (endpoint.method !== method) continue
       const found = path.match(endpoint.pattern)
-      if (found) return { endpoint, params: Object.fromEntries(endpoint.keys.map((key, index) => [key, decodeURIComponent(found[index + 1]!)])) }
+      if (found) return { endpoint, params: Object.fromEntries(endpoint.keys.map((key, index) => [key, key === '*' ? found[index + 1] ?? '' : decodeURIComponent(found[index + 1]!)])) }
     }
     return null
   }
