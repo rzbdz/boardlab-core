@@ -114,7 +114,8 @@ export class Locks {
     if (!HOLDER.test(holder)) throw new BoardError('invalid', `持有人格式不对：${holder}`)
     if (!purpose.trim()) throw new BoardError('invalid', '请写明用途')
     const mode = options.queue ?? 'none'
-    const result = transaction(this.k.db, (): LockResult | { waiter: string } => {
+    let result: LockResult | { waiter: string }
+    try { result = transaction(this.k.db, (): LockResult | { waiter: string } => {
       this.assertTarget(target)
       const held = this.held(target)
       if (held?.holder === holder) {
@@ -137,7 +138,12 @@ export class Locks {
       this.k.db.prepare('INSERT INTO lease_waiters(id, board, holder, purpose, queued_at) VALUES(?,?,?,?,?)').run(id, target, holder, purpose, this.k.iso())
       this.k.record(holder, target, 'queue', purpose, true, `第 ${queue.length + 1} 位`)
       return mode === 'join' ? { lease: null, token: null, gateToken: null, queued: { position: queue.length + 1 } } : { waiter: id }
-    })
+    }) }
+    catch (error) {
+      // A lock that was refused is recorded too: who asked, for what, and why not (the history shows it, ok=false).
+      if (error instanceof BoardError && error.code === 'locked') this.k.record(holder, target, 'lock', purpose, false, error.message)
+      throw error
+    }
     this.k.changed(target)
     if (!('waiter' in result)) {
       if (!this.gated(target)) result.gateToken = null

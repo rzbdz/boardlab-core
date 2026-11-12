@@ -525,7 +525,7 @@ describe('remote labs', () => {
     const seen: Array<string | null> = []
     svc.events.on('event', () => seen.push(svc.boards.get('lab1-sub0-0').lab!.progress))
     expect(await svc.download.build('lab1-sub0-0', claude, { sdk: 'sdk-a', method: 'download' })).toBe('job boot-7 succeeded in 41s')
-    expect(lab.boots).toEqual([{ device: 'sub0-0', sdk: 'sdk-a', method: 'download', variant: null, lease: null }])
+    expect(lab.boots).toEqual([{ device: 'sub0-0', sdk: 'sdk-a', method: 'download', variant: null, brk: null, lease: null }])
     expect(seen).toContain('boot k3-a with sdk-a [load]: 10 steps')
     expect(svc.boards.get('lab1-sub0-0').lab?.progress).toBeNull()
     expect(svc.boards.detail('lab1-sub0-0').actions[0]).toMatchObject({ kind: 'flash', detail: 'sdk-a 刷机', ok: true })
@@ -1313,3 +1313,13 @@ describe('CLI arguments', () => {
     expect(lock.flags.get('for')).toBe('调试')
   })
 })
+
+  it('records a lock that was refused, with who asked and why not', async () => {
+    const { svc } = labService()
+    await enable(svc)
+    await svc.locks.lock('lab1-sub0-0', 'user:bob', '跑回归')
+    await expect(svc.locks.lock('lab1-sub0-0', 'user:alice', '调试')).rejects.toThrow(/正被 user:bob 使用/)
+    const refused = svc.history().actions.find(action => action.actor === 'user:alice' && action.kind === 'lock' && !action.ok)
+    expect(refused).toMatchObject({ board: 'lab1-sub0-0', detail: '调试', ok: false })
+    expect(refused!.message).toMatch(/正被 user:bob 使用/)
+  })
