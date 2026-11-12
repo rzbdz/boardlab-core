@@ -279,6 +279,10 @@ export class BoardsClient {
   bootSdk(board: string, input: { sdk: string, method?: 'load' | 'download', variant?: string, brk?: string }, token?: string | null) { return this.call<{ output: string }>('POST', '/api/boot/sdk', { board, ...input, token }) }
   /** Where an SDK's recipe can stop early (empty when the backend has no break points). */
   breaks(board: string, sdk: string) { return this.call<{ load: string[], download: string[] }>('GET', `/api/boot/breaks?board=${encodeURIComponent(board)}&sdk=${encodeURIComponent(sdk)}`) }
+  /** Agents waiting for a person to let go of a board. */
+  yields() { return this.call<Array<{ id: string, board: string, holder: string, purpose: string, owner: string, at: string, until: string }>>('GET', '/api/yields') }
+  /** Answer one: `yield` lets the agent have the board now, `deny` keeps it. */
+  answerYield(board: string, action: 'yield' | 'deny') { return this.call<{ message: string }>('POST', '/api/yields', { board, action }) }
   /** Let go of the operation running on a board (a boot stuck at a wait, a flash nobody wants). */
   cancelBoard(board: string, token?: string | null) { return this.call<{ message: string }>('POST', '/api/board/cancel', { board, token }) }
   /** Flash a package: a `url` the board's backend downloads, or a file sent first (`sendFile`'s `sha256:<hex>`). */

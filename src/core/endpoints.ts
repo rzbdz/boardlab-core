@@ -47,6 +47,11 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     // ---------- locks ----------
     { method: 'POST', path: '/api/lock', about: '拿锁（queue: join 排队，wait 等到拿到）', handle: ({ body, caller, signal }) => lab.locks.lock(board(body), caller.holder, String(body.purpose ?? ''), { queue: body.queue === 'join' || body.queue === 'wait' ? body.queue : 'none', signal }) },
     { method: 'POST', path: '/api/unlock', about: '放锁', handle: ({ body, caller }) => { lab.locks.unlock(board(body), who(caller.holder, body)) } },
+    { method: 'GET', path: '/api/yields', about: 'AI 在等你让出的板子（拿了锁的人看得到，可以回答）', handle: () => lab.locks.yieldsList() },
+    {
+      method: 'POST', path: '/api/yields', about: '回答 AI 的让出请求：board、action=yield（让出）或 deny（继续用）；只有拿锁的人能答',
+      handle: ({ body, caller }) => ({ message: lab.locks.answerYield(board(body), caller.holder, body.action === 'deny' ? 'deny' : 'yield') }),
+    },
     { method: 'POST', path: '/api/unqueue', about: '离开队列', handle: ({ body, caller }) => { lab.locks.unqueue(board(body), caller.holder) } },
     { method: 'POST', path: '/api/steal', about: '抢锁（只有人可以，要写原因）', handle: ({ body, caller }) => lab.locks.steal(board(body), caller.holder, String(body.reason ?? '')) },
 

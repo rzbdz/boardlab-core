@@ -4,7 +4,7 @@
  * followers (a serial port's input gate, a backend's own lease), registered by whoever keeps it.
  */
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import type { Lease, LockResult, Waiter } from '../shared/types.ts'
+import type { Lease, LockResult, Waiter, YieldRequest } from '../shared/types.ts'
 import { transaction } from './db.ts'
 import { BoardError } from './errors.ts'
 import type { Kernel } from './kernel.ts'
@@ -41,7 +41,54 @@ export class Locks {
   /** Whether the target's consoles have input gates that follow the lock, so a lock comes with a gate token. */
   gated: (target: string) => boolean = () => true
 
+  /** How long an agent asking a person to let go waits for the answer. */
+  yieldTimeoutMs = 60_000
+  private readonly yields = new Map<string, { request: YieldRequest, answer: (what: 'yield' | 'deny' | 'timeout') => void }>()
+
   constructor(private readonly k: Kernel) {}
+
+  /** Agents waiting for a person to let go of a board. */
+  yieldsList(): YieldRequest[] { return [...this.yields.values()].map(item => item.request) }
+
+  /** The holder answers an agent's request: yields the board now, or keeps it (the agent then fails after its wait). */
+  answerYield(target: string, caller: string, action: 'yield' | 'deny'): string {
+    const pending = this.yields.get(target)
+    if (!pending) throw new BoardError('not-found', `${target} 没有人在等让出`)
+    if (pending.request.owner !== caller) throw new BoardError('forbidden', `只有拿着 ${target} 的人能回答`)
+    this.yields.delete(target)
+    pending.answer(action)
+    return action === 'yield' ? `让出了 ${target}` : `继续用 ${target}`
+  }
+
+  /** Ask the person holding a board to let an agent have it; true if they did. */
+  private async askYield(target: string, holder: string, purpose: string, held: Lease): Promise<boolean> {
+    if (this.yields.has(target)) throw new BoardError('conflict', `${target} 已经有一个 AI 在等让出`)
+    const request: YieldRequest = {
+      id: randomUUID(), board: target, holder, purpose, owner: held.holder,
+      at: this.k.iso(), until: this.k.iso(this.yieldTimeoutMs),
+    }
+    const answer = new Promise<'yield' | 'deny' | 'timeout'>(resolve => {
+      this.yields.set(target, { request, answer: resolve })
+      this.k.record(holder, target, 'yield-request', purpose, false, `等 ${held.holder} 让出`)
+      this.k.changed(target)
+      setTimeout(() => {
+        // Only this request's own wait ends here: a later one on the same board keeps waiting.
+        if (this.yields.get(target)?.request !== request) return
+        this.yields.delete(target)
+        this.k.record(holder, target, 'yield-request', purpose, false, '等了 60 秒没有回应')
+        this.k.changed(target)
+        resolve('timeout')
+      }, this.yieldTimeoutMs).unref?.()
+    })
+    const what = await answer
+    if (what === 'yield') {
+      this.end(held, 'released', `${held.holder} 让给了 ${holder}`)
+      this.k.record(held.holder, target, 'yield', `${holder}（${purpose}）`, true)
+      this.k.changed(target)
+      return true
+    }
+    return false
+  }
 
   // ---------- extension points ----------
 
@@ -114,6 +161,17 @@ export class Locks {
     if (!HOLDER.test(holder)) throw new BoardError('invalid', `持有人格式不对：${holder}`)
     if (!purpose.trim()) throw new BoardError('invalid', '请写明用途')
     const mode = options.queue ?? 'none'
+    // An agent asking for a board a person is using asks the person first (the page shows it), and waits for the answer.
+    if (mode === 'none' && !isHuman(holder)) {
+      const heldNow = this.held(target)
+      if (heldNow && heldNow.holder !== holder && isHuman(heldNow.holder)) {
+        const yielded = await this.askYield(target, holder, purpose, heldNow)
+        if (!yielded) {
+          const why = this.k.busy.has(target) ? '正忙' : '人还在用'
+          throw new BoardError('locked', `${target} 正被 ${heldNow.holder} 使用（${heldNow.purpose}）：${why}，没有让出`)
+        }
+      }
+    }
     let result: LockResult | { waiter: string }
     try { result = transaction(this.k.db, (): LockResult | { waiter: string } => {
       this.assertTarget(target)

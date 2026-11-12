@@ -1323,3 +1323,36 @@ describe('CLI arguments', () => {
     expect(refused).toMatchObject({ board: 'lab1-sub0-0', detail: '调试', ok: false })
     expect(refused!.message).toMatch(/正被 user:bob 使用/)
   })
+
+  it('an agent asking for a board a person holds waits for the answer, and the person can let it go', async () => {
+    const { svc } = labService()
+    await enable(svc)
+    const board = 'lab1-sub0-0'
+    await svc.locks.lock(board, 'user:bob', '跑回归')
+    const asked = svc.locks.lock(board, 'claude:bisect', 'bisect mmc')
+    await new Promise(resolve => setImmediate(resolve))
+    expect(svc.locks.yieldsList()).toEqual([expect.objectContaining({ board, holder: 'claude:bisect', owner: 'user:bob', purpose: 'bisect mmc' })])
+    // Only the holder answers.
+    expect(() => svc.locks.answerYield(board, 'claude:bisect', 'yield')).toThrow(/只有拿着/)
+    expect(svc.locks.answerYield(board, 'user:bob', 'yield')).toMatch(/让出了/)
+    const got = await asked
+    expect(got.lease?.holder).toBe('claude:bisect')
+    expect(svc.locks.held(board)?.holder).toBe('claude:bisect')
+    expect(svc.history().actions.some(action => action.kind === 'yield' && action.ok)).toBe(true)
+    expect(svc.history().actions.some(action => action.kind === 'yield-request')).toBe(true)
+  })
+
+  it('an agent asking is refused when the person keeps the board, or does not answer in time', async () => {
+    const { svc } = labService()
+    await enable(svc)
+    const board = 'lab1-sub0-1'
+    svc.locks.yieldTimeoutMs = 80
+    await svc.locks.lock(board, 'user:bob', '调试')
+    const denied = svc.locks.lock(board, 'claude:x', '试一下')
+    await new Promise(resolve => setImmediate(resolve))
+    svc.locks.answerYield(board, 'user:bob', 'deny')
+    await expect(denied).rejects.toThrow(/没有让出/)
+    const timed = svc.locks.lock(board, 'claude:y', '再试')
+    await expect(timed).rejects.toThrow(/没有让出/)
+    expect(svc.locks.held(board)?.holder).toBe('user:bob')
+  })

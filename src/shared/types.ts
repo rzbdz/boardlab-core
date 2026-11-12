@@ -15,6 +15,20 @@ export interface Lease {
   endReason: string | null
 }
 
+/** An agent asking a person to let go of a board's lock: shown on the page until the person answers or 60 s run out. */
+export interface YieldRequest {
+  id: string
+  board: string
+  /** The agent waiting for it (`claude:…`). */
+  holder: string
+  purpose: string
+  /** The person holding the lock now. */
+  owner: string
+  at: string
+  /** When it stops waiting, as an ISO time. */
+  until: string
+}
+
 export interface Waiter { id: string, board: string, holder: string, purpose: string, queuedAt: string }
 
 /**
@@ -247,6 +261,8 @@ export interface State {
   modules: ModuleInfo[]
   you: string
   now: string
+  /** Agents waiting for a person to let go of a board they are using. */
+  yields: YieldRequest[]
   /** `local`: this machine's control slots and its latest scan. */
   slots?: Slot[]
   scan?: Scan | null
