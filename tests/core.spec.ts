@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer as createHttpServer, request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -716,6 +716,19 @@ describe('remote labs', () => {
       await expect(client.call('POST', '/api/lock', {})).rejects.toThrow(/socket hang up/)
       expect(seen).toBe(1)
     } finally { server.close() }
+  })
+
+  it('says why ssh could not connect, not only that the socket hung up', async () => {
+    const bin = join(dir, 'fakebin'); mkdirSync(bin, { recursive: true })
+    writeFileSync(join(bin, 'ssh'), '#!/bin/sh\necho "Permission denied (publickey)." >&2\nexit 255\n')
+    chmodSync(join(bin, 'ssh'), 0o755)
+    const was = process.env.PATH
+    process.env.PATH = `${bin}:${was}`
+    try {
+      const client = new BoardsClient(sshTransport('ssh://boardlab@boardd.example', { controlDir: join(dir, 'ssh') }))
+      await expect(client.call('GET', '/api/state')).rejects.toThrow(/Permission denied/)
+      await expect(client.call('GET', '/api/state')).rejects.not.toThrow(/socket hang up/)
+    } finally { process.env.PATH = was }
   })
 
   it('shows a slot as being discovered while it is, and starts nothing else on it meanwhile', async () => {

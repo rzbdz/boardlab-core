@@ -42,6 +42,8 @@ export interface Transport {
   person?: string
   /** The request to send; `path` starts with /api/. */
   request(method: string, path: string, headers: Record<string, string>): ClientRequest
+  /** Why the last connection could not be made, when the transport knows (an ssh login refused, say). */
+  failure?(): string | null
 }
 
 export function unixTransport(socketPath: string): Transport {
@@ -57,20 +59,27 @@ export function sshTransport(url: string, options: { boarddPort?: number, person
   const args = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=accept-new',
     '-o', 'ControlMaster=auto', '-o', `ControlPath=${controlDir}/%C`, '-o', 'ControlPersist=300',
     ...(parsed.port ? ['-p', parsed.port] : []), '-W', `127.0.0.1:${port}`, target]
+  // The last ssh failure, kept so a request whose socket merely hung up can say what ssh said.
+  let lastFailure: string | null = null
   const connect = () => {
     mkdirSync(controlDir, { recursive: true, mode: 0o700 })
     const child = spawn('ssh', args, { stdio: ['pipe', 'pipe', 'pipe'] })
     let stderr = ''
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-500) })
     const stream = Duplex.from({ readable: child.stdout, writable: child.stdin })
-    child.on('error', error => stream.destroy(error))
-    child.on('exit', code => { if (code) stream.destroy(new Error(`ssh ${target} 失败：${stderr.trim() || `退出码 ${code}`}`)) })
+    child.on('error', error => { lastFailure = `ssh ${target} 失败：${error.message}`; stream.destroy(error) })
+    child.on('exit', code => {
+      if (!code) return
+      lastFailure = `ssh ${target} 失败：${stderr.trim() || `退出码 ${code}`}`
+      stream.destroy(new Error(lastFailure))
+    })
     stream.on('close', () => child.kill())
     return stream as unknown as Socket
   }
   const person = options.person ?? process.env.USER
   return {
     label: url, person,
+    failure: () => lastFailure,
     request: (method, path, headers) => httpRequest({
       createConnection: connect, method, path,
       headers: { Host: `127.0.0.1:${port}`, ...(person ? { 'X-Boards-User': person } : {}), Connection: 'close', ...headers },
@@ -137,7 +146,16 @@ export class BoardsClient {
     try { return await this.once<T>(method, path, body, signal) }
     catch (error) {
       const code = (error as NodeJS.ErrnoException).code
-      if (method !== 'GET' || signal?.aborted || !(code === 'ECONNRESET' || code === 'EPIPE' || /socket hang up/.test((error as Error).message))) throw error
+      const dropped = code === 'ECONNRESET' || code === 'EPIPE' || /socket hang up/.test((error as Error).message)
+      // The transport knows why (an ssh login refused): say that, not the socket's bare "hang up". ssh may still be
+      // exiting when the write fails, so give it a moment to say why.
+      let why = dropped ? this.transport.failure?.() : null
+      for (let tries = 0; dropped && !why && this.transport.failure && tries < 20 && !signal?.aborted; tries++) {
+        await new Promise(resolve => setTimeout(resolve, 25))
+        why = this.transport.failure()
+      }
+      if (why) throw new BoardsApiError(503, why, 'unavailable')
+      if (method !== 'GET' || signal?.aborted || !dropped) throw error
       await new Promise(resolve => setTimeout(resolve, 300))
       return this.once<T>(method, path, body, signal)
     }
