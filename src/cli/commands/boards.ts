@@ -210,6 +210,13 @@ const commands: Command[] = [
     run: context => boot(context, 'flash'),
   },
   {
+    name: 'cancel',
+    usage: ['cancel <board>\t让板子上正在做的启动或刷机停下（要拿锁）：它在下一步之前结束'],
+    async run({ client, out, target, token }) {
+      out(await client.cancelBoard(target().board, token()), () => `已让 ${target().board} 停下`)
+    },
+  },
+  {
     name: 'proposals', usage: ['proposals [apply|reject] [<id>...|--all] [--name <板名>]\t扫描和发现找到的改动建议；只能复位的槽位上的新板子要用 --name 起名'],
     async run({ client, args, flag, flags, out }) {
       const state = await client.state()
