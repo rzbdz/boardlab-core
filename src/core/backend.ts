@@ -274,6 +274,8 @@ export interface Backend {
   discovery?: DiscoveryCapability
   ports?: PortsCapability
   builds?: BuildsCapability
+  /** Let go of the operation running on a board (a boot stuck at a wait, a flash nobody wants): it ends soon. */
+  cancel?(config: LabConfig, target: BoardTarget): Promise<string>
   news?: NewsCapability
 }
 

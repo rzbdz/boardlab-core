@@ -6,6 +6,13 @@ import { BoardError } from './errors.ts'
 import type { BoardLab } from './lab.ts'
 import { stripAnsi } from './text.ts'
 
+/** The newest of `lines` that fit in `bytes` (at least the last one), for a console's opening history. */
+export function recent(lines: string[], bytes: number): string[] {
+  let used = 0, at = lines.length
+  while (at > 0 && used + lines[at - 1]!.length + 1 <= bytes) { used += lines[at - 1]!.length + 1; at-- }
+  return lines.slice(at)
+}
+
 export function coreEndpoints(lab: BoardLab): Endpoint[] {
   const token = (body: any) => typeof body?.token === 'string' ? body.token : null
   const who = (holder: string, body: any) => ({ holder, token: token(body) })
@@ -59,7 +66,8 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
         const session = await lab.consoles.open(named(query.get('board')), query.get('die') ?? undefined)
         const clean = query.get('raw') === '1' ? (text: string) => text : stripAnsi
         return new EventStream((emit, end, signal) => {
-          emit('history', session.history.slice(-500).map(clean))
+          // A long boot log (the last ~8 MB of it) is there when the console opens, not just the last few hundred lines.
+          emit('history', recent(session.history, 8 * 1024 * 1024).map(clean))
           const decoder = new TextDecoder()
           session.onOutput(data => emit('output', clean(decoder.decode(data, { stream: true }))))
           session.onClose(reason => { emit('closed', reason); end() })
@@ -93,6 +101,16 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
         if (!Array.isArray(body.files) || body.files.some((file: unknown) => typeof file !== 'string')) throw new BoardError('invalid', 'files 要是文件路径数组')
         const name = board(body)
         return { output: await doing(name, 'boot', '启动中', caller.holder, body, () => lab.download.boot(name, who(caller.holder, body), { die: body.die, files: body.files }), true) }
+      },
+    },
+    {
+      method: 'POST', path: '/api/board/cancel', about: '让板子上正在做的启动或刷机停下（要拿锁）：它在下一步之前结束',
+      handle: async ({ body, caller }) => {
+        const name = board(body)
+        lab.locks.authorize(name, who(caller.holder, body))
+        const route = lab.backends.route(name)
+        if (!route.backend.cancel) throw new BoardError('invalid', `${name} 所在的后端不能取消`)
+        return { message: await lab.kernel.doing([name], 'cancel', '取消中', caller.holder, () => route.backend.cancel!(route.config, route.target)) }
       },
     },
     {
