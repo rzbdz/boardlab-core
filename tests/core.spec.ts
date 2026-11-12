@@ -1002,6 +1002,20 @@ describe('modules', () => {
     } finally { await running.close() }
   })
 
+  it('serve the help pages shipped with the distribution, by name only', async () => {
+    const lab = new BoardLab({ db: openDatabase(join(dir, 'docs.sqlite')) })
+    const docs = join(dir, 'docs'); mkdirSync(docs)
+    writeFileSync(join(docs, 'site.md'), '# The site\n\nWhat every host reads.\n'); writeFileSync(join(docs, 'notes.md'), 'no heading\n'); writeFileSync(join(docs, 'Bad.md'), 'x')
+    const socketPath = join(dir, 'docs.sock')
+    const running = await serve(lab, { port: 43000 + Math.floor(Math.random() * 1000), socketPath, uiDir: null, docsDir: docs })
+    try {
+      const client = new BoardsClient(socketPath, 'user:alice')
+      expect(await client.call('GET', '/api/docs')).toEqual({ docs: [{ name: 'notes', title: 'notes' }, { name: 'site', title: 'The site' }] })
+      expect(await client.call('GET', '/api/docs/site')).toEqual({ name: 'site', title: 'The site', text: '# The site\n\nWhat every host reads.\n' })
+      for (const name of ['Bad', '..%2Fdocs%2Fsite', 'missing']) await expect(client.call('GET', `/api/docs/${name}`)).rejects.toMatchObject({ status: 404 })
+    } finally { await running.close() }
+  })
+
   it('load after the modules they need, in any order, and refuse to load twice or without them', () => {
     const order: string[] = []
     const make = (id: string, requires: string[] = []): Module => ({ id, title: id, requires, setup: () => { order.push(id) } })

@@ -5,7 +5,7 @@
  */
 import { spawn } from 'node:child_process'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { chmodSync, createReadStream, existsSync, readFileSync, statSync, unlinkSync } from 'node:fs'
+import { chmodSync, createReadStream, existsSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { extname, join } from 'node:path'
 import { Api, EventStream, FileReply, TextReply, type Caller, type Emit, type Endpoint } from '../core/api.ts'
@@ -22,15 +22,19 @@ const AGENT = HOLDER
 /**
  * `origins` are the addresses the page is also served at through a reverse proxy (`https://example.org`), whose
  * writes are accepted; the proxy forwards with `Host: 127.0.0.1:<port>`. `uiDir` is the UI to serve (null: none).
+ * `docsDir` holds the help pages (`<name>.md`) the page and the CLI show (null: none).
  */
-export interface ServeOptions { port: number, hosts?: string[], origins?: string[], socketPath: string, uiDir: string | null, cli?: string, stateDir?: string }
-/** What the gateway's own endpoints need from how boardd runs: its own CLI (to run commands for older clients) and state directory. */
-type GatewayOptions = { cli?: string, stateDir?: string }
+export interface ServeOptions { port: number, hosts?: string[], origins?: string[], socketPath: string, uiDir: string | null, cli?: string, stateDir?: string, docsDir?: string | null }
+/**
+ * What the gateway's own endpoints need from how boardd runs: its own CLI (to run commands for older clients), state
+ * directory, and help pages.
+ */
+type GatewayOptions = { cli?: string, stateDir?: string, docsDir?: string | null }
 
 export function createApi(lab: BoardLab, options: GatewayOptions = {}): (request: IncomingMessage, response: ServerResponse, caller: Caller) => Promise<void> {
   // The gateway's own endpoints, served beside the lab's; its index lists both.
   const own = new Api()
-  own.add('gateway', [cliEndpoint(options), {
+  own.add('gateway', [cliEndpoint(options), ...docsEndpoints(options.docsDir ?? null), {
     method: 'GET', path: '/api', about: '列出所有接口和模块', handle: () => {
       const described = [...lab.api.list().filter(item => item.path !== '/api'), ...own.list()].sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method))
       return { endpoints: described.map(item => `${item.method} ${item.path}`), described, modules: lab.modules() }
@@ -109,6 +113,29 @@ async function readJson(request: IncomingMessage): Promise<any> {
  * machine (an interactive console, installing, choosing a boardd, running one) are refused.
  */
 export const CLI_LOCAL_ONLY = new Set(['serve', 'install', 'remote', 'console'])
+const DOC = /^[a-z0-9][a-z0-9-]{0,39}$/
+/** A help page's title: its first `# ` heading, or its name. */
+const docTitle = (text: string, name: string) => /^#\s+(.+)$/m.exec(text)?.[1]?.trim() ?? name
+
+/** `GET /api/docs`, `GET /api/docs/<name>`: the help pages shipped with the distribution, as Markdown. */
+function docsEndpoints(dir: string | null): Endpoint[] {
+  const read = (name: string) => {
+    const file = dir && DOC.test(name) ? join(dir, `${name}.md`) : null
+    if (!file || !existsSync(file)) throw new BoardError('not-found', `没有帮助页 ${name}`)
+    return readFileSync(file, 'utf8')
+  }
+  return [{
+    method: 'GET', path: '/api/docs', about: '帮助页的列表（name、title）',
+    handle: () => ({
+      docs: (dir && existsSync(dir) ? readdirSync(dir) : []).filter(file => file.endsWith('.md') && DOC.test(file.slice(0, -3))).sort()
+        .map(file => { const name = file.slice(0, -3); return { name, title: docTitle(read(name), name) } }),
+    }),
+  }, {
+    method: 'GET', path: '/api/docs/:name', about: '一页帮助（Markdown）：name、title、text',
+    handle: ({ params }) => { const name = String(params.name ?? ''), text = read(name); return { name, title: docTitle(text, name), text } },
+  }]
+}
+
 function cliEndpoint(options: GatewayOptions): Endpoint {
   return {
     method: 'POST', path: '/api/cli', about: '用 boardd 自己的 boardlab 命令行替调用者跑命令（旧客户端不认识的命令）',
@@ -173,7 +200,7 @@ function serveStatic(uiDir: string, pathname: string, response: ServerResponse) 
 export async function serve(lab: BoardLab, options: ServeOptions): Promise<{ http: Server[], unix: Server, close(): Promise<void> }> {
   const listFrontends = () => readFrontends(options.uiDir)
   const current = (list: Frontends) => { const chosen = lab.kernel.setting(FRONTEND_SETTING); return chosen && list.frontends.some(item => item.name === chosen) ? chosen : list.default }
-  const api = createApi(lab, { cli: options.cli, stateDir: options.stateDir })
+  const api = createApi(lab, { cli: options.cli, stateDir: options.stateDir, docsDir: options.docsDir })
   const human = `user:${userInfo().username}`
   const hosts = [...new Set(['127.0.0.1', ...(options.hosts ?? [])])]
   const allowed = new Set([...hosts, 'localhost'].map(host => `${host}:${options.port}`))
