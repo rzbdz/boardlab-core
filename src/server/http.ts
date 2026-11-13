@@ -47,10 +47,12 @@ export function createApi(lab: BoardLab, options: GatewayOptions = {}): (request
   own.add('gateway', [cliEndpoint(options), ...docsEndpoints(options.docsDir ?? null), {
     method: 'GET', path: '/api/version', about: 'boardd 的版本和它提供的 API 版本', handle: () => ({ version: options.version ?? 'dev', revision: options.revision ?? 'dev', api: API_VERSION }),
   }, {
-    method: 'GET', path: '/api', about: '列出所有接口和模块', handle: () => {
+    method: 'GET', path: '/api', about: '列出所有接口和模块（openapi：机器可读的 OpenAPI 描述）', handle: () => {
       const described = [...lab.api.list().filter(item => item.path !== '/api'), ...own.list()].sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method))
-      return { endpoints: described.map(item => `${item.method} ${item.path}`), described, modules: lab.modules() }
+      return { endpoints: described.map(item => `${item.method} ${item.path}`), described, modules: lab.modules(), openapi: '/api/openapi.json' }
     },
+  }, {
+    method: 'GET', path: '/api/openapi.json', about: '所有接口的 OpenAPI 3.1 描述（给程序和爬虫读）', handle: () => openapi(lab, own, options),
   }])
   return async (request, response, caller) => {
     const url = new URL(request.url ?? '/', 'http://boardd')
@@ -69,6 +71,31 @@ export function createApi(lab: BoardLab, options: GatewayOptions = {}): (request
       if (error instanceof BoardError) send(response, STATUS[error.code], { error: error.message, code: error.code })
       else send(response, 500, { error: (error as Error).message })
     }
+  }
+}
+
+/** Every endpoint as OpenAPI 3.1: paths, methods, what each does, and the modules as tags. */
+function openapi(lab: BoardLab, own: Api, options: GatewayOptions) {
+  const described = [...lab.api.list(), ...own.list()]
+  const modules = new Map(lab.modules().map(module => [module.id, module.title ?? module.id]))
+  const paths: Record<string, Record<string, unknown>> = {}
+  for (const item of described) {
+    const path = item.path.replace(/:(\w+)/g, '{$1}').replace(/\/\*$/, '/{path}')
+    const parameters = [...path.matchAll(/\{(\w+)\}/g)].map(match => ({ name: match[1], in: 'path', required: true, schema: { type: 'string' } }))
+    const operation = {
+      summary: item.about, tags: [modules.get(item.module) ?? item.module],
+      operationId: `${item.method} ${path}`.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, ''),
+      ...(parameters.length ? { parameters } : {}),
+      responses: { 200: { description: '成功了' }, default: { description: '出错：{error, code?}' } },
+    }
+    paths[path] = { ...(paths[path] ?? {}), [item.method.toLowerCase()]: operation }
+  }
+  return {
+    openapi: '3.1.0',
+    info: { title: 'boardlab daemon', version: options.version ?? 'dev', description: '开发板的锁、复位、串口、启动和实验室接口。' },
+    servers: [{ url: '.' }],
+    tags: [...modules].map(([id, title]) => ({ name: title, 'x-module': id })),
+    paths,
   }
 }
 

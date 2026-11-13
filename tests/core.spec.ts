@@ -1276,6 +1276,15 @@ describe('boardd API', () => {
       // The models people typed in are offered to every page.
       svc.boards.update('user:alice', 'com260', { product: 'k3-typed' })
       expect(JSON.parse((await get('/api/models')).body)).toEqual({ models: ['k3-typed'] })
+      // Machines (and crawlers) read the same list as a standard OpenAPI document; the index points at it.
+      const index = JSON.parse((await get('/api')).body) as { openapi: string }
+      expect(index.openapi).toBe('/api/openapi.json')
+      const spec = JSON.parse((await get('/api/openapi.json')).body) as { openapi: string, paths: Record<string, Record<string, { summary: string, tags: string[], parameters?: Array<{ name: string }> }>> }
+      expect(spec.openapi).toBe('3.1.0')
+      expect(spec.paths['/api/lock']!.post!.summary).toContain('锁')
+      expect(spec.paths['/api/lock']!.post!.tags.length).toBe(1)
+      const withParam = Object.entries(spec.paths).find(([path]) => path.includes('{name}'))
+      expect(withParam?.[1].get?.parameters?.[0]?.name ?? withParam?.[1].post?.parameters?.[0]?.name).toBe('name')
     } finally { await running.close() }
   })
 
