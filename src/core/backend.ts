@@ -85,6 +85,8 @@ export interface LabDiscovery {
   host?: string | null
   /** Only these slots (`<host>/s4`). */
   slots?: string[]
+  /** Header GPIO numbers to try first: the person knows which lines this batch of boards is wired to. */
+  prefer?: number[]
 }
 /** A board a scan found: what it suggests calling it, a line for people, and what registering it takes. */
 export interface LabFinding { host: string | null, name: string, summary: string, warnings: string[], detail: unknown }
@@ -218,7 +220,7 @@ export interface DiscoveryCapability {
    * in use and boardd runs it while boards are held; it may reset what is plugged into the free lines, so boardd asks
    * a person to confirm first.
    */
-  discover(config: LabConfig, options: LabDiscovery, progress: (line: string) => void, registered?: (device: string) => void): Promise<{ message: string, found: LabFinding[] }>
+  discover(config: LabConfig, options: LabDiscovery, progress: (line: string) => void, registered?: (device: string) => void, signal?: AbortSignal): Promise<{ message: string, found: LabFinding[] }>
   /** Register a board a scan found, under `name` (the backend's own name for it). */
   register(config: LabConfig, finding: LabFinding, name: string): Promise<void>
   /**
@@ -231,7 +233,7 @@ export interface DiscoveryCapability {
    * wiring and are never reset; boards whose console is gone are forgotten; free consoles are searched again. boardd
    * then runs it while others hold boards on the host.
    */
-  rebuild?(config: LabConfig, host: string, progress: (line: string) => void, registered?: (device: string) => void, options?: { keepInUse: boolean }): Promise<{ message: string, found: LabFinding[] }>
+  rebuild?(config: LabConfig, host: string, progress: (line: string) => void, registered?: (device: string) => void, options?: { keepInUse: boolean }, signal?: AbortSignal): Promise<{ message: string, found: LabFinding[] }>
   /** `rebuild` can keep the boards in use (`keepInUse`). */
   keepsInUse?: boolean
 }

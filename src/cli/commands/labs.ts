@@ -1,4 +1,5 @@
 /** Commands on backends that list their own boards (labs): finding new boards, their free ports, and binding them. */
+import { pinNumbers } from '../../shared/pins.ts'
 import { confirm, type Command, type CommandGroup } from '../command.ts'
 
 const commands: Command[] = [
@@ -7,7 +8,8 @@ const commands: Command[] = [
       'lab kinds\t可以添加的实验室种类',
       'lab add <实验室> --kind <种类>\t添加一个实验室（之后在网页的设置里完成它的设置，比如装好主机）',
       'lab remove <实验室> [--yes]\t删除一个添加的实验室和它的板子（不能有人拿着锁）',
-      'lab discover <实验室> [--slot <主机>/s<N>,…] [--yes] [--human [--host <主机>]]\t让实验室在空槽位上找板子（会复位没登记的线），找到一块登记一块；--slot 只找这些槽位；--human：没接复位线的板子，由人按提示逐块进下载模式',
+      'lab discover <实验室> [--slot <主机>/s<N>,…] [--prefer <数字,…>] [--yes] [--human [--host <主机>]]\t让实验室在空槽位上找板子（会复位没登记的线），找到一块登记一块；--slot 只找这些槽位；--prefer：先试这些 GPIO（12,13、GPIO12、gpio_13、P15 都行）；--human：没接复位线的板子，由人按提示逐块进下载模式',
+      'lab cancel <实验室>\t让正在进行的发现/重建停下（已经登记的和正在跑的那一步会留着）',
       'lab rebuild <实验室> --host <主机> [--keep-used] [--yes]\t重新布线以后用：忘掉这台主机上发现过的板子和槽位，按现在的接线重新发现（以前用过的复位线先试，沿用原来的名字）；--keep-used 保留在用的板子，只去掉串口不见的、找空闲串口上的（别人拿着板子时也能用）',
     ],
     async run({ client, args, flag, flags, out }) {
@@ -32,10 +34,17 @@ const commands: Command[] = [
         const result = await client.rebuildLab(args[1], host, keep)
         return out(result, () => console.log(result.message))
       }
-      if (args[0] !== 'discover' || !args[1]) throw new Error('lab 子命令：kinds | add <实验室> --kind <种类> | remove <实验室> | discover <实验室> | rebuild <实验室> --host <主机>')
+      if (args[0] === 'cancel' && args[1]) {
+        const result = await client.cancelDiscovery(args[1])
+        return out(result, () => console.log(result.message))
+      }
+      if (args[0] !== 'discover' || !args[1]) throw new Error('lab 子命令：kinds | add <实验室> --kind <种类> | remove <实验室> | discover <实验室> | cancel <实验室> | rebuild <实验室> --host <主机>')
       const slots = flag('slot')?.split(',').map(item => item.trim()).filter(Boolean)
+      const typed = flag('prefer')
+      const prefer = pinNumbers(typed)
+      if (typed && !prefer.length) throw new Error(`--prefer 里没有认出 GPIO 编号：${typed}（写成 12,13 或 GPIO12、gpio_13）`)
       if (!flags.has('yes') && !(await confirm(`发现板子可能复位实验室 ${args[1]} 里的板子。继续？`))) throw new Error('发现板子需要确认（交互确认或 --yes）')
-      const result = await client.discoverLab(args[1], { human: flags.has('human'), host: flag('host'), slots })
+      const result = await client.discoverLab(args[1], { human: flags.has('human'), host: flag('host'), slots, prefer })
       out(result, () => console.log(`${result.message}${result.proposals ? '\n用 boardlab proposals 查看，boardlab proposals apply <id> [--name <板名>] 登记' : ''}`))
     },
   },

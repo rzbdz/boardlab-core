@@ -319,7 +319,9 @@ export class BoardsClient {
   addLab(id: string, kind: string) { return this.call<LabSettings>('POST', '/api/labs/add', { id, kind }) }
   removeLab(id: string) { return this.call<{ ok: true }>('POST', '/api/labs/remove', { id }) }
   rebuildLab(id: string, host: string, keepInUse = false) { return this.call<{ message: string, proposals: number, registered?: string[] }>('POST', '/api/labs/rebuild', { id, host, confirmed: true, keepInUse }) }
-  discoverLab(id: string, options: { human?: boolean, host?: string, slots?: string[] } = {}) { return this.call<{ message: string, proposals: number, registered?: string[] }>('POST', '/api/labs/discover', { id, confirmed: true, ...options }) }
+  discoverLab(id: string, options: { human?: boolean, host?: string, slots?: string[], prefer?: number[] | string } = {}) { return this.call<{ message: string, proposals: number, registered?: string[] }>('POST', '/api/labs/discover', { id, confirmed: true, ...options }) }
+  /** Stop a lab's discovery or rebuild (`lab cancel`). */
+  cancelDiscovery(id: string) { return this.call<{ message: string }>('POST', '/api/labs/discover/cancel', { id }) }
   /** Read the board in a slot again after a swap; returns its name afterwards. */
   refresh(board: string, options: { name?: string, rename?: boolean } = {}, token?: string | null) { return this.call<{ board: string, message: string }>('POST', '/api/boards/refresh', { board, ...options, token }) }
   /** Rename a board everywhere (backend, chips and serial names, lock, queue, history); returns its name afterwards. */

@@ -21,6 +21,7 @@ import { serve } from '../src/server/http.ts'
 import { RawReply } from '../src/core/api.ts'
 import { parseConfig } from '../src/server/config.ts'
 import { createModules, instances, type CatalogEntry } from '../src/server/catalog.ts'
+import { pinNumbers } from '../src/shared/pins.ts'
 import { deviceFilter, type Backend, type BoardTarget, type DownloadCapability, type LabConfig, type LabDevice, type PortTiming, type RelayCapability, type RenameCapability } from '../src/core/backend.ts'
 
 let dir: string
@@ -388,9 +389,12 @@ describe('remote labs', () => {
 
   it('lets a lab with its own registry find new boards while others are held, and forget a board only while nobody holds it', async () => {
     class RegistryLab extends FakeLab {
-      async discover(_config: LabConfig, options: { human?: boolean, host?: string | null }, progress: (line: string) => void) {
+      hang = false
+      async discover(_config: LabConfig, options: { human?: boolean, host?: string | null, prefer?: number[] }, progress: (line: string) => void, _registered?: unknown, signal?: AbortSignal) {
         progress('ACTION NEEDED (board 1): put ONE unregistered board into download mode')
         this.calls.push(`discover ${options.human ? `human ${options.host}` : 'gpio'}`)
+        if (options.prefer?.length) this.calls.push(`prefer ${options.prefer.join(',')}`)
+        if (this.hang) await new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(new Error('cancelled'))))
         return { message: '发现 1 块新板子', found: [{ host: 'lab-9', name: 'k3-board', summary: 'lab-9 上的新板子', warnings: [], detail: { console: 'c9' } }] }
       }
       async slots() { return [{ host: 'lab-9', consoles: [{ id: '/dev/ttyUSB5', label: '/dev/ttyUSB5' }, { id: 'ttyUSB5', label: '/dev/ttyUSB5' }], usb: [{ id: 'usb:1-3', label: 'usb:1-3 DFU' }] }] }
@@ -413,6 +417,16 @@ describe('remote labs', () => {
     const { token } = await svc.locks.lock('lab1-sub0-0', 'claude:s1', '调试')
     // Finding boards uses only free lines and consoles: a board in use does not stop it.
     expect(await svc.backends.discover('user:alice', 'lab1', true)).toMatchObject({ message: '发现 1 块新板子' })
+    // The person's GPIO list reaches the backend; a search can be stopped from the page even without a board lock.
+    expect(await svc.backends.discover('user:alice', 'lab1', true, { prefer: [12, 13] })).toMatchObject({ message: '发现 1 块新板子' })
+    expect(lab.calls).toContain('prefer 12,13')
+    lab.hang = true
+    const running = svc.backends.discover('user:alice', 'lab1', true)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(await svc.backends.cancelDiscovery('user:alice', 'lab1')).toMatchObject({ message: expect.stringContaining('停下') })
+    await expect(running).rejects.toThrow(/已取消/)
+    expect(svc.backends.labSettings()[0]!.discovery).toMatchObject({ running: false, line: '已取消' })
+    lab.hang = false
     await expect(svc.boards.remove('user:alice', 'lab1-sub0-0')).rejects.toThrow(/正被 claude:s1 使用/)
     svc.locks.unlock('lab1-sub0-0', { holder: 'claude:s1', token })
     const seen: string[] = []
@@ -445,7 +459,8 @@ describe('remote labs', () => {
     await enable(svc, { devices: '' })
     expect(svc.boards.list().map(board => board.name)).toContain('lab1-tmp-lab-9-ttyUSB5')
     await expect(svc.backends.bind('user:alice', 'lab1', { host: 'lab-9', console: 'x; rm -rf /', usb: 'usb:1-3' })).rejects.toThrow(/不合法/)
-    expect(lab.calls.filter(call => !call.startsWith('verify'))).toEqual(['discover gpio', 'discover human lab-9', 'register sub0-9 {"console":"c9"}', 'remove sub0-9', 'bind lab-9 /dev/ttyUSB5 usb:1-3 tmp-lab-9-ttyUSB5'])
+    expect(lab.calls.filter(call => !call.startsWith('verify'))).toEqual(['discover gpio', 'discover gpio', 'prefer 12,13', 'discover gpio',
+      'discover human lab-9', 'register sub0-9 {"console":"c9"}', 'remove sub0-9', 'bind lab-9 /dev/ttyUSB5 usb:1-3 tmp-lab-9-ttyUSB5'])
   })
 
   it('shows what a person must do while a lab board\'s reset waits for them, and lets them confirm', async () => {
@@ -1512,3 +1527,14 @@ describe('CLI arguments', () => {
     await expect(timed).rejects.toThrow(/没有让出/)
     expect(svc.locks.held(board)?.holder).toBe('user:bob')
   })
+
+describe('preferred GPIO numbers', () => {
+  it('reads a list however a person typed it', () => {
+    expect(pinNumbers('12, 13')).toEqual([12, 13])
+    expect(pinNumbers('12，13、14;15  16\n17')).toEqual([12, 13, 14, 15, 16, 17])
+    expect(pinNumbers('GPIO12 gpio_13 GPIO 14 P15 pin 16 引脚17 gpio-18')).toEqual([12, 13, 14, 15, 16, 17, 18])
+    expect(pinNumbers('gpio_12, 12')).toEqual([12])
+    expect(pinNumbers('')).toEqual([])
+    expect(pinNumbers('abc')).toEqual([])
+  })
+})

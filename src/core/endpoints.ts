@@ -3,6 +3,7 @@ import type { BoardEvent } from '../shared/types.ts'
 import type { ChannelAction } from './backend.ts'
 import { EventStream, FileReply, optional, required, TextReply, type Endpoint } from './api.ts'
 import { BoardError } from './errors.ts'
+import { pinNumbers } from '../shared/pins.ts'
 import type { BoardLab } from './lab.ts'
 import { stripAnsi } from './text.ts'
 
@@ -112,7 +113,12 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
       method: 'POST', path: '/api/board/cancel', about: '让板子上正在做的启动或刷机停下（要拿锁）：它在下一步之前结束',
       handle: async ({ body, caller }) => {
         const name = board(body)
+        const busy = lab.kernel.busy.get(name)
+        if (busy && (busy.kind === 'discover' || busy.kind === 'rebuild')) {
+          throw new BoardError('conflict', `${name} 正在${busy.label.replace(/中$/, '')}（实验室的操作，没有单独的锁）：到实验室那一栏取消发现，或者等它结束`)
+        }
         lab.locks.authorize(name, who(caller.holder, body))
+        if (!busy) throw new BoardError('conflict', `${name} 没有在启动或刷机，不用取消`)
         const route = lab.backends.route(name)
         if (!route.backend.cancel) throw new BoardError('invalid', `${name} 所在的后端不能取消`)
         return { message: await lab.kernel.doing([name], 'cancel', '取消中', caller.holder, () => route.backend.cancel!(route.config, route.target)) }
@@ -189,9 +195,14 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     {
       method: 'POST', path: '/api/labs/discover', about: '让实验室发现新板子（slots：只发现这些槽位）', handle: ({ body, caller }) => {
         const slots = Array.isArray(body.slots) ? body.slots.map(String) : typeof body.slots === 'string' && body.slots ? body.slots.split(',') : []
-        return lab.backends.discover(caller.holder, required(body.id, 'id'), body.confirmed === true, { human: body.human === true, host: optional(body.host), slots })
+        // The page sends what the person typed; the CLI sends numbers. Both end up as header GPIO numbers.
+        const prefer = typeof body.prefer === 'string' ? pinNumbers(body.prefer)
+          : Array.isArray(body.prefer) ? body.prefer.map(Number).filter((n: number) => Number.isInteger(n) && n >= 0 && n <= 999) : []
+        if (typeof body.prefer === 'string' && body.prefer.trim() && !prefer.length) throw new BoardError('invalid', `没有认出要优先试的 GPIO：${body.prefer}（写成 12,13、GPIO12、gpio_13 都可以）`)
+        return lab.backends.discover(caller.holder, required(body.id, 'id'), body.confirmed === true, { human: body.human === true, host: optional(body.host), slots, prefer })
       },
     },
+    { method: 'POST', path: '/api/labs/discover/cancel', about: '让正在进行的发现或重建停下（id）：已经登记的和正在跑的那一步会留着', handle: ({ body, caller }) => lab.backends.cancelDiscovery(caller.holder, required(body.id, 'id')) },
     { method: 'POST', path: '/api/labs/rebuild', about: '重新布线以后，让实验室重建一台主机：忘掉它的板子，按现在的接线重新发现；keepInUse 只重做变动的，保留在用的板子', handle: ({ body, caller }) => lab.backends.rebuild(caller.holder, required(body.id, 'id'), body.confirmed === true, required(body.host, 'host'), body.keepInUse === true) },
   ]
 }

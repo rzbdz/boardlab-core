@@ -60,6 +60,8 @@ export class Backends {
   private readonly portRuns = new Map<string, Promise<void>>()
   /** Discoveries by instance: the latest progress line, and whether one is still running. */
   private readonly discoveries = new Map<string, { running: boolean, line: string, at: string }>()
+  /** How to stop the search running on each instance (a person cancelling it). */
+  private readonly findingStops = new Map<string, AbortController>()
 
   constructor(private readonly lab: BoardLab) {
     lab.locks.addOccupant(target => this.devices.get(target)?.heldBy ?? null)
@@ -424,7 +426,7 @@ export class Backends {
     return this.finding(actor, id, 'lab-discover', targets, '发现中',
       options.human ? `开始人工发现${options.host ? `（${options.host}）` : ''}：按提示逐块让未登记的板子进下载模式` : '开始发现板子',
       `${id}${options.human ? ` 人工${options.host ? ` ${options.host}` : ''}` : ''}${options.slots?.length ? ` ${options.slots.join(',')}` : ''}`,
-      (progress, registered) => discovery.discover(this.config(id), { human: !!options.human, host: options.host ?? null, slots: options.slots ?? [] }, progress, registered))
+      (progress, registered, signal) => discovery.discover(this.config(id), { human: !!options.human, host: options.host ?? null, slots: options.slots ?? [], ...(options.prefer?.length ? { prefer: options.prefer } : {}) }, progress, registered, signal))
   }
 
   /**
@@ -445,7 +447,7 @@ export class Backends {
     const [start, detail] = keepInUse ? [`开始重新发现 ${host}：保留在用的板子，只重做变动的`, `${id} 重新发现 ${host}`] : [`开始重建 ${host}：按现在的接线重新发现它的板子`, `${id} 重建 ${host}`]
     const targets = this.onLab(id).filter(([name, device]) => device.slot?.startsWith(`${host}/`) && !(keepInUse && (this.lab.locks.held(name) || device.heldBy))).map(([name]) => name)
     const result = await this.finding(actor, id, 'lab-rebuild', targets, keepInUse ? '重新发现中' : '重建中', start, detail,
-      (progress, registered) => rebuild(this.config(id), host, progress, registered, { keepInUse }))
+      (progress, registered, signal) => rebuild(this.config(id), host, progress, registered, { keepInUse }, signal))
     await this.sync(id, actor).catch(() => {})
     return result
   }
@@ -467,21 +469,34 @@ export class Backends {
    * and slots it may touch (`targets`) show it as their state while it runs, and nothing else starts on them.
    */
   private async finding(actor: string, id: string, kind: string, targets: string[], label: string, start: string, detail: string,
-    search: (progress: (line: string) => void, registered: (device: string) => void) => Promise<{ message: string, found: LabFinding[] }>) {
+    search: (progress: (line: string) => void, registered: (device: string) => void, signal: AbortSignal) => Promise<{ message: string, found: LabFinding[] }>) {
     if (this.discoveries.get(id)?.running) throw new BoardError('conflict', `实验室 ${id} 已经在发现板子`)
+    const stop = new AbortController()
+    this.findingStops.set(id, stop)
     const report = (line: string, running = true) => { this.discoveries.set(id, { running, line, at: this.lab.kernel.iso() }); this.lab.kernel.changed(null) }
     report(start)
     let result: { message: string, found: LabFinding[] }
     const registered: string[] = []
     // Each board the backend registers as it goes is listed at once, while the search goes on.
     const onRegistered = (device: string) => { registered.push(device); void this.sync(id, actor).catch(() => {}) }
-    const run = (line: (text: string) => void) => search(text => { report(text); line(text) }, onRegistered)
-    try { result = targets.length ? await this.lab.kernel.doing(targets, kind === 'lab-discover' ? 'discover' : 'rebuild', label, actor, run) : await run(() => {}) }
+    // A person's cancel and the lock's end both stop it: whichever comes first.
+    const run = (line: (text: string) => void, signal: AbortSignal) => search(
+      text => { report(text); line(text) }, onRegistered, AbortSignal.any([signal, stop.signal]))
+    try { result = targets.length ? await this.lab.kernel.doing(targets, kind === 'lab-discover' ? 'discover' : 'rebuild', label, actor, run) : await run(() => {}, stop.signal) }
     catch (error) {
-      if (error instanceof BusyError) { report(`没开始：${error.message}`, false); throw error }
+      if (error instanceof BusyError) { report(`没开始：${error.message}`, false); this.findingStops.delete(id); throw error }
+      if (stop.signal.aborted) {
+        report('已取消', false)
+        this.lab.kernel.record(actor, null, kind, detail, false, '已取消')
+        this.findingStops.delete(id)
+        throw new BoardError('conflict', `实验室 ${id} 的发现已取消（已经登记和正在跑的那一步可能还会完成）`)
+      }
       report(`失败：${(error as Error).message}`, false)
       this.lab.kernel.record(actor, null, kind, detail, false, (error as Error).message)
+      this.findingStops.delete(id)
       throw new BoardError('hardware', (error as Error).message)
+    } finally {
+      this.findingStops.delete(id)
     }
     // A new search replaces the instance's earlier proposals.
     const scanId = `lab:${id}:${randomUUID()}`
@@ -497,6 +512,20 @@ export class Backends {
     this.lab.kernel.record(actor, null, kind, detail, true, result.message)
     this.lab.kernel.changed(null)
     return { message: result.message, proposals: result.found.length, registered }
+  }
+
+  /**
+   * Have a discovery or rebuild stop: the backend's current step is told to end (a probe's client is stopped; the
+   * host's job may still finish the step it runs). Boards it touched stop showing busy.
+   */
+  async cancelDiscovery(actor: string, id: string): Promise<{ message: string }> {
+    this.configurable(id)
+    const stop = this.findingStops.get(id)
+    if (!stop || !this.discoveries.get(id)?.running) throw new BoardError('conflict', `实验室 ${id} 没有在找板子`)
+    stop.abort(new Error('取消'))
+    this.lab.kernel.record(actor, null, 'lab-discover-cancel', id, true, null)
+    this.lab.kernel.changed(null)
+    return { message: `让 ${id} 的发现停下：已经登记和正在进行的那一步会留着，不会影响别的板子` }
   }
 
   /** Proposals from a discovery: applying registers each board in its backend, under the name given or suggested. */
