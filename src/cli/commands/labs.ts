@@ -1,5 +1,4 @@
 /** Commands on backends that list their own boards (labs): finding new boards, their free ports, and binding them. */
-import { pinNumbers } from '../../shared/pins.ts'
 import { confirm, type Command, type CommandGroup } from '../command.ts'
 
 const commands: Command[] = [
@@ -40,9 +39,8 @@ const commands: Command[] = [
       }
       if (args[0] !== 'discover' || !args[1]) throw new Error('lab 子命令：kinds | add <实验室> --kind <种类> | remove <实验室> | discover <实验室> | cancel <实验室> | rebuild <实验室> --host <主机>')
       const slots = flag('slot')?.split(',').map(item => item.trim()).filter(Boolean)
-      const typed = flag('prefer')
-      const prefer = pinNumbers(typed)
-      if (typed && !prefer.length) throw new Error(`--prefer 里没有认出 GPIO 编号：${typed}（写成 12,13 或 GPIO12、gpio_13）`)
+      // What was typed goes as it is: the gateway parses GPIO numbers the same way for the page and the CLI.
+      const prefer = flag('prefer')
       if (!flags.has('yes') && !(await confirm(`发现板子可能复位实验室 ${args[1]} 里的板子。继续？`))) throw new Error('发现板子需要确认（交互确认或 --yes）')
       const result = await client.discoverLab(args[1], { human: flags.has('human'), host: flag('host'), slots, prefer })
       out(result, () => console.log(`${result.message}${result.proposals ? '\n用 boardlab proposals 查看，boardlab proposals apply <id> [--name <板名>] 登记' : ''}`))

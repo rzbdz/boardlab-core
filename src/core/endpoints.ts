@@ -3,7 +3,7 @@ import type { BoardEvent } from '../shared/types.ts'
 import type { ChannelAction } from './backend.ts'
 import { EventStream, FileReply, optional, required, TextReply, type Endpoint } from './api.ts'
 import { BoardError } from './errors.ts'
-import { pinNumbers } from '../shared/pins.ts'
+import { pinNumbers } from './pins.ts'
 import type { BoardLab } from './lab.ts'
 import { stripAnsi } from './text.ts'
 

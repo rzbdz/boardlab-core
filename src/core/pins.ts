@@ -1,7 +1,7 @@
 /**
  * Header GPIO numbers people type into a discovery: `12,13`, `12，13`, `12、13`, one per line, `GPIO12`, `gpio_13`,
  * `P15`, `引脚16` — anything that is not a letter, digit or underscore separates, and the prefix may be attached with a
- * space, an underscore or not at all. Shared by the CLI, the page and the client.
+ * space, an underscore or not at all. The gateway parses what the CLI and the page type (both send the raw text).
  */
 export function pinNumbers(text: string | null | undefined): number[] {
   const out: number[] = []

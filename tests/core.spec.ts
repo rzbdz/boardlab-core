@@ -21,7 +21,7 @@ import { serve } from '../src/server/http.ts'
 import { RawReply } from '../src/core/api.ts'
 import { parseConfig } from '../src/server/config.ts'
 import { createModules, instances, type CatalogEntry } from '../src/server/catalog.ts'
-import { pinNumbers } from '../src/shared/pins.ts'
+import { pinNumbers } from '../src/core/pins.ts'
 import { deviceFilter, type Backend, type BoardTarget, type DownloadCapability, type LabConfig, type LabDevice, type PortTiming, type RelayCapability, type RenameCapability } from '../src/core/backend.ts'
 
 let dir: string
