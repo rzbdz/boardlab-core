@@ -291,7 +291,8 @@ export class Locks {
       if (held) this.end(held, 'stolen', `${holder}：${reason}`)
       this.k.db.prepare('DELETE FROM lease_waiters WHERE board=? AND holder=?').run(target, holder)
       this.k.record(holder, target, 'steal', reason, true, held ? `原持有人 ${held.holder}` : '没有持有人')
-      return { previous: held?.holder ?? null, ...this.grant(target, holder, purpose) }
+      const granted = this.grant(target, holder, reason.trim())
+      return { previous: held?.holder ?? null, ...granted, lease: { ...granted.lease, purpose: `抢锁：${reason.trim()}` } }
     })
     if (result.previous) this.k.emit({ type: 'lease-stolen', board: target, from: result.previous, by: holder, reason })
     this.k.changed(target)
