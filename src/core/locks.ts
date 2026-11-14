@@ -271,6 +271,7 @@ export class Locks {
   }
 
   unlock(target: string, caller: Caller): void {
+    this.assertTarget(target)
     const lease = this.authorize(target, caller)
     this.end(lease, 'released', '主动释放')
     this.k.record(lease.holder, target, 'unlock', null, true)

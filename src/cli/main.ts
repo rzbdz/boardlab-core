@@ -61,9 +61,16 @@ function usageOf(groups: CommandGroup[], topic?: string): string {
   const head = '用法：boardlab <命令> [参数] [--json] [--as <持有人>]（boards 是它的别名）'
   if (topic === '--all' || topic === 'all') return `${head}\n\n${groups.map(group => [`${group.title}：`, ...linesOf(group)].join('\n')).join('\n\n')}\n\n${FOOT}`
   if (topic) {
-    const group = groups.find(item => groupId(item) === topic || item.title === topic)
+    const [word, ...rest] = topic.split('\0')
+    const group = groups.find(item => groupId(item) === word || item.title === word)
+    // help <group> <subcommand> is the command's help, not the group's one-line summary.
+    if (rest.length) {
+      const command = group?.commands.find(item => item.name === rest[0])
+      if (command && rest.length === 1) return linesOf({ title: '', commands: [command] }).join('\n')
+      return `没有这个命令：${topic.replaceAll('\0', ' ')}\n\n${usageOf(groups)}`
+    }
     if (group) return `${group.title}：\n${linesOf(group).join('\n')}`
-    const command = groups.flatMap(item => item.commands).find(item => item.name === topic)
+    const command = groups.flatMap(item => item.commands).find(item => item.name === word)
     if (command) return linesOf({ title: '', commands: [command] }).join('\n')
     return `没有这个命令或分组：${topic}\n\n${usageOf(groups)}`
   }
@@ -166,7 +173,7 @@ async function run(argv: string[], COMMANDS: Map<string, Command>, usage: (topic
       if (!(error instanceof BoardsApiError && (error.status === 404 || error.status === 501))) throw error
     }
   }
-  if (help) return console.log(usage(name === 'help' ? args[0] ?? (flags.has('all') ? '--all' : undefined) : name))
+  if (help) return console.log(name === 'help' ? usage(args.length ? args.join('\0') : flags.has('all') ? '--all' : undefined) : usage(name))
   if (!command) throw new Error(`未知命令：${name}（boardlab help 看有哪些）`)
   // A board named by its slot (`lab/host/s3`, `slot:5`) is the board in it: resolved once, so lock tokens stay keyed by name.
   let resolved: { board: string, die: string | undefined } | null = null
