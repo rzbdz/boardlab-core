@@ -95,8 +95,12 @@ export interface LabSlots { host: string, consoles: Array<{ id: string, label: s
 /** A board's lease in the backend, held for whoever holds its lock in boardd. */
 export interface LabHolder { holder: string, purpose: string, token: string | null }
 
-/** `notice` gets what a person is asked to do while a board reset by hand waits for them, and null once it is done. */
-export type Notice = (message: string | null) => void
+/**
+ * `notice` gets what a person is asked to do while a board reset by hand waits for them, and null once it is done.
+ * `request` is the backend's id for that ask, carried to the page and back with the confirmation, so a click that
+ * arrives after the backend already saw the board arrive resolves to what it answered instead of failing.
+ */
+export type Notice = (message: string | null, request?: string | null) => void
 
 /**
  * The relay: restarting boards. `signal` aborts once the lock the restart runs under is released or stolen: a backend
@@ -114,8 +118,12 @@ export interface RelayCapability {
    * by watching it appear returns that port.
    */
   enterDownload(config: LabConfig, target: BoardTarget, notice?: Notice, signal?: AbortSignal): Promise<string | void>
-  /** Tell the backend that the person did what a waiting reset asked of them. */
-  confirm?(config: LabConfig, target: BoardTarget, note: string): Promise<string>
+  /**
+   * Tell the backend that the person did what a waiting reset asked of them. `request` names the ask (see `Notice`):
+   * the backend answers what that request was, already answered or not, so pressing the page's button twice or after
+   * the board was seen is not an error. Without it, the ask waiting for that board now.
+   */
+  confirm?(config: LabConfig, target: BoardTarget, note: string, request?: string | null): Promise<string>
 }
 
 /** What can be done to a channel: relays switch, buttons are pressed; `pulse` and `click` do it for `ms` and undo it. */

@@ -64,7 +64,7 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
       method: 'POST', path: '/api/relay', about: '控制板子的一个继电器或按钮：on、off、toggle、pulse、press、release、click（要拿锁）',
       handle: async ({ body, caller }) => ({ message: await lab.relay.setChannel(board(body), who(caller.holder, body), { channel: required(body.channel, 'channel'), action: required(body.action, 'action') as ChannelAction, ms: typeof body.ms === 'number' ? body.ms : null }) }),
     },
-    { method: 'POST', path: '/api/confirm', about: '告诉后端，等人做的事做完了', handle: async ({ body, caller }) => ({ message: await lab.relay.confirm(board(body), caller.holder, typeof body.note === 'string' ? body.note : '') }) },
+    { method: 'POST', path: '/api/confirm', about: '告诉后端，等人做的事做完了（request：页面上的请求 id，重复确认不报错）', handle: async ({ body, caller }) => ({ message: await lab.relay.confirm(board(body), caller.holder, typeof body.note === 'string' ? body.note : '', typeof body.request === 'string' && body.request ? body.request : null) }) },
 
     // ---------- consoles ----------
     {

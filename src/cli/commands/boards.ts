@@ -146,8 +146,8 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'confirm', usage: ['confirm <board> [<备注>]\t由人复位的板子：照提示按了 RESET 之后告诉实验室（不需要锁）'],
-    async run({ client, args, out, target }) { const result = await client.confirm(target().board, args.slice(1).join(' ')); out(result, () => console.log(result.message)) },
+    name: 'confirm', usage: ['confirm <board> [<备注>] [--request <请求 id>]\t由人复位的板子：照提示按了 RESET 之后告诉实验室（不需要锁）；带上提示里的请求 id，重复确认不会报错'],
+    async run({ client, args, flag, out, target }) { const result = await client.confirm(target().board, args.slice(1).join(' '), flag('request')); out(result, () => console.log(result.message)) },
   },
   {
     name: 'rename', usage: ['rename <board|槽位> <新名字>\t给板子改名：实验室里的名字、串口名、锁、队列和历史一起改（拿着锁或空闲时；实验室板子会自动带上实验室前缀）'],

@@ -211,8 +211,8 @@ describe('remote labs', () => {
     expect(lab.calls).toEqual(['verify admin ubuntu@lab.test'])
     const listed = svc.boards.list().filter(board => board.lab)
     expect(listed.map(board => [board.name, board.lab, board.source, board.soc, board.slot])).toEqual([
-      ['lab1-sub0-0', { id: 'lab1', device: 'sub0-0', online: true, ip: '10.0.0.10', heldBy: null, leaseError: null, attention: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false }, 'lab', 'k3', null],
-      ['lab1-sub0-1', { id: 'lab1', device: 'sub0-1', online: true, ip: '10.0.0.11', heldBy: null, leaseError: null, attention: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false }, 'lab', 'k3', null],
+      ['lab1-sub0-0', { id: 'lab1', device: 'sub0-0', online: true, ip: '10.0.0.10', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false }, 'lab', 'k3', null],
+      ['lab1-sub0-1', { id: 'lab1', device: 'sub0-1', online: true, ip: '10.0.0.11', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false }, 'lab', 'k3', null],
     ])
     expect(listed.map(board => board.chips.map(chip => [chip.serialPath, chip.downloadUsbPath, chip.online, chip.alias]))).toEqual([[['/dev/ttyS_0', '1-2.1', true, null]], [['/dev/ttyS_1', '1-2.2', false, null]]])
     // A board whose system has not reported its model yet keeps the one it had.
@@ -466,13 +466,15 @@ describe('remote labs', () => {
   it('shows what a person must do while a lab board\'s reset waits for them, and lets them confirm', async () => {
     class HumanLab extends FakeLab {
       release: (() => void) | null = null
-      async reset(_config: LabConfig, _device: string, _lease?: string | null, notice?: (message: string | null) => void) {
-        notice?.('press RESET on slot-1')
+      async reset(_config: LabConfig, _device: string, _lease?: string | null, notice?: (message: string | null, request?: string | null) => void) {
+        notice?.('press RESET on slot-1', 'req-1')
         await new Promise<void>(resolve => { this.release = resolve })
         notice?.(null)
       }
-      async confirm(_config: LabConfig, device: string, note: string) { this.calls.push(`confirm ${device} ${note}`); this.release?.(); return '已确认「reset」' }
-      constructor() { super(); this.relay.confirm = (config, target, note) => this.confirm(config, target.device, note) }
+      async confirm(_config: LabConfig, device: string, note: string, request?: string | null) {
+        this.calls.push(`confirm ${device} ${note} ${request ?? '-'}`); this.release?.(); return '已确认「reset」'
+      }
+      constructor() { super(); this.relay.confirm = (config, target, note, request) => this.confirm(config, target.device, note, request) }
     }
     const lab = new HumanLab()
     const { svc } = labService(lab)
@@ -482,16 +484,17 @@ describe('remote labs', () => {
     svc.events.on('event', event => { if (event.type === 'attention') told.push(event) })
     const reset = svc.relay.reset('lab1-sub0-0', { holder: 'claude:s1', token })
     await new Promise(resolve => setTimeout(resolve, 5))
-    expect(svc.boards.get('lab1-sub0-0').lab).toMatchObject({ attention: 'press RESET on slot-1', canConfirm: true })
-    // The person at the board confirms; they need not hold the lock.
-    expect(await svc.relay.confirm('lab1-sub0-0', 'user:alice', '按了')).toBe('已确认「reset」')
+    // The ask carries the lab's id for it, so the page can send it back with the confirmation.
+    expect(svc.boards.get('lab1-sub0-0').lab).toMatchObject({ attention: 'press RESET on slot-1', attentionRequest: 'req-1', canConfirm: true })
+    // The person at the board confirms; they need not hold the lock, and the id travels with it.
+    expect(await svc.relay.confirm('lab1-sub0-0', 'user:alice', '按了', 'req-1')).toBe('已确认「reset」')
     await reset
     expect(svc.boards.get('lab1-sub0-0').lab?.attention).toBeNull()
     expect(told).toEqual([
-      { type: 'attention', board: 'lab1-sub0-0', message: 'press RESET on slot-1', holder: 'claude:s1' },
-      { type: 'attention', board: 'lab1-sub0-0', message: null, holder: 'claude:s1' },
+      { type: 'attention', board: 'lab1-sub0-0', message: 'press RESET on slot-1', request: 'req-1', holder: 'claude:s1' },
+      { type: 'attention', board: 'lab1-sub0-0', message: null, request: null, holder: 'claude:s1' },
     ])
-    expect(lab.calls.at(-1)).toBe('confirm sub0-0 按了')
+    expect(lab.calls.at(-1)).toBe('confirm sub0-0 按了 req-1')
     await expect(svc.relay.confirm('com260', 'user:alice')).rejects.toThrow(/没有在等人操作/)
   })
 

@@ -10,6 +10,7 @@ import type { Firmware } from '../shared/types.ts'
 import type { BootFile, DownloadCapability, FlashPackage, LabConfig, BoardTarget } from './backend.ts'
 import { BoardError } from './errors.ts'
 import { readFirmware, verifiedFirmware } from './firmware.ts'
+import { askedIn } from './relay.ts'
 import type { BoardLab } from './lab.ts'
 import type { Caller } from './locks.ts'
 
@@ -190,8 +191,8 @@ export class Download {
       const shown = text.replace(/^\s*\[\s*[\d.]+s\]\s*/, '').slice(0, 200)
       this.progressLines.set(board, shown)
       line?.(shown)
-      const asked = text.match(/ACTION NEEDED: (.*)$/)
-      if (asked) this.lab.relay.attend(board, asked[1]!)
+      const asked = askedIn(text)
+      if (asked) this.lab.relay.attend(board, asked.message, asked.request)
       else if (/: (confirmed by a person|detected )/.test(text)) this.lab.relay.attend(board, null)
       this.lab.kernel.changed(board)
     }

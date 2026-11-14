@@ -284,7 +284,7 @@ export class BoardsClient {
   unlock(board: string, token?: string | null) { return this.call<{ ok: true }>('POST', '/api/unlock', { board, token }) }
   steal(board: string, reason: string) { return this.call<LockResult>('POST', '/api/steal', { board, reason }) }
   reset(board: string, token?: string | null) { return this.call<{ ok: true }>('POST', '/api/reset', { board, token }) }
-  confirm(board: string, note?: string) { return this.call<{ message: string }>('POST', '/api/confirm', { board, note }) }
+  confirm(board: string, note?: string, request?: string | null) { return this.call<{ message: string }>('POST', '/api/confirm', { board, note, request }) }
   channels(board: string) { return this.call<BoardChannels>('GET', `/api/relay?board=${encodeURIComponent(board)}`) }
   setChannel(board: string, channel: string, action: string, ms?: number | null, token?: string | null) { return this.call<{ message: string }>('POST', '/api/relay', { board, channel, action, ms: ms ?? undefined, token }) }
   fastboot(board: string, token?: string | null) { return this.call<{ ok: true }>('POST', '/api/fastboot', { board, token }) }

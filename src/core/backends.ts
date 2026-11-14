@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto'
 import type { Board, LabPorts, LabSettings, Proposal } from '../shared/types.ts'
 import { DEVICE_PATTERN, deviceFilter, JUMP, type Backend, type BoardTarget, type LabConfig, type LabDevice, type LabDiscovery, type LabFinding, type LabNews, type LabSlots } from './backend.ts'
 import { transaction } from './db.ts'
+import { askedIn } from './relay.ts'
 import { renameBoard } from './rename.ts'
 import { BoardError, BusyError } from './errors.ts'
 import type { BoardLab } from './lab.ts'
@@ -202,7 +203,8 @@ export class Backends {
         heldBy: device?.heldBy ?? null, leaseError: this.leaseErrors.get(board.name) ?? null,
         empty: !!device?.empty, slotGone: !!device?.slotGone, canRefresh: !!instance.backend.inventory.refresh && !device?.empty,
         mediaBoot: device?.mediaBoot ? { method: device.mediaBoot.method, available: device.mediaBoot.available, why: device.mediaBoot.why ?? null } : null,
-        attention: this.lab.relay.attention(board.name) ?? device?.attention ?? null, canConfirm: !!instance.backend.relay.confirm,
+        attention: this.lab.relay.attention(board.name) ?? device?.attention ?? null,
+        attentionRequest: this.lab.relay.request(board.name), canConfirm: !!instance.backend.relay.confirm,
         sdks: device?.sdks ?? [], progress: this.lab.download.progress(board.name),
         canFlashPackage: !!instance.backend.builds?.flash && !device?.empty,
       }
@@ -314,8 +316,8 @@ export class Backends {
     const { notice, done } = this.lab.relay.asking(board, signal)
     try {
       out = await refresh(route.config, route.target, options, line => {
-        const asked = line.match(/ACTION NEEDED: (.*)$/)
-        if (asked) notice(asked[1]!)
+        const asked = askedIn(line)
+        if (asked) notice(asked.message, asked.request)
       }, signal)
     } catch (error) {
       this.lab.kernel.record(lease.holder, board, 'refresh', detail, false, (error as Error).message)

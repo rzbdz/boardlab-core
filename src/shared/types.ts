@@ -106,6 +106,8 @@ export interface BoardInLab {
   leaseError: string | null
   /** A person is asked to act on the board (press RESET, …); `boards confirm` tells the lab it is done. */
   attention: string | null
+  /** The lab's own id for that ask: `confirm` sends it back, so a click after the lab saw the result is harmless. */
+  attentionRequest: string | null
   canConfirm: boolean
   /** A slot in the lab with no board registered yet: only its console is there (discover or bind the board). */
   empty: boolean
@@ -305,7 +307,7 @@ export type BoardEvent =
   /** A lab's free ports were asked for again, or changed. */
   | { type: 'lab-ports', lab: string, host?: string, added?: string[], removed?: string[] }
   /** A person is asked to act on a board (press RESET, …), or no longer is (message null). */
-  | { type: 'attention', board: string, message: string | null, holder: string | null }
+  | { type: 'attention', board: string, message: string | null, request?: string | null, holder: string | null }
 
 /** A lab host's ports that no board uses yet. */
 export interface LabSlots { host: string, consoles: Array<{ id: string, label: string }>, usb: Array<{ id: string, label: string }> }
