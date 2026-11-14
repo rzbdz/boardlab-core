@@ -227,7 +227,7 @@ const commands: Command[] = [
     name: 'boot',
     usage: [
       'boot <board> --sdk <SDK> [--method load|download] [--variant V] [--break 名字]\t后端能取构建产物的板子用 SDK 的产物内存启动或刷机，板子所在主机自己去构建服务器取',
-      'boot <board>[.<die>] <固件名|文件>...\t按顺序把 FSBL、U-Boot/OpenSBI、内核加载到内存启动，不写板子；只改内核时：boot <board> fsbl u-boot-opensbi <Image.itb>',
+      'boot <board>[.<die>] <固件名|http(s)链接|host:/板卡主机路径|本机文件>...\t按顺序内存启动，不写板子；URL 和 host: 路径由板卡主机取，本机文件上传是兜底；只改内核：boot <board> fsbl u-boot-opensbi <Image.itb>',
     ],
     run: context => boot(context, 'boot'),
   },
@@ -305,10 +305,10 @@ async function boot({ client, args, flag, json, out, remote, target, token }: Pa
   }
   const files = args.slice(1)
   if (!files.length) throw new Error('缺少启动文件，例如 boardlab boot board1 fsbl u-boot-opensbi Image.itb')
-  // Bare names like fsbl are boardd's own firmware; anything with a dot or slash is a file here. A remote boardd cannot
-  // read this machine's files, so they are sent to it first (once per content).
+  // Bare names are boardd firmware, sha256: a file already on boardd. http(s) and host:/... are resolved by the board
+  // host, never uploaded. An ordinary path here is the fallback: read by a local boardd, otherwise uploaded.
   const paths = await Promise.all(files.map(async file => {
-    if (/^[a-z0-9][a-z0-9-]*$/.test(file)) return file
+    if (/^[a-z0-9][a-z0-9-]*$/.test(file) || /^sha256:[0-9a-f]{64}$/.test(file) || /^https?:\/\//i.test(file) || file.startsWith('host:/')) return file
     if (!remote) return resolve(file)
     return client.sendFile(resolve(file), size => { if (!json) console.error(`已传 ${file}（${size} 字节）`) })
   }))

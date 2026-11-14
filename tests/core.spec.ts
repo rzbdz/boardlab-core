@@ -22,7 +22,7 @@ import { RawReply } from '../src/core/api.ts'
 import { parseConfig } from '../src/server/config.ts'
 import { createModules, instances, type CatalogEntry } from '../src/server/catalog.ts'
 import { pinNumbers } from '../src/core/pins.ts'
-import { deviceFilter, type Backend, type BoardTarget, type DownloadCapability, type LabConfig, type LabDevice, type PortTiming, type RelayCapability, type RenameCapability } from '../src/core/backend.ts'
+import { deviceFilter, type Backend, type BoardTarget, type BootFile, type DownloadCapability, type LabConfig, type LabDevice, type PortTiming, type RelayCapability, type RenameCapability } from '../src/core/backend.ts'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'boardlab-core-')) })
@@ -367,24 +367,38 @@ describe('remote labs', () => {
 
   it('hands a lab that boots by itself the whole file sequence in one call', async () => {
     class BootingLab extends FakeLab {
-      boots: unknown[] = []
-      async boot(_config: LabConfig, device: string, files: Array<{ path: string, sha256: string }>, lease: string | null, timing: PortTiming) {
-        this.boots.push({ device, files: files.map(file => file.sha256), lease, first: timing.firstMs })
-        return 'job boot-1 succeeded'
+      boots: Array<{ files: BootFile[], lease: string | null }> = []
+      constructor() {
+        super()
+        this.download.backendFiles = true
+        this.download.boot = async (_config, target, files) => {
+          this.boots.push({ files, lease: target.lease })
+          return 'job boot-1 succeeded'
+        }
       }
-      constructor() { super(); this.download.boot = (config, target, files, timing) => this.boot(config, target.device, files, target.lease, timing) }
     }
     const lab = new BootingLab()
     const { svc } = labService(lab)
     await enable(svc)
+    await expect(svc.locks.unlock('no-such-board', { holder: 'user:alice' })).toThrow(/没有这块板/)
     const { token } = await svc.locks.lock('lab1-sub0-0', 'claude:s1', '内存启动')
     shipFirmware('fsbl', 'shipped FSBL')
     const kernel = join(dir, 'Image.itb')
     writeFileSync(kernel, 'kernel FIT')
-    const output = await svc.download.boot('lab1-sub0-0', { holder: 'claude:s1', token }, { files: ['fsbl', kernel] })
-    expect(lab.boots).toEqual([{ device: 'sub0-0', files: [sha('shipped FSBL'), sha('kernel FIT')], lease: null, first: 0 }])
+    const output = await svc.download.boot('lab1-sub0-0', { holder: 'claude:s1', token },
+      { files: ['fsbl', kernel, 'host:/products/Image.itb', 'https://images.test/kernel.itb'] })
+    expect(lab.boots).toEqual([{ lease: null, files: [
+      { path: expect.stringMatching(/fsbl/), sha256: sha('shipped FSBL') },
+      { path: kernel, sha256: sha('kernel FIT') },
+      { path: '/products/Image.itb', sha256: '', source: 'backend' },
+      { path: 'https://images.test/kernel.itb', sha256: '', source: 'backend' },
+    ] }])
     expect(lab.staged).toEqual([])
     expect(output).toContain('job boot-1 succeeded')
+    await expect(svc.download.boot('lab1-sub0-0', { holder: 'claude:s1', token }, { files: ['host:relative'] })).rejects.toThrow(/host:\/绝对路径/)
+    await expect(svc.download.boot('lab1-sub0-0', { holder: 'claude:s1', token }, { files: ['https://u:p@images.test/kernel'] })).rejects.toThrow(/不能带账号密码/)
+    lab.download.backendFiles = false
+    await expect(svc.download.boot('lab1-sub0-0', { holder: 'claude:s1', token }, { files: ['host:/products/Image.itb'] })).rejects.toThrow(/这个实验室不能/)
   })
 
   it('lets a lab with its own registry find new boards while others are held, and forget a board only while nobody holds it', async () => {

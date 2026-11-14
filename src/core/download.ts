@@ -70,7 +70,8 @@ export class Download {
   /**
    * Boot a chip from RAM through its download port: stage each file in order (FSBL, U-Boot/OpenSBI, kernel), waiting for
    * the port to come back between them. A bare name is one of boardd's own firmware files, `sha256:<hex>` a file a remote
-   * CLI sent, and anything else a file on this machine. Never flashes.
+   * CLI sent. A backend that declares `backendFiles` can also fetch an HTTP(S) URL or read `host:/absolute/path`
+   * itself. Anything else is a file on this machine. Never flashes.
    */
   async boot(board: string, caller: Caller, input: { die?: string, files: string[] }): Promise<string> {
     const lease = this.lab.locks.authorize(board, caller)
@@ -80,17 +81,27 @@ export class Download {
       if (FIRMWARE_NAME.test(path)) { const firmware = this.verifiedFirmware(path, target.soc); return { path: firmware.path, sha256: firmware.sha256 } }
       const sent = path.match(/^sha256:([0-9a-f]{64})$/)
       if (sent) return this.lab.files.resolve(sent[1]!)
+      if (/^https?:\/\//i.test(path) || path.startsWith('host:')) {
+        if (!route.backend.download.boot || !route.backend.download.backendFiles) throw new BoardError('invalid', '这个实验室不能从 URL 或板卡主机路径启动；用 SDK 配方，或把本机文件传上来')
+        if (path.startsWith('host:')) {
+          const hostPath = path.slice(5)
+          if (!isAbsolute(hostPath)) throw new BoardError('invalid', `板卡主机路径要写成 host:/绝对路径：${path}`)
+          return { path: hostPath, sha256: '', source: 'backend' }
+        }
+        const url = packageUrl(path)
+        return { path: url.href, sha256: '', source: 'backend' }
+      }
       if (!isAbsolute(path)) throw new BoardError('invalid', `启动文件要用绝对路径或 boardd 自带固件的名字：${path}`)
       let data: Buffer
       try { data = readFileSync(path) } catch { throw new BoardError('invalid', `读不到启动文件：${path}`) }
       if (!data.length) throw new BoardError('invalid', `启动文件是空的：${path}`)
       return { path, sha256: createHash('sha256').update(data).digest('hex') }
     })
-    const listing = files.map((file, index) => `${index + 1}. ${file.path} sha256 ${file.sha256}`)
+    const listing = files.map((file, index) => `${index + 1}. ${file.path}${file.sha256 ? ` sha256 ${file.sha256}` : '（板卡主机读取并校验）'}`)
     const download = route.backend.download
     if (download.boot) {
       // The backend runs the whole sequence, under its own busy guard and log.
-      const names = files.map((file, index) => `${index + 1}/${files.length} ${basename(file.path)} ${file.sha256.slice(0, 12)}`).join('，')
+      const names = files.map((file, index) => `${index + 1}/${files.length} ${basename(file.path)} ${file.sha256.slice(0, 12) || '板卡主机取文件'}`).join('，')
       try {
         const output = await download.boot(route.config, route.target, files, this.timing)
         this.lab.kernel.record(lease.holder, board, 'boot', `${chip.die}: ${names}`, true, files.map(file => file.path).join(' '))

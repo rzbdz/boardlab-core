@@ -66,8 +66,13 @@ export interface BoardTarget {
   gate: string | null
 }
 
-/** A file on this machine to load into a board. */
-export interface BootFile { path: string, sha256: string }
+/** A checked file on boardd, or (with `source: backend`) a URL/absolute path for the board host to resolve. */
+export interface BootFile {
+  path: string
+  /** Empty for a backend source: the board host hashes the content it actually reads. */
+  sha256: string
+  source?: 'backend'
+}
 /** How long a RAM boot waits for the download port between files. */
 export interface PortTiming { firstMs: number, laterMs: number, waitMs: number }
 
@@ -164,6 +169,8 @@ export interface LogRange { lines: string[], matched: number, truncated: boolean
 
 /** The USB download path. Loading runs from RAM and never flashes. */
 export interface DownloadCapability {
+  /** Can fetch HTTP(S) URLs and read absolute paths on its own host during a whole-sequence boot. */
+  backendFiles?: boolean
   /** Load a file into RAM through the download port and let it run. */
   stage(config: LabConfig, target: BoardTarget, file: BootFile, timeoutMs?: number): Promise<string>
   /** Whether the download port is enumerated. */
