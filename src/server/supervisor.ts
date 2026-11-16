@@ -35,6 +35,18 @@ interface Drain { type: 'drain' }
 
 const isReady = (message: unknown): message is Ready => (message as Ready | undefined)?.type === 'ready'
 
+/**
+ * Node's V8 in a worker segfaults on some RISC-V builds under large request bodies: a 99-200 MB file
+ * upload killed the worker every time, while the same work on an x86 host and in a bare `node` server on the
+ * same board was fine. `--single-threaded` (no background GC/compiler threads) was verified there: repeated
+ * 200 MB uploads stay up. Workers take it on RISC-V, and a supervisor on that architecture gets it too (it is
+ * harmless, and the flag does not exist on every Node build, so it never fails startup).
+ */
+export function workerExecArgv(arch: string = process.arch): string[] {
+  if (arch !== 'riscv64' || process.execArgv.includes('--single-threaded')) return process.execArgv
+  return [...process.execArgv, '--single-threaded']
+}
+
 export async function supervise(options: SupervisorOptions): Promise<void> {
   if (!cluster.isPrimary) throw new Error('the supervisor runs in the primary process only')
   const { stateDir, cli, args } = options
@@ -51,7 +63,7 @@ export async function supervise(options: SupervisorOptions): Promise<void> {
   const workerArgs = ['serve', '--worker', ...args]
   const env = { ...process.env, BOARDLAB_SUPERVISED: '1', BOARDLAB_SUPERVISOR_PID: String(process.pid) }
   const setup = (exec: string) => (cluster as unknown as { setupPrimary(options: { exec: string, args: string[], execArgv: string[], silent: boolean }): void })
-    .setupPrimary({ exec, args: workerArgs, execArgv: process.execArgv, silent: false })
+    .setupPrimary({ exec, args: workerArgs, execArgv: workerExecArgv(), silent: false })
 
   let stopping = false, updating = false
   let latestCli = cli

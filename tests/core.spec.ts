@@ -634,7 +634,7 @@ describe('remote labs', () => {
 
     // A file sent to boardd: the backend gets its path here and its sha256.
     const content = 'flash package'
-    await svc.files.put('claude:s1', sha(content), 'pkg.zip', (async function* () { yield Buffer.from(content) })())
+    await svc.files.put('claude:s1', sha(content), 'pkg.zip', (async function* () { yield Buffer.from(content) })(), { total: content.length })
     const sent = call(svc, '/api/flash/package', 'claude:s1', { board, token, sha256: `sha256:${sha(content)}` })
     await new Promise(resolve => setTimeout(resolve, 5))
     expect(lab.flashed[1]).toEqual({ device: 'sub0-0', pkg: { path: svc.files.get(sha(content))!.path, sha256: sha(content), flasher: null }, signal: true })
@@ -762,7 +762,7 @@ describe('remote labs', () => {
     const server = createHttpServer((req, res) => { if (seen++ === 0) { req.socket.destroy(); return } res.setHeader('content-type', 'application/json'); res.end('{"ok":true}') })
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
     const port = (server.address() as { port: number }).port
-    const client = new BoardsClient({ label: 'test', request: (method, path, headers) => request({ host: '127.0.0.1', port, method, path, headers }) })
+    const client = new BoardsClient({ label: 'test', kind: 'web', request: (method, path, headers) => request({ host: '127.0.0.1', port, method, path, headers }) })
     try {
       expect(await client.call('GET', '/api/state')).toEqual({ ok: true })
       expect(seen).toBe(2)
@@ -980,6 +980,57 @@ describe('remote labs', () => {
 /** Call an endpoint as `holder`, the way the HTTP gateway does. */
 const call = (svc: BoardLab, path: string, holder: string, body: Record<string, unknown>) =>
   Promise.resolve().then(() => svc.api.match('POST', path)!.endpoint.handle({ body, query: new URLSearchParams(), params: {}, caller: { holder, local: true }, signal: new AbortController().signal, upload: null }))
+
+describe('files copied over scp', () => {
+  it('gives a ticket path, checks the copied file, and keeps it by sha256', async () => {
+    const svc = service()
+    const content = Buffer.alloc(3 << 20, 7)
+    const digest = createHash('sha256').update(content).digest('hex')
+    const ticket = await call(svc, '/api/files/ticket', 'user:alice', { sha256: digest, name: '../Image.itb' }) as { id: string, path: string }
+    expect(ticket.id).toMatch(/^[0-9a-f]{32}$/)
+    expect(ticket.path).toMatch(/\.incoming\/[0-9a-f]{32}\/Image\.itb$/)
+    writeFileSync(ticket.path, content)
+    const stored = await call(svc, '/api/files/adopt', 'user:alice', { id: ticket.id, sha256: digest, name: 'Image.itb' }) as { stored: boolean, size: number }
+    expect(stored).toMatchObject({ stored: true, size: content.length })
+    expect(svc.files.get(digest)!.path).toMatch(/Image\.itb$/)
+    // A file that is not what it says is refused and removed; it never enters the cache.
+    const other = await call(svc, '/api/files/ticket', 'user:alice', { sha256: sha('right'), name: 'x.img' }) as { id: string, path: string }
+    writeFileSync(other.path, 'wrong')
+    await expect(call(svc, '/api/files/adopt', 'user:alice', { id: other.id, sha256: sha('right'), name: 'x.img' })).rejects.toThrow(/对不上/)
+    expect(svc.files.get(sha('right'))).toBeNull()
+    // A file the client never copied is refused too.
+    const missing = await call(svc, '/api/files/ticket', 'user:alice', { sha256: sha('missing'), name: 'y.img' }) as { id: string, path: string }
+    await expect(call(svc, '/api/files/adopt', 'user:alice', { id: missing.id, sha256: sha('missing'), name: 'y.img' })).rejects.toThrow(/没有到/)
+  })
+
+  it('an ssh client copies with scp, so no large body passes through boardd', async () => {
+    const svc = service()
+    const port = 45000 + Math.floor(Math.random() * 1000)
+    const running = await serve(svc, { port, socketPath: join(dir, 'scp.sock'), uiDir: null })
+    const bin = join(dir, 'bin'); mkdirSync(bin)
+    // `ssh -W 127.0.0.1:<port>` opens the tunnel locally, as the real ssh would.
+    writeFileSync(join(bin, 'ssh'), `#!${process.execPath}\nconst [h, p] = process.argv[process.argv.indexOf('-W') + 1].split(':')\nconst s = require('node:net').connect(Number(p), h)\nprocess.stdin.pipe(s); s.pipe(process.stdout); s.on('close', () => process.exit(0))\n`, { mode: 0o755 })
+    // `scp LOCAL target:/path` copies into the local paths the test serves boardd from.
+    writeFileSync(join(bin, 'scp'), `#!${process.execPath}\nconst fs = require('node:fs')\nconst local = process.argv.at(-2), remote = process.argv.at(-1)\nfs.copyFileSync(local, remote.slice(remote.indexOf(':') + 1))\n`, { mode: 0o755 })
+    const path = process.env.PATH
+    process.env.PATH = `${bin}:${path}`
+    try {
+      const client = new BoardsClient(sshTransport(`ssh://alice@boardd.example?boardd=${port}`, { person: 'alice', controlDir: join(dir, 'ssh') }), 'user:alice')
+      const file = join(dir, 'kernel-FIT.itb')
+      const content = Buffer.alloc(12 << 20, 3)
+      const digest = createHash('sha256').update(content).digest('hex')
+      writeFileSync(file, content)
+      const ref = await client.sendFile(file)
+      expect(ref).toBe(`sha256:${digest}`)
+      expect(svc.files.get(digest)!.path).toMatch(/kernel-FIT\.itb$/)
+      // The second call does not copy anything: boardd already has that content.
+      expect(await client.sendFile(file)).toBe(ref)
+    } finally {
+      process.env.PATH = path
+      await running.close()
+    }
+  })
+})
 
 describe('renaming a board', () => {
   it('renames it everywhere here: the serial alias, the lock, the queue and its history; only its holder or nobody can', async () => {
@@ -1481,15 +1532,13 @@ describe('remote boards CLI', () => {
       const web = new BoardsClient(webTransport(`http://127.0.0.1:${port + 1}/boardlab/`, { user: 'alice', password: 'pw' }), 'user:alice')
       const mine = await web.lock('com260', '网页登录')
       expect(mine.lease!.holder).toBe('user:alice')
-      // Boot files from the remote machine are sent once, checked, and booted by their sha256.
+      // A web-only client cannot upload at all; the HTTP upload endpoint is deliberately disabled.
       const kernel = join(dir, 'Image.itb')
       writeFileSync(kernel, 'remote kernel FIT')
-      const ref = await web.sendFile(kernel)
-      expect(ref).toBe(`sha256:${sha('remote kernel FIT')}`)
-      expect(await web.sendFile(kernel)).toBe(ref)
-      expect(svc.files.get(sha('remote kernel FIT'))!.path).toMatch(/Image\.itb$/)
-      const wrong = await fetch(`http://127.0.0.1:${port + 1}/boardlab/api/files/${sha('other')}`, { method: 'PUT', headers: { Authorization: `Basic ${Buffer.from('alice:pw').toString('base64')}` }, body: 'remote kernel FIT' })
-      expect(wrong.status).toBe(400)
+      await expect(web.sendFile(kernel)).rejects.toThrow(/网页上传已禁用/)
+      const wrong = await fetch(`http://127.0.0.1:${port + 1}/boardlab/api/files/${sha('other')}?total=17`, { method: 'PUT', headers: { Authorization: `Basic ${Buffer.from('alice:pw').toString('base64')}` }, body: 'remote kernel FIT' })
+      expect(wrong.status).toBe(403)
+      expect(svc.files.get(sha('remote kernel FIT'))).toBeNull()
       await web.unlock('com260', mine.token)
       await expect(new BoardsClient(webTransport(`http://127.0.0.1:${port + 1}/boardlab`, { user: 'alice', password: 'no' })).state()).rejects.toThrow(/要登录/)
       await expect(new BoardsClient(webTransport(`http://127.0.0.1:${port + 1}/boardlab`, { user: 'alice', password: 'pw' }), 'user:bob').state()).rejects.toMatchObject({ status: 403 })

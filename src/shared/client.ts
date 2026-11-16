@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { copyFile, link } from 'node:fs/promises'
 import { request as httpRequest, type ClientRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { Socket } from 'node:net'
@@ -38,16 +39,25 @@ export class BoardsApiError extends Error {
  */
 export interface Transport {
   label: string
+  /** How the file bytes usually travel, for callers that want to explain it. */
+  kind?: 'unix' | 'ssh' | 'web'
   /** The person a remote boardd sees this client as, when the transport says (its login). */
   person?: string
   /** The request to send; `path` starts with /api/. */
   request(method: string, path: string, headers: Record<string, string>): ClientRequest
+  /** Put a whole local file at `remote` without an HTTP body (the server gives a ticket path). */
+  copyFile?(local: string, remote: string): Promise<void>
   /** Why the last connection could not be made, when the transport knows (an ssh login refused, say). */
   failure?(): string | null
 }
 
 export function unixTransport(socketPath: string): Transport {
-  return { label: socketPath, request: (method, path, headers) => httpRequest({ socketPath, method, path, headers }) }
+  return {
+    label: socketPath, kind: 'unix',
+    request: (method, path, headers) => httpRequest({ socketPath, method, path, headers }),
+    // Same machine: a hard link is free; a copy is the fallback across filesystems.
+    copyFile: async (local, remote) => { try { await link(local, remote) } catch { await copyFile(local, remote) } },
+  }
 }
 
 /** `ssh://[user@]host[:port]`: each connection is `ssh -W 127.0.0.1:<boardd port>`, sharing one ssh login for a while. */
@@ -78,11 +88,23 @@ export function sshTransport(url: string, options: { boarddPort?: number, person
   }
   const person = options.person ?? process.env.USER
   return {
-    label: url, person,
+    label: url, kind: 'ssh', person,
     failure: () => lastFailure,
     request: (method, path, headers) => httpRequest({
       createConnection: connect, method, path,
       headers: { Host: `127.0.0.1:${port}`, ...(person ? { 'X-Boards-User': person } : {}), Connection: 'close', ...headers },
+    }),
+    copyFile: (local, remote) => new Promise((resolve, reject) => {
+      // The server creates this path, under its own upload directory; refuse anything that could be a shell word.
+      if (!/^\/[A-Za-z0-9._/-]+$/.test(remote) || remote.split('/').includes('..')) return reject(new Error(`boardd 给的上传路径不安全：${remote}`))
+      mkdirSync(controlDir, { recursive: true, mode: 0o700 })
+      const child = spawn('scp', ['-q', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=accept-new',
+        '-o', 'ControlMaster=auto', '-o', `ControlPath=${controlDir}/%C`, '-o', 'ControlPersist=300',
+        ...(parsed.port ? ['-P', parsed.port] : []), local, `${target}:${remote}`], { stdio: ['ignore', 'ignore', 'pipe'] })
+      let stderr = ''
+      child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-500) })
+      child.on('error', error => reject(new Error(`scp 到 ${target} 失败：${error.message}`)))
+      child.on('exit', code => code === 0 ? resolve() : reject(new Error(`scp 到 ${target} 失败：${stderr.trim() || `退出码 ${code}`}`)))
     }),
   }
 }
@@ -94,7 +116,7 @@ export function webTransport(url: string, login?: { user: string, password: stri
   const send = base.protocol === 'https:' ? httpsRequest : httpRequest
   const auth = login ? { Authorization: `Basic ${Buffer.from(`${login.user}:${login.password}`).toString('base64')}` } : {}
   return {
-    label: url, person: login?.user,
+    label: url, kind: 'web', person: login?.user,
     request: (method, path, headers) => send({
       protocol: base.protocol, hostname: base.hostname, port: base.port || undefined, method, path: prefix + path,
       // The proxy accepts writes from its own page's origin.
@@ -188,32 +210,45 @@ export class BoardsClient {
     })
   }
 
-  /** Send a local file for `boot` or `flash`, unless boardd has it already; returns the `sha256:<hex>` they take for it. */
+  /**
+   * Send a local file for `boot` or `flash`, unless boardd has it already; returns the `sha256:<hex>` they take for it.
+   * The file is copied with scp to a path boardd gives and adopted there: no file body goes through boardd's Node
+   * process. A web-only connection has no upload path; serve the image by URL or use an ssh client.
+   */
   async sendFile(path: string, onSent?: (size: number) => void): Promise<string> {
+    if (!this.transport.copyFile) throw new BoardsApiError(400, '网页上传已禁用（RISC-V 上的 Node 处理大请求体会崩溃）；请用 ssh:// 连接的 boardlab CLI，或给一个 http(s) 链接', null)
     const hasher = createHash('sha256')
     for await (const chunk of createReadStream(path)) hasher.update(chunk)
     const sha256 = hasher.digest('hex')
     const have = await this.call<{ present: boolean }>('GET', `/api/files/${sha256}`)
     if (!have.present) {
-      const size = statSync(path).size
-      await new Promise<void>((resolve, reject) => {
-        const req = this.open('PUT', `/api/files/${sha256}?name=${encodeURIComponent(basename(path))}`, { 'Content-Type': 'application/octet-stream', 'Content-Length': String(size) })
-        req.on('response', response => {
-          const chunks: Buffer[] = []
-          response.on('data', chunk => chunks.push(chunk))
-          response.on('end', () => {
-            if ((response.statusCode ?? 500) < 400) return resolve()
-            let message = Buffer.concat(chunks).toString('utf8')
-            try { message = JSON.parse(message).error ?? message } catch {}
-            reject(new BoardsApiError(response.statusCode ?? 500, `传 ${path} 失败：${message}`, null))
-          })
-        })
-        req.on('error', reject)
-        createReadStream(path).pipe(req)
-      })
-      onSent?.(size)
+      await this.sendCopy(path, sha256)
+      onSent?.(statSync(path).size)
     }
     return `sha256:${sha256}`
+  }
+
+  /** Copy a whole file with scp (or a link on the same machine), then have boardd check and adopt it. */
+  private async sendCopy(path: string, sha256: string): Promise<void> {
+    const copy = this.transport.copyFile!
+    let ticket: { id: string, path: string }
+    try {
+      ticket = await this.call<{ id: string, path: string }>('POST', '/api/files/ticket', { sha256, name: basename(path) })
+    } catch (error) {
+      if (error instanceof BoardsApiError && error.status === 404) throw new BoardsApiError(400, 'boardd 太旧，没有 scp 上传接口：升级 boardd，或给一个 http(s) 链接', null)
+      throw error
+    }
+    try {
+      await copy(path, ticket.path)
+    } catch (error) {
+      throw new BoardsApiError(503, `把 ${path} 传到 boardd 所在机器失败：${(error as Error).message}`, 'unavailable')
+    }
+    try {
+      await this.call<{ sha256: string }>('POST', '/api/files/adopt', { id: ticket.id, sha256, name: basename(path) })
+    } catch (error) {
+      // The bytes arrived but boardd did not take them: say so; never silently resend 100 MB over HTTP.
+      throw new BoardsApiError(400, `boardd 没有接收 ${path}：${(error as Error).message}`, null)
+    }
   }
 
   /** A command run by boardd's own CLI for this holder (for commands this client does not know). */

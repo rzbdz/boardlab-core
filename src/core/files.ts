@@ -4,13 +4,21 @@
  * three days are removed.
  */
 import { createHash, randomUUID } from 'node:crypto'
-import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from 'node:fs'
+import { createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from 'node:fs'
+import { Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { basename, join } from 'node:path'
 import { BoardError } from './errors.ts'
 import type { Kernel } from './kernel.ts'
 
 const KEEP_MS = 3 * 86_400_000
 export const SHA256 = /^[0-9a-f]{64}$/
+/** The most one upload request carries (see `Files.put`): small enough that Node on RISC-V never crashed on it. */
+export const PIECE = 8 * 1024 * 1024
+
+/** A file being uploaded: where the last piece left it, and whether the whole file is in. */
+export interface Uploaded { sha256: string, size: number, received: number, done: boolean, stored: boolean }
+
 
 export class Files {
   constructor(private readonly k: Kernel, private readonly dir: string | undefined) {}
@@ -35,38 +43,120 @@ export class Files {
     return file
   }
 
-  async put(actor: string, sha256: string, name: string, body: AsyncIterable<Buffer>, limit = 16 * 1024 * 1024 * 1024): Promise<{ sha256: string, size: number, stored: boolean }> {
+  /**
+   * A file arrives in pieces: `PUT /api/files/:sha256?name=&offset=&total=` sends the bytes from `offset` onward, at most
+   * `PIECE` of them, and the piece that brings the file to `total` finishes it (the sha256 of everything so far is
+   * checked then). A piece that fails leaves what arrived; the next try asks `GET /api/files/:sha256` for `received`
+   * and continues from there.
+   *
+   * Why pieces: on some RISC-V hosts Node's V8 segfaults on large request bodies — sometimes at 50 MB,
+   * reliably at 100 MB, and every time with several large uploads at once — in a bare `node` server and in boardd
+   * alike. A few megabytes per request never crashed it, and no connection is held for a 200 MB body.
+   */
+  async put(actor: string, sha256: string, name: string, body: AsyncIterable<Buffer>, options: { offset?: number | null, total?: number | null } = {}): Promise<Uploaded> {
     if (!this.dir) throw new BoardError('invalid', '这个 boardd 不接收文件')
     if (!SHA256.test(sha256)) throw new BoardError('invalid', `sha256 不对：${sha256}`)
-    const safe = basename(name || 'file').replace(/[^A-Za-z0-9._+-]/g, '_').replace(/^\.+/, '_').slice(0, 120) || 'file'
+    const safe = this.safeName(name)
+    const total = options.total ?? null
+    if (total !== null && (!Number.isInteger(total) || total < 0)) throw new BoardError('invalid', `total 不对：${options.total}`)
     const existing = this.get(sha256)
-    if (existing) { for await (const _ of body) {} return { sha256, size: statSync(existing.path).size, stored: false } }
+    if (existing) {
+      const size = statSync(existing.path).size
+      for await (const _ of body) {}
+      if (total !== null && total !== size) throw new BoardError('invalid', `boardd 这里的同名文件是 ${size} 字节，和要传的 ${total} 字节不符（sha256 相同不该如此）`)
+      return { sha256, size, received: size, done: true, stored: false }
+    }
     this.expire()
     const dir = join(this.dir, sha256)
     mkdirSync(dir, { recursive: true, mode: 0o700 })
-    const part = join(dir, `${safe}.${randomUUID()}.part`)
-    const hasher = createHash('sha256')
-    let size = 0
-    const out = createWriteStream(part, { mode: 0o600 })
-    try {
-      for await (const chunk of body) {
+    const part = join(dir, `${safe}.part`)
+    let offset = options.offset ?? 0
+    if (!Number.isInteger(offset) || offset < 0) throw new BoardError('invalid', `offset 不对：${options.offset}`)
+    const have = statSync(part, { throwIfNoEntry: false })?.size ?? 0
+    // Only a continuation of what is here is accepted: a different start would corrupt the file.
+    if (offset !== have) throw new BoardError('invalid', `续传位置不对：要从第 ${offset} 字节开始传，但这里收到的是 ${have} 字节`)
+    const hash = createHash('sha256')
+    if (offset) hash.update(readFileSync(part))
+    let size = offset
+    const tap = new Transform({
+      transform(chunk: Buffer, _encoding, done) {
         size += chunk.length
-        if (size > limit) throw new BoardError('invalid', `文件太大（超过 ${limit / 1024 / 1024} MB）`)
-        hasher.update(chunk)
-        if (!out.write(chunk)) await new Promise<void>(resolve => out.once('drain', () => resolve()))
-      }
-      await new Promise<void>((resolve, reject) => out.end((error?: Error | null) => error ? reject(error) : resolve()))
-      const got = hasher.digest('hex')
-      if (got !== sha256) throw new BoardError('invalid', `传上来的文件和 sha256 对不上（收到 ${size} 字节，sha256 ${got.slice(0, 12)}…）`)
+        if (size - offset > PIECE) return done(new BoardError('invalid', `一次传太多了：每片最多 ${PIECE / 1024 / 1024} MB`))
+        hash.update(chunk)
+        done(null, chunk)
+      },
+    })
+    try {
+      await pipeline(body as AsyncIterable<Buffer>, tap, createWriteStream(part, { flags: 'a', mode: 0o600 }))
+      if (total !== null && size < total) return { sha256, size: total, received: size, done: false, stored: false }
+      if (total !== null && size > total) throw new BoardError('invalid', `传多了：应该有 ${total} 字节，收到 ${size}`)
       if (!size) throw new BoardError('invalid', '文件是空的')
+      const got = hash.digest('hex')
+      if (got !== sha256) throw new BoardError('invalid', `传上来的文件和 sha256 对不上（收到 ${size} 字节，sha256 ${got.slice(0, 12)}…）`)
       renameSync(part, join(dir, safe))
     } catch (error) {
-      out.destroy()
-      rmSync(part, { force: true })
+      // What arrived stays for the retry; a bad sha256 is not worth resuming, so start over next time.
+      if (error instanceof BoardError && /sha256 对不上/.test(error.message)) rmSync(part, { force: true })
       throw error
     }
     this.k.record(actor, null, 'file', `${safe} ${sha256.slice(0, 12)}`, true, `${size} 字节`)
-    return { sha256, size, stored: true }
+    return { sha256, size, received: size, done: true, stored: true }
+  }
+
+  /** What an unfinished upload has so far (`done: false`), or null: the CLI resumes from `received`. */
+  partial(sha256: string): Uploaded | null {
+    if (!this.dir || !SHA256.test(sha256)) return null
+    const dir = join(this.dir, sha256)
+    if (!existsSync(dir)) return null
+    const part = readdirSync(dir).find(item => item.endsWith('.part'))
+    if (!part) return null
+    return { sha256, size: 0, received: statSync(join(dir, part)).size, done: false, stored: false }
+  }
+
+  /**
+   * A path on this machine for a file arriving by scp, and the id that adopts it. The client copies the bytes there
+   * itself; only the small ticket and adopt requests go through boardd, so a 200 MB image never enters Node's request
+   * body. The directory lives under the file store, so adopting is an atomic rename after the hash check.
+   */
+  ticket(sha256: string, name: string): { id: string, path: string } {
+    if (!this.dir) throw new BoardError('invalid', '这个 boardd 不接收文件')
+    if (!SHA256.test(sha256)) throw new BoardError('invalid', `sha256 不对：${sha256}`)
+    this.expire()
+    const id = randomUUID().replaceAll('-', '')
+    const dir = join(this.dir, '.incoming', id)
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    return { id, path: join(dir, this.safeName(name)) }
+  }
+
+  /** Check the file a CLI copied to a `ticket` path and keep it under its sha256. Nothing is read into memory. */
+  async adopt(actor: string, id: string, sha256: string, name: string): Promise<Uploaded> {
+    if (!this.dir) throw new BoardError('invalid', '这个 boardd 不接收文件')
+    if (!/^[0-9a-f]{32}$/.test(id)) throw new BoardError('invalid', `上传凭据不对：${id}`)
+    if (!SHA256.test(sha256)) throw new BoardError('invalid', `sha256 不对：${sha256}`)
+    const safe = this.safeName(name)
+    const incoming = join(this.dir, '.incoming', id)
+    const path = join(incoming, safe)
+    const stat = lstatSync(path, { throwIfNoEntry: false })
+    if (!stat || !stat.isFile()) throw new BoardError('invalid', `文件没有到 boardd 这台机器：${path}`)
+    if (!stat.size) throw new BoardError('invalid', '传上来的文件是空的')
+    const hash = createHash('sha256')
+    for await (const chunk of createReadStream(path)) hash.update(chunk)
+    const got = hash.digest('hex')
+    if (got !== sha256) {
+      rmSync(incoming, { recursive: true, force: true })
+      throw new BoardError('invalid', `传上来的文件和 sha256 对不上（收到 ${stat.size} 字节，sha256 ${got.slice(0, 12)}…）`)
+    }
+    const existing = this.get(sha256)
+    if (existing) {
+      rmSync(incoming, { recursive: true, force: true })
+      return { sha256, size: stat.size, received: stat.size, done: true, stored: false }
+    }
+    const dir = join(this.dir, sha256)
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    renameSync(path, join(dir, safe))
+    rmSync(incoming, { recursive: true, force: true })
+    this.k.record(actor, null, 'file', `${safe} ${sha256.slice(0, 12)}`, true, `${stat.size} 字节`)
+    return { sha256, size: stat.size, received: stat.size, done: true, stored: true }
   }
 
   /** A fresh path for a file a command writes and boardd then keeps (see `put`); remove it when done. */
@@ -74,6 +164,10 @@ export class Files {
     if (!this.dir) throw new BoardError('invalid', '这个 boardd 不接收文件')
     mkdirSync(join(this.dir, 'tmp'), { recursive: true, mode: 0o700 })
     return join(this.dir, 'tmp', randomUUID())
+  }
+
+  private safeName(name: string): string {
+    return basename(name || 'file').replace(/[^A-Za-z0-9._+-]/g, '_').replace(/^\.+/, '_').slice(0, 120) || 'file'
   }
 
   private expire() {

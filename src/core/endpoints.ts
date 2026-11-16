@@ -148,16 +148,30 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
 
     // ---------- files ----------
     {
-      method: 'GET', path: '/api/files/:sha256', about: 'boardd 有没有这个文件（download=1 取回内容）', handle: ({ params, query }) => {
+      method: 'GET', path: '/api/files/:sha256', about: 'boardd 有没有这个文件（download=1 取回内容；没收完的给 received，从那里续传）', handle: ({ params, query }) => {
         if (query.get('download') === '1') {
           const file = lab.files.get(params.sha256!)
           if (!file) throw new BoardError('not-found', '没有这个文件')
           return new FileReply(file.path)
         }
-        return { sha256: params.sha256, present: !!lab.files.get(params.sha256!) }
+        const partial = lab.files.partial(params.sha256!)
+        return { sha256: params.sha256, present: !!lab.files.get(params.sha256!), ...(partial ? { received: partial.received } : {}) }
       },
     },
-    { method: 'PUT', path: '/api/files/:sha256', about: '传文件，按 sha256 校验和保存（name= 文件名）', handle: ({ params, query, caller, upload }) => lab.files.put(caller.holder, params.sha256!, query.get('name') ?? 'file', upload!) },
+    {
+      // Deliberately disabled: a large request body crashes Node on RISC-V (the K1/K3 boardd builds). Clients copy
+      // with scp to a ticket path instead; see /api/files/ticket.
+      method: 'PUT', path: '/api/files/:sha256', about: '已禁用：网页上传在 RISC-V 上的 Node 有崩溃缺陷；客户端改用 scp（见 /api/files/ticket）',
+      handle: () => { throw new BoardError('forbidden', '网页上传已禁用：请用 boardlab CLI（scp 传输），或给板子所在主机一个 http(s) 链接') },
+    },
+    {
+      method: 'POST', path: '/api/files/ticket', about: '给 scp 一个上传路径：客户端把文件直接复制到那个路径，再调 /api/files/adopt；大文件不经 boardd 的请求体',
+      handle: ({ body }) => lab.files.ticket(required(body.sha256, 'sha256'), typeof body.name === 'string' ? body.name : 'file'),
+    },
+    {
+      method: 'POST', path: '/api/files/adopt', about: '校验客户端 scp 到上传路径的文件（id、sha256、name），通过后按 sha256 存下',
+      handle: ({ body, caller }) => lab.files.adopt(caller.holder, required(body.id, 'id'), required(body.sha256, 'sha256'), typeof body.name === 'string' ? body.name : 'file'),
+    },
 
     // ---------- inventory ----------
     { method: 'POST', path: '/api/boards/add', about: '手工登记板子', handle: ({ body, caller }) => { lab.boards.add(caller.holder, body) } },
