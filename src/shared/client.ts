@@ -357,7 +357,7 @@ export class BoardsClient {
   /** Set or clear a board's model; a set one is remembered for the dropdown. */
   setModel(board: string, product: string | null) { return this.call<{ ok: true }>('POST', '/api/board', { name: board, product }) }
   labSlots(id: string, fresh = true) { return this.call<LabPorts>('GET', `/api/labs/slots?id=${encodeURIComponent(id)}${fresh ? '&fresh=1' : ''}`) }
-  bindLab(id: string, input: { host: string, console: string, usb: string, name?: string }) { return this.call<{ board: string }>('POST', '/api/labs/bind', { id, ...input }) }
+  bindLab(id: string, input: { host?: string, console?: string, usb?: string, name?: string }) { return this.call<{ board: string, host: string, console: string, usb: string }>('POST', '/api/labs/bind', { id, ...input }) }
   removeBoard(name: string) { return this.call<{ ok: true }>('POST', '/api/boards/remove', { name }) }
   exportToml() { return this.call<string>('GET', '/api/export.toml') }
 }

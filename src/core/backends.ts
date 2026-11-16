@@ -10,6 +10,7 @@ import { transaction } from './db.ts'
 import { askedIn } from './relay.ts'
 import { renameBoard } from './rename.ts'
 import { BoardError, BusyError } from './errors.ts'
+import { checkPorts, choosePorts } from './ports.ts'
 import type { BoardLab } from './lab.ts'
 import type { Caller } from './locks.ts'
 import { BOARD_NAME, str } from './text.ts'
@@ -602,12 +603,7 @@ export class Backends {
   async bind(actor: string, id: string, input: { host: string, console: string, usb: string, name?: string | null }): Promise<string> {
     const { backend } = this.configurable(id)
     if (!backend.ports) throw new BoardError('invalid', `实验室 ${id} 不能用空闲端口登记板子`)
-    const safe = (text: string) => text.replace(/^\/dev\//, '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '')
-    const name = input.name?.trim() || `tmp-${safe(input.host)}-${safe(input.console)}`
-    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/.test(name)) throw new BoardError('invalid', `板名不合法：${name}`)
-    for (const [key, value] of Object.entries({ host: input.host, console: input.console, usb: input.usb })) {
-      if (!value || !/^[A-Za-z0-9_.:/@-]{1,200}$/.test(value)) throw new BoardError('invalid', `${key} 不合法：${value}`)
-    }
+    checkPorts({ host: input.host, console: input.console, usb: input.usb })
     // What the page showed may be old: the ports must still be free when the board is made of them.
     await this.refreshPorts(id)
     const now = this.portCache.get(id)
@@ -615,12 +611,41 @@ export class Backends {
     const host = now?.hosts.find(item => item.host === input.host)
     const gone = [!host?.consoles.some(item => item.id === input.console) && `串口 ${input.console}`, !host?.usb.some(item => item.id === input.usb) && `下载口 ${input.usb}`].filter(Boolean)
     if (gone.length) throw new BoardError('conflict', `${input.host} 上的${gone.join('、')}已经不空闲了（被占用或拔掉了），刷新后重新选`)
-    try { await backend.ports.bind(this.config(id), input.host, { console: input.console, usb: input.usb }, name) }
+    return this.createBound(actor, id, input.host, input.console, input.usb, input.name)
+  }
+
+  /**
+   * Register the board a person is holding in download mode, without naming its ports first: the only unbound
+   * download port is chosen, and on that host the only free console. With more than one candidate of either, nothing
+   * is guessed: the error lists them, so a person or agent chooses (`usb`, `console`, `host`). A given port is still
+   * checked against the lab's fresh list.
+   */
+  async bindManual(actor: string, id: string, input: { host?: string | null, console?: string | null, usb?: string | null, name?: string | null }): Promise<{ board: string, host: string, console: string, usb: string }> {
+    const { backend } = this.configurable(id)
+    if (!backend.ports) throw new BoardError('invalid', `实验室 ${id} 不能用空闲端口登记板子`)
+    checkPorts({ host: input.host, console: input.console, usb: input.usb })
+    await this.refreshPorts(id)
+    const now = this.portCache.get(id)
+    if (now?.error) throw new BoardError('hardware', `问不到实验室现在的空闲端口：${now.error}`)
+    const chosen = choosePorts(now?.hosts ?? [], input)
+    const board = await this.createBound(actor, id, chosen.host, chosen.console, chosen.usb, input.name)
+    return { board, ...chosen }
+  }
+
+  /** Validate a chosen host, console and port, hand them to the backend, and list the new board at once. */
+  private async createBound(actor: string, id: string, host: string, console: string, usb: string, nameInput?: string | null): Promise<string> {
+    const { backend } = this.configurable(id)
+    if (!backend.ports) throw new BoardError('invalid', `实验室 ${id} 不能用空闲端口登记板子`)
+    checkPorts({ host, console, usb })
+    const safe = (text: string) => text.replace(/^\/dev\//, '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '')
+    const name = nameInput?.trim() || `tmp-${safe(host)}-${safe(console)}`
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/.test(name)) throw new BoardError('invalid', `板名不合法：${name}`)
+    try { await backend.ports.bind(this.config(id), host, { console, usb }, name) }
     catch (error) {
-      this.lab.kernel.record(actor, `${id}-${name}`, 'lab-bind', `${input.host} ${input.console} ${input.usb}`, false, (error as Error).message)
+      this.lab.kernel.record(actor, `${id}-${name}`, 'lab-bind', `${host} ${console} ${usb}`, false, (error as Error).message)
       throw new BoardError('hardware', (error as Error).message)
     }
-    this.lab.kernel.record(actor, `${id}-${name}`, 'lab-bind', `${input.host} ${input.console} ${input.usb}`, true)
+    this.lab.kernel.record(actor, `${id}-${name}`, 'lab-bind', `${host} ${console} ${usb}`, true)
     await this.sync(id, actor).catch(() => {})
     void this.refreshPorts(id)
     return `${id}-${name}`

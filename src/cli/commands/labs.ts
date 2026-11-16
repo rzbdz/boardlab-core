@@ -63,11 +63,11 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'bind', noBoard: true, usage: ['bind <实验室> --host <主机> --console <串口> --usb <下载口> [--name <板名>]\t用空闲的串口和下载口登记一块由人复位的板子，临时调试用；默认名 tmp-<主机>-<串口>'],
+    name: 'bind', noBoard: true, usage: ['bind <实验室> [--host <主机>] [--console <串口>] [--usb <下载口>] [--name <板名>]\t一键登记一块没有按钮控制、由人复位的板子：不指定下载口时选唯一没绑定的（请保证只有这一块在下载模式），不指定串口时选该主机唯一的空闲串口；有多个候选会列出来让你指定。默认名 tmp-<主机>-<串口>'],
     async run({ client, args, flag, out }) {
-      if (!args[0]) throw new Error('用法：boardlab bind <实验室> --host <主机> --console <串口> --usb <下载口> [--name <板名>]')
-      const result = await client.bindLab(args[0], { host: flag('host') ?? '', console: flag('console') ?? '', usb: flag('usb') ?? '', name: flag('name') })
-      out(result, () => console.log(`已登记 ${result.board}（由人复位：复位时按提示操作，再 boardlab confirm ${result.board}）`))
+      if (!args[0]) throw new Error('用法：boardlab bind <实验室> [--host <主机>] [--console <串口>] [--usb <下载口>] [--name <板名>]')
+      const result = await client.bindLab(args[0], { host: flag('host'), console: flag('console'), usb: flag('usb'), name: flag('name') })
+      out(result, () => console.log(`已登记 ${result.board}（${result.host}：串口 ${result.console}，下载口 ${result.usb}；由人复位：复位时按提示操作，再 boardlab confirm ${result.board}）`))
     },
   },
 ]

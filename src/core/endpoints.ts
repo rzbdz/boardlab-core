@@ -206,7 +206,7 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     { method: 'POST', path: '/api/labs/remove', about: '删除一个添加的实验室（id）：它的板子一起去掉，不能有人拿着锁', handle: async ({ body, caller }) => { await lab.backends.removeLab(caller.holder, required(body.id, 'id')); return { ok: true } } },
     { method: 'POST', path: '/api/labs/test', about: '检查实验室的访问并重新列板子', handle: ({ body, caller }) => lab.backends.test(caller.holder, required(body.id, 'id')) },
     { method: 'GET', path: '/api/labs/slots', about: '实验室的空闲端口（fresh=1 等最新的）', handle: ({ query }) => lab.backends.ports(required(query.get('id'), 'id'), { fresh: query.get('fresh') === '1' }) },
-    { method: 'POST', path: '/api/labs/bind', about: '用空闲端口登记板子', handle: async ({ body, caller }) => ({ board: await lab.backends.bind(caller.holder, required(body.id, 'id'), { host: required(body.host, 'host'), console: required(body.console, 'console'), usb: required(body.usb, 'usb'), name: optional(body.name) }) }) },
+    { method: 'POST', path: '/api/labs/bind', about: '用空闲端口登记板子：usb 省略时选唯一的未绑定下载口，console 省略时选该主机唯一的空闲串口；有多个候选会列出，要用 usb/console 指定', handle: ({ body, caller }) => lab.backends.bindManual(caller.holder, required(body.id, 'id'), { host: optional(body.host), console: optional(body.console), usb: optional(body.usb), name: optional(body.name) }) },
     {
       method: 'POST', path: '/api/labs/discover', about: '让实验室发现新板子（slots：只发现这些槽位）', handle: ({ body, caller }) => {
         const slots = Array.isArray(body.slots) ? body.slots.map(String) : typeof body.slots === 'string' && body.slots ? body.slots.split(',') : []

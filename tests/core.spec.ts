@@ -22,7 +22,7 @@ import { RawReply } from '../src/core/api.ts'
 import { parseConfig } from '../src/server/config.ts'
 import { createModules, instances, type CatalogEntry } from '../src/server/catalog.ts'
 import { pinNumbers } from '../src/core/pins.ts'
-import { deviceFilter, type Backend, type BoardTarget, type BootFile, type DownloadCapability, type LabConfig, type LabDevice, type PortTiming, type RelayCapability, type RenameCapability } from '../src/core/backend.ts'
+import { deviceFilter, type Backend, type BoardTarget, type BootFile, type DownloadCapability, type LabConfig, type LabDevice, type LabSlots, type PortTiming, type RelayCapability, type RenameCapability } from '../src/core/backend.ts'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'boardlab-core-')) })
@@ -476,6 +476,40 @@ describe('remote labs', () => {
     await expect(svc.backends.bind('user:alice', 'lab1', { host: 'lab-9', console: 'x; rm -rf /', usb: 'usb:1-3' })).rejects.toThrow(/不合法/)
     expect(lab.calls.filter(call => !call.startsWith('verify'))).toEqual(['discover gpio', 'discover gpio', 'prefer 12,13', 'discover gpio',
       'discover human lab-9', 'register sub0-9 {"console":"c9"}', 'remove sub0-9', 'bind lab-9 /dev/ttyUSB5 usb:1-3 tmp-lab-9-ttyUSB5'])
+  })
+
+  it('registers a manual board from the one unbound download port, and lists candidates instead of guessing', async () => {
+    class ManualLab extends FakeLab {
+      free: LabSlots[] = [
+        { host: 'host-a', consoles: [{ id: 'ttyUSB1', label: 'serial-mux a1' }, { id: 'ttyUSB2', label: 'serial-mux a2' }], usb: [{ id: '1-1.2', label: '1-1.2 BROM' }] },
+        { host: 'host-b', consoles: [{ id: 'ttyUSB3', label: 'serial-mux b1' }], usb: [{ id: '1-1.3', label: '1-1.3 BROM' }, { id: '1-1.4', label: '1-1.4 BROM' }] },
+      ]
+      async slots() { return this.free }
+      async bind(_config: LabConfig, host: string, ports: { console: string, usb: string }, name: string) {
+        this.listed.push({ ...this.listed[0]!, name, heldBy: null })
+        this.calls.push(`bind ${host} ${ports.console} ${ports.usb} ${name}`)
+      }
+      ports = { list: this.slots.bind(this), bind: this.bind.bind(this) }
+    }
+    const lab = new ManualLab()
+    const { svc } = labService(lab)
+    await enable(svc)
+    // Several download ports in download mode: no guess; they are listed with their hosts.
+    await expect(svc.backends.bindManual('user:alice', 'lab1', {})).rejects.toThrow(/有 3 个未绑定的下载口：host-a 1-1\.2（1-1\.2 BROM）、host-b 1-1\.3/)
+    // One download port, but several free consoles on its host: the person picks the board's console.
+    await expect(svc.backends.bindManual('user:alice', 'lab1', { usb: '1-1.2' })).rejects.toThrow(/host-a 上有 2 个空闲串口：ttyUSB1（serial-mux a1）、ttyUSB2（serial-mux a2）/)
+    await expect(svc.backends.bindManual('user:alice', 'lab1', { usb: '1-1.2', console: 'ttyUSB9' })).rejects.toThrow(/串口 ttyUSB9已经不空闲了/)
+    expect(await svc.backends.bindManual('user:alice', 'lab1', { usb: '1-1.2', console: 'ttyUSB2', name: 'manual-one' }))
+      .toEqual({ board: 'lab1-manual-one', host: 'host-a', console: 'ttyUSB2', usb: '1-1.2' })
+    // With exactly one unbound download port and one free console, one call is enough for a person or an agent.
+    lab.free = [{ host: 'host-c', consoles: [{ id: 'ttyUSB7', label: 'serial-mux c1' }], usb: [{ id: '1-1.7', label: '1-1.7 BROM' }] }]
+    expect(await svc.backends.bindManual('user:alice', 'lab1', {})).toEqual({ board: 'lab1-tmp-host-c-ttyUSB7', host: 'host-c', console: 'ttyUSB7', usb: '1-1.7' })
+    lab.free = [{ host: 'host-c', consoles: [{ id: 'ttyUSB7', label: 'serial-mux c1' }], usb: [] }]
+    await expect(svc.backends.bindManual('user:alice', 'lab1', {})).rejects.toThrow(/没有未绑定的下载口/)
+    expect(lab.calls.filter(call => call.startsWith('bind '))).toEqual([
+      'bind host-a ttyUSB2 1-1.2 manual-one',
+      'bind host-c ttyUSB7 1-1.7 tmp-host-c-ttyUSB7',
+    ])
   })
 
   it('shows what a person must do while a lab board\'s reset waits for them, and lets them confirm', async () => {
