@@ -1010,8 +1010,8 @@ describe('files copied over scp', () => {
     const bin = join(dir, 'bin'); mkdirSync(bin)
     // `ssh -W 127.0.0.1:<port>` opens the tunnel locally, as the real ssh would.
     writeFileSync(join(bin, 'ssh'), `#!${process.execPath}\nconst [h, p] = process.argv[process.argv.indexOf('-W') + 1].split(':')\nconst s = require('node:net').connect(Number(p), h)\nprocess.stdin.pipe(s); s.pipe(process.stdout); s.on('close', () => process.exit(0))\n`, { mode: 0o755 })
-    // `scp LOCAL target:/path` copies into the local paths the test serves boardd from.
-    writeFileSync(join(bin, 'scp'), `#!${process.execPath}\nconst fs = require('node:fs')\nconst local = process.argv.at(-2), remote = process.argv.at(-1)\nfs.copyFileSync(local, remote.slice(remote.indexOf(':') + 1))\n`, { mode: 0o755 })
+    // `sftp -b - target` reads `put "LOCAL" "PATH"` and copies into the paths this test serves boardd from.
+    writeFileSync(join(bin, 'sftp'), `#!${process.execPath}\nconst fs = require('node:fs')\nlet input = ''\nprocess.stdin.on('data', d => input += d).on('end', () => {\n  const m = /^put "(.*)" "(.*)"$/m.exec(input.trim())\n  if (!m) process.exit(2)\n  fs.copyFileSync(m[1], m[2])\n})\n`, { mode: 0o755 })
     const path = process.env.PATH
     process.env.PATH = `${bin}:${path}`
     try {

@@ -98,13 +98,17 @@ export function sshTransport(url: string, options: { boarddPort?: number, person
       // The server creates this path, under its own upload directory; refuse anything that could be a shell word.
       if (!/^\/[A-Za-z0-9._/-]+$/.test(remote) || remote.split('/').includes('..')) return reject(new Error(`boardd 给的上传路径不安全：${remote}`))
       mkdirSync(controlDir, { recursive: true, mode: 0o700 })
-      const child = spawn('scp', ['-q', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=accept-new',
+      // sftp, not scp: a restricted ssh account has sftp enabled but no shell, and OpenSSH 8's scp needs a shell.
+      const child = spawn('sftp', ['-q', '-b', '-', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=accept-new',
         '-o', 'ControlMaster=auto', '-o', `ControlPath=${controlDir}/%C`, '-o', 'ControlPersist=300',
-        ...(parsed.port ? ['-P', parsed.port] : []), local, `${target}:${remote}`], { stdio: ['ignore', 'ignore', 'pipe'] })
+        ...(parsed.port ? ['-P', parsed.port] : []), target], { stdio: ['pipe', 'ignore', 'pipe'] })
       let stderr = ''
       child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-500) })
-      child.on('error', error => reject(new Error(`scp 到 ${target} 失败：${error.message}`)))
-      child.on('exit', code => code === 0 ? resolve() : reject(new Error(`scp 到 ${target} 失败：${stderr.trim() || `退出码 ${code}`}`)))
+      child.on('error', error => reject(new Error(`sftp 到 ${target} 失败：${error.message}`)))
+      child.on('exit', code => code === 0 ? resolve() : reject(new Error(`sftp 到 ${target} 失败：${stderr.trim() || `退出码 ${code}`}`)))
+      // sftp reads one command per line; quote both paths so spaces and quotes survive.
+      const quote = (text: string) => `"${text.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
+      child.stdin.end(`put ${quote(local)} ${quote(remote)}\n`)
     }),
   }
 }

@@ -4,7 +4,8 @@
  * three days are removed.
  */
 import { createHash, randomUUID } from 'node:crypto'
-import { createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from 'node:fs'
 import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { basename, join } from 'node:path'
@@ -18,6 +19,30 @@ export const PIECE = 8 * 1024 * 1024
 
 /** A file being uploaded: where the last piece left it, and whether the whole file is in. */
 export interface Uploaded { sha256: string, size: number, received: number, done: boolean, stored: boolean }
+
+/** Above this, hash with `sha256sum`: Node's V8 on some RISC-V builds crashes while streaming a large file. */
+const HASH_IN_NODE_MAX = 8 * 1024 * 1024
+
+/** The sha256 of a file, without putting its bytes through V8 when it is large. */
+export async function sha256File(path: string): Promise<string> {
+  if (statSync(path).size <= HASH_IN_NODE_MAX) {
+    const hash = createHash('sha256')
+    for await (const chunk of createReadStream(path)) hash.update(chunk)
+    return hash.digest('hex')
+  }
+  return await new Promise((resolve, reject) => {
+    const child = spawn('sha256sum', ['--', path], { stdio: ['ignore', 'pipe', 'ignore'] })
+    let out = ''
+    child.stdout.on('data', chunk => { out += chunk })
+    // Never fall back to streaming a large file through V8: that is the crash this avoids.
+    child.on('error', error => reject(new Error(`找不到 sha256sum，无法安全校验大文件 ${path}：${error.message}`)))
+    child.on('exit', code => {
+      const hash = out.trim().split(/\s+/)[0]
+      if (code === 0 && hash && /^[0-9a-f]{64}$/.test(hash)) resolve(hash)
+      else reject(new Error(`sha256sum ${path} 失败（退出码 ${code}）`))
+    })
+  })
+}
 
 
 export class Files {
@@ -75,14 +100,11 @@ export class Files {
     const have = statSync(part, { throwIfNoEntry: false })?.size ?? 0
     // Only a continuation of what is here is accepted: a different start would corrupt the file.
     if (offset !== have) throw new BoardError('invalid', `续传位置不对：要从第 ${offset} 字节开始传，但这里收到的是 ${have} 字节`)
-    const hash = createHash('sha256')
-    if (offset) hash.update(readFileSync(part))
     let size = offset
     const tap = new Transform({
       transform(chunk: Buffer, _encoding, done) {
         size += chunk.length
         if (size - offset > PIECE) return done(new BoardError('invalid', `一次传太多了：每片最多 ${PIECE / 1024 / 1024} MB`))
-        hash.update(chunk)
         done(null, chunk)
       },
     })
@@ -91,7 +113,7 @@ export class Files {
       if (total !== null && size < total) return { sha256, size: total, received: size, done: false, stored: false }
       if (total !== null && size > total) throw new BoardError('invalid', `传多了：应该有 ${total} 字节，收到 ${size}`)
       if (!size) throw new BoardError('invalid', '文件是空的')
-      const got = hash.digest('hex')
+      const got = await sha256File(part)
       if (got !== sha256) throw new BoardError('invalid', `传上来的文件和 sha256 对不上（收到 ${size} 字节，sha256 ${got.slice(0, 12)}…）`)
       renameSync(part, join(dir, safe))
     } catch (error) {
@@ -123,8 +145,12 @@ export class Files {
     if (!SHA256.test(sha256)) throw new BoardError('invalid', `sha256 不对：${sha256}`)
     this.expire()
     const id = randomUUID().replaceAll('-', '')
-    const dir = join(this.dir, '.incoming', id)
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    const incoming = join(this.dir, '.incoming')
+    // The ssh uploader is a different local user from boardd: its group may write (the deployment gives
+    // `.incoming` that group and the setgid bit), but nobody else can list or read it.
+    mkdirSync(incoming, { recursive: true, mode: 0o2770 })
+    const dir = join(incoming, id)
+    mkdirSync(dir, { recursive: true, mode: 0o2770 })
     return { id, path: join(dir, this.safeName(name)) }
   }
 
@@ -139,9 +165,7 @@ export class Files {
     const stat = lstatSync(path, { throwIfNoEntry: false })
     if (!stat || !stat.isFile()) throw new BoardError('invalid', `文件没有到 boardd 这台机器：${path}`)
     if (!stat.size) throw new BoardError('invalid', '传上来的文件是空的')
-    const hash = createHash('sha256')
-    for await (const chunk of createReadStream(path)) hash.update(chunk)
-    const got = hash.digest('hex')
+    const got = await sha256File(path)
     if (got !== sha256) {
       rmSync(incoming, { recursive: true, force: true })
       throw new BoardError('invalid', `传上来的文件和 sha256 对不上（收到 ${stat.size} 字节，sha256 ${got.slice(0, 12)}…）`)
