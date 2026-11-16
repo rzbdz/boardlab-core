@@ -13,7 +13,7 @@ boardlab-core has no web page of its own, much as a kernel has no desktop. Backe
 
 ## Building a distribution
 
-A distribution adds boardlab-core as a git submodule at `core/` and as the pnpm workspace package `boardlab-core`. Each of its modules registers itself with boardd and may add CLI commands:
+A distribution adds boardlab-core as a git submodule at `core/` and as the pnpm workspace package `boardlab-core`. Each of its modules registers itself with boardd and may add CLI commands. Core owns generic board, transport and service contracts; product naming, module-specific API payloads and presentation belong to the distribution.
 
 ```ts
 // src/boardlab.ts
@@ -39,6 +39,12 @@ pnpm run typecheck
 pnpm check
 pnpm test
 ```
+
+## Releases
+
+Core has an independent `0.x` version. A release updates `package.json`, passes the complete test and bare-distribution build, and has a signed annotated `vX.Y.Z` tag whose version matches the package. Distributions pin the tagged commit with their `core/` gitlink and keep the `workspace:*` dependency; core and distribution versions do not need to match.
+
+The distribution supplies its own release identity and presentation through `createCli`. Its modules own their wire types and client adapters; adding a module-specific field must not require a core release.
 
 ## Origin and changes
 
