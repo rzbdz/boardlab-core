@@ -3,7 +3,6 @@ import type { BoardEvent } from '../shared/types.ts'
 import type { ChannelAction } from './backend.ts'
 import { EventStream, FileReply, optional, required, TextReply, type Endpoint } from './api.ts'
 import { BoardError } from './errors.ts'
-import { pinNumbers } from './pins.ts'
 import type { BoardLab } from './lab.ts'
 import { stripAnsi } from './text.ts'
 
@@ -51,7 +50,10 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     { method: 'GET', path: '/api/yields', about: 'AI 在等你让出的板子（拿了锁的人看得到，可以回答）', handle: () => lab.locks.yieldsList() },
     {
       method: 'POST', path: '/api/yields', about: '回答 AI 的让出请求：board、action=yield（让出）或 deny（继续用）；只有拿锁的人能答',
-      handle: ({ body, caller }) => ({ message: lab.locks.answerYield(board(body), caller.holder, body.action === 'deny' ? 'deny' : 'yield') }),
+      handle: ({ body, caller }) => {
+        if (body.action !== 'yield' && body.action !== 'deny') throw new BoardError('invalid', 'action 只能是 yield 或 deny')
+        return { message: lab.locks.answerYield(board(body), caller.holder, body.action) }
+      },
     },
     { method: 'POST', path: '/api/unqueue', about: '离开队列', handle: ({ body, caller }) => { lab.locks.unqueue(board(body), caller.holder) } },
     { method: 'POST', path: '/api/steal', about: '抢锁（只有人可以，要写原因）', handle: ({ body, caller }) => lab.locks.steal(board(body), caller.holder, String(body.reason ?? '')) },
@@ -206,15 +208,17 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     { method: 'POST', path: '/api/labs/remove', about: '删除一个添加的实验室（id）：它的板子一起去掉，不能有人拿着锁', handle: async ({ body, caller }) => { await lab.backends.removeLab(caller.holder, required(body.id, 'id')); return { ok: true } } },
     { method: 'POST', path: '/api/labs/test', about: '检查实验室的访问并重新列板子', handle: ({ body, caller }) => lab.backends.test(caller.holder, required(body.id, 'id')) },
     { method: 'GET', path: '/api/labs/slots', about: '实验室的空闲端口（fresh=1 等最新的）', handle: ({ query }) => lab.backends.ports(required(query.get('id'), 'id'), { fresh: query.get('fresh') === '1' }) },
-    { method: 'POST', path: '/api/labs/bind', about: '用空闲端口登记板子：usb 省略时选唯一的未绑定下载口，console 省略时选该主机唯一的空闲串口；有多个候选会列出，要用 usb/console 指定', handle: ({ body, caller }) => lab.backends.bindManual(caller.holder, required(body.id, 'id'), { host: optional(body.host), console: optional(body.console), usb: optional(body.usb), name: optional(body.name) }) },
     {
-      method: 'POST', path: '/api/labs/discover', about: '让实验室发现新板子（slots：只发现这些槽位）', handle: ({ body, caller }) => {
-        const slots = Array.isArray(body.slots) ? body.slots.map(String) : typeof body.slots === 'string' && body.slots ? body.slots.split(',') : []
-        // The page sends what the person typed; the CLI sends numbers. Both end up as header GPIO numbers.
-        const prefer = typeof body.prefer === 'string' ? pinNumbers(body.prefer)
-          : Array.isArray(body.prefer) ? body.prefer.map(Number).filter((n: number) => Number.isInteger(n) && n >= 0 && n <= 999) : []
-        if (typeof body.prefer === 'string' && body.prefer.trim() && !prefer.length) throw new BoardError('invalid', `没有认出要优先试的 GPIO：${body.prefer}（写成 12,13、GPIO12、gpio_13 都可以）`)
-        return lab.backends.discover(caller.holder, required(body.id, 'id'), body.confirmed === true, { human: body.human === true, host: optional(body.host), slots, prefer })
+      method: 'GET', path: '/api/labs/discover/methods', about: '实验室后端上报的发现方法（id、标题、说明、字段），可带 host/slot 取该主机或槽位的选项', handle: ({ query }) =>
+        lab.backends.discoveryMethods(required(query.get('id'), 'id'), { host: optional(query.get('host')), slot: optional(query.get('slot')) }),
+    },
+    {
+      method: 'POST', path: '/api/labs/discover', about: '用一个后端上报的发现方法找板子：method、values，可带 host/slot', handle: ({ body, caller }) => {
+        const values = body.values && typeof body.values === 'object' && !Array.isArray(body.values)
+          ? Object.fromEntries(Object.entries(body.values).map(([key, value]) => [key, String(value)])) : {}
+        return lab.backends.discover(caller.holder, required(body.id, 'id'), body.confirmed === true, {
+          method: required(body.method, 'method'), values, host: optional(body.host), slot: optional(body.slot),
+        })
       },
     },
     { method: 'POST', path: '/api/labs/discover/cancel', about: '让正在进行的发现或重建停下（id）：已经登记的和正在跑的那一步会留着', handle: ({ body, caller }) => lab.backends.cancelDiscovery(caller.holder, required(body.id, 'id')) },

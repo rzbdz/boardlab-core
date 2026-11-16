@@ -10,7 +10,7 @@ import { Duplex } from 'node:stream'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import type {
-  BoardChannels, BoardDetail, LabPorts, LabSettings, Lease, LockResult, SendResult, State,
+  BoardChannels, BoardDetail, DiscoveryContext, DiscoveryMethod, LabPorts, LabSettings, Lease, LockResult, SendResult, State,
 } from './types.ts'
 
 export const DEFAULT_PORT = 38127
@@ -344,8 +344,14 @@ export class BoardsClient {
   labKinds() { return this.call<Array<{ kind: string, title: string, about: string }>>('GET', '/api/labs/kinds') }
   addLab(id: string, kind: string) { return this.call<LabSettings>('POST', '/api/labs/add', { id, kind }) }
   removeLab(id: string) { return this.call<{ ok: true }>('POST', '/api/labs/remove', { id }) }
-  rebuildLab(id: string, host: string, keepInUse = false) { return this.call<{ message: string, proposals: number, registered?: string[] }>('POST', '/api/labs/rebuild', { id, host, confirmed: true, keepInUse }) }
-  discoverLab(id: string, options: { human?: boolean, host?: string, slots?: string[], prefer?: number[] | string } = {}) { return this.call<{ message: string, proposals: number, registered?: string[] }>('POST', '/api/labs/discover', { id, confirmed: true, ...options }) }
+  rebuildLab(id: string, host: string, keepInUse = false, signal?: AbortSignal) { return this.call<{ message: string, proposals: number, registered?: string[] }>('POST', '/api/labs/rebuild', { id, host, confirmed: true, keepInUse }, signal) }
+  discoverMethods(id: string, context: DiscoveryContext = {}) {
+    const query = new URLSearchParams({ id, ...(context.host ? { host: context.host } : {}), ...(context.slot ? { slot: context.slot } : {}) })
+    return this.call<DiscoveryMethod[]>('GET', `/api/labs/discover/methods?${query}`)
+  }
+  discoverLab(id: string, request: { method: string, values?: Record<string, string>, host?: string, slot?: string }, signal?: AbortSignal) {
+    return this.call<{ message: string, proposals: number, registered?: string[] }>('POST', '/api/labs/discover', { id, confirmed: true, ...request }, signal)
+  }
   /** Stop a lab's discovery or rebuild (`lab cancel`). */
   cancelDiscovery(id: string) { return this.call<{ message: string }>('POST', '/api/labs/discover/cancel', { id }) }
   /** Read the board in a slot again after a swap; returns its name afterwards. */
@@ -357,7 +363,6 @@ export class BoardsClient {
   /** Set or clear a board's model; a set one is remembered for the dropdown. */
   setModel(board: string, product: string | null) { return this.call<{ ok: true }>('POST', '/api/board', { name: board, product }) }
   labSlots(id: string, fresh = true) { return this.call<LabPorts>('GET', `/api/labs/slots?id=${encodeURIComponent(id)}${fresh ? '&fresh=1' : ''}`) }
-  bindLab(id: string, input: { host?: string, console?: string, usb?: string, name?: string }) { return this.call<{ board: string, host: string, console: string, usb: string }>('POST', '/api/labs/bind', { id, ...input }) }
   removeBoard(name: string) { return this.call<{ ok: true }>('POST', '/api/boards/remove', { name }) }
   exportToml() { return this.call<string>('GET', '/api/export.toml') }
 }

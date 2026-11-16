@@ -1,4 +1,4 @@
-/** A session on a board's serial console, whichever backend carries it (serial-mux here, a lab's reader elsewhere). */
+/** A session on a board's serial console, whichever backend carries it (a local reader here, a lab's reader elsewhere). */
 export interface ConsoleHello { alias: string, device: string | null, baud: number, transport: string }
 
 export interface ConsoleSession {

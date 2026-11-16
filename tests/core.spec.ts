@@ -21,7 +21,6 @@ import { serve } from '../src/server/http.ts'
 import { RawReply } from '../src/core/api.ts'
 import { parseConfig } from '../src/server/config.ts'
 import { createModules, instances, type CatalogEntry } from '../src/server/catalog.ts'
-import { pinNumbers } from '../src/core/pins.ts'
 import { deviceFilter, type Backend, type BoardTarget, type BootFile, type DownloadCapability, type LabConfig, type LabDevice, type LabSlots, type PortTiming, type RelayCapability, type RenameCapability } from '../src/core/backend.ts'
 
 let dir: string
@@ -405,38 +404,53 @@ describe('remote labs', () => {
   it('lets a lab with its own registry find new boards while others are held, and forget a board only while nobody holds it', async () => {
     class RegistryLab extends FakeLab {
       hang = false
-      async discover(_config: LabConfig, options: { human?: boolean, host?: string | null, prefer?: number[] }, progress: (line: string) => void, _registered?: unknown, signal?: AbortSignal) {
+      async methods(_config: LabConfig, context: { host?: string | null }) {
+        const hostField = { id: 'host', label: '主机', kind: 'choice' as const, required: true, options: [{ value: 'lab-9', label: 'lab-9' }], initial: 'lab-9' }
+        return [
+          { id: 'gpio', title: '按复位线发现', about: '逐个拉复位线', fields: [...(context.host ? [] : [hostField]), { id: 'prefer', label: '先试这些复位线', kind: 'text' as const, required: false }] },
+          { id: 'human', title: '人工发现', about: '按提示让板子进下载模式', fields: context.host ? [] : [hostField] },
+        ]
+      }
+      async run(_config: LabConfig, method: string, values: { host?: string, prefer?: string }, context: { host?: string | null }, progress: (line: string) => void, _registered?: unknown, signal?: AbortSignal) {
         progress('ACTION NEEDED (board 1): put ONE unregistered board into download mode')
-        this.calls.push(`discover ${options.human ? `human ${options.host}` : 'gpio'}`)
-        if (options.prefer?.length) this.calls.push(`prefer ${options.prefer.join(',')}`)
+        const host = context.host ?? values.host
+        this.calls.push(`discover ${method}${method === 'human' ? ` ${host}` : ''}`)
+        if (values.prefer) this.calls.push(`prefer ${values.prefer}`)
+        if ((values as Record<string, string>).nope) this.calls.push('nope')
         if (this.hang) await new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(new Error('cancelled'))))
         return { message: '发现 1 块新板子', found: [{ host: 'lab-9', name: 'k3-board', summary: 'lab-9 上的新板子', warnings: [], detail: { console: 'c9' } }] }
       }
       async slots() { return [{ host: 'lab-9', consoles: [{ id: '/dev/ttyUSB5', label: '/dev/ttyUSB5' }, { id: 'ttyUSB5', label: '/dev/ttyUSB5' }], usb: [{ id: 'usb:1-3', label: 'usb:1-3 DFU' }] }] }
-      async bind(_config: LabConfig, host: string, ports: { console: string, usb: string }, name: string) {
-        this.listed.push({ ...this.listed[0]!, name, heldBy: null }); this.calls.push(`bind ${host} ${ports.console} ${ports.usb} ${name}`)
-      }
       async register(_config: LabConfig, finding: { detail: unknown }, name: string) {
         this.listed.push({ ...this.listed[0]!, name, heldBy: null }); this.calls.push(`register ${name} ${JSON.stringify(finding.detail)}`)
       }
       async remove(_config: LabConfig, device: string) { this.listed = this.listed.filter(item => item.name !== device); this.calls.push(`remove ${device}`) }
-      discovery = { discover: this.discover.bind(this), register: this.register.bind(this) }
-      ports = { list: this.slots.bind(this), bind: this.bind.bind(this) }
+      discovery = { methods: this.methods.bind(this), run: this.run.bind(this), register: this.register.bind(this) }
+      ports = { list: this.slots.bind(this) }
       constructor() { super(); this.inventory.remove = this.remove.bind(this) }
     }
     const lab = new RegistryLab()
     const { svc } = labService(lab)
     await enable(svc)
     expect(svc.backends.labSettings()[0]).toMatchObject({ canDiscover: true, canRemove: true })
-    await expect(svc.backends.discover('user:alice', 'lab1', false)).rejects.toThrow(/需要用户确认/)
+    await expect(svc.backends.discover('user:alice', 'lab1', false, { method: 'gpio' })).rejects.toThrow(/需要用户确认/)
+    expect((await svc.backends.discoveryMethods('lab1')).map(method => method.id)).toEqual(['gpio', 'human'])
     const { token } = await svc.locks.lock('lab1-sub0-0', 'claude:s1', '调试')
-    // Finding boards uses only free lines and consoles: a board in use does not stop it.
-    expect(await svc.backends.discover('user:alice', 'lab1', true)).toMatchObject({ message: '发现 1 块新板子' })
-    // The person's GPIO list reaches the backend; a search can be stopped from the page even without a board lock.
-    expect(await svc.backends.discover('user:alice', 'lab1', true, { prefer: [12, 13] })).toMatchObject({ message: '发现 1 块新板子' })
+    // Finding boards uses only free lines and consoles: a board in use does not stop it. A method that needs a host
+    // says so in its fields; the person's answer travels as one of its values.
+    expect(await svc.backends.discover('user:alice', 'lab1', true, { method: 'gpio', values: { host: 'lab-9' } })).toMatchObject({ message: '发现 1 块新板子' })
+    expect(await svc.backends.discover('user:alice', 'lab1', true, { method: 'gpio', values: { host: 'lab-9', prefer: '12,13' } })).toMatchObject({ message: '发现 1 块新板子' })
     expect(lab.calls).toContain('prefer 12,13')
+    // A required field left empty, and a choice outside the backend's options, are refused before it runs.
+    await expect(svc.backends.discover('user:alice', 'lab1', true, { method: 'gpio' })).rejects.toThrow(/需要主机/)
+    // A value the backend never reported is not passed on.
+    await svc.backends.discover('user:alice', 'lab1', true, { method: 'gpio', values: { host: 'lab-9', nope: 'x' } })
+    expect(lab.calls).not.toContain('nope')
+    await expect(svc.backends.discover('user:alice', 'lab1', true, { method: 'human', values: { host: 'lab-8' } })).rejects.toThrow(/不是可选项/)
+    // A field the backend did not report is not sent; one of its choices is checked.
+    await expect(svc.backends.discover('user:alice', 'lab1', true, { method: 'nope' })).rejects.toThrow(/没有发现方法/)
     lab.hang = true
-    const running = svc.backends.discover('user:alice', 'lab1', true)
+    const running = svc.backends.discover('user:alice', 'lab1', true, { method: 'gpio', values: { host: 'lab-9' } })
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(await svc.backends.cancelDiscovery('user:alice', 'lab1')).toMatchObject({ message: expect.stringContaining('停下') })
     await expect(running).rejects.toThrow(/已取消/)
@@ -446,8 +460,8 @@ describe('remote labs', () => {
     svc.locks.unlock('lab1-sub0-0', { holder: 'claude:s1', token })
     const seen: string[] = []
     svc.events.on('event', () => { const line = svc.backends.labSettings()[0]!.discovery?.line; if (line && seen.at(-1) !== line) seen.push(line) })
-    expect(await svc.backends.discover('user:alice', 'lab1', true, { human: true, host: 'lab-9' })).toEqual({ message: '发现 1 块新板子', proposals: 1, registered: [] })
-    expect(seen.slice(0, 2)).toEqual(['开始人工发现（lab-9）：按提示逐块让未登记的板子进下载模式', 'ACTION NEEDED (board 1): put ONE unregistered board into download mode'])
+    expect(await svc.backends.discover('user:alice', 'lab1', true, { method: 'human', host: 'lab-9' })).toEqual({ message: '发现 1 块新板子', proposals: 1, registered: [] })
+    expect(seen.slice(0, 2)).toEqual(['人工发现（lab-9）', 'ACTION NEEDED (board 1): put ONE unregistered board into download mode'])
     expect(svc.backends.labSettings()[0]!.discovery).toMatchObject({ running: false, line: '发现 1 块新板子' })
     // Nothing is registered until the proposal is applied, under the name the person gives.
     expect(svc.boards.list().map(board => board.name)).not.toContain('lab1-sub0-9')
@@ -456,60 +470,20 @@ describe('remote labs', () => {
     await expect(svc.proposals.resolve('user:alice', [proposal!.id], 'apply', { [proposal!.id]: 'bad name' })).rejects.toThrow(/板名不合法/)
     await svc.proposals.resolve('user:alice', [proposal!.id], 'apply', { [proposal!.id]: 'sub0-9' })
     expect(svc.state('user:alice').proposals).toEqual([])
-    await expect(svc.backends.discover('user:alice', 'lab1', true, { human: true, host: 'bad host' })).rejects.toThrow(/主机名不合法/)
+    await expect(svc.backends.discover('user:alice', 'lab1', true, { method: 'human', host: 'bad host' })).rejects.toThrow(/主机名不合法/)
     expect(svc.boards.list().map(board => board.name)).toContain('lab1-sub0-9')
     await svc.boards.remove('user:alice', 'lab1-sub0-9')
     expect(svc.boards.list().map(board => board.name)).not.toContain('lab1-sub0-9')
     await svc.backends.sync('lab1')
     expect(svc.boards.list().map(board => board.name)).not.toContain('lab1-sub0-9')
-    // Free ports a new cable shows up as become a board reset by a person, named after them unless named.
-    expect(svc.backends.labSettings()[0]!.canBind).toBe(true)
+    // Free ports a new cable shows up as are reported for a registration method's choices.
+    expect(svc.backends.labSettings()[0]!.canListPorts).toBe(true)
     // The first ask has nothing to show yet and asks in the background; afterwards the answer is shown at once.
     expect(await svc.backends.ports('lab1')).toMatchObject({ hosts: [], at: null, refreshing: true })
     await svc.backends.refreshPorts('lab1')
     expect(await svc.backends.ports('lab1')).toMatchObject({ hosts: [{ host: 'lab-9', consoles: [{ id: '/dev/ttyUSB5', label: '/dev/ttyUSB5' }, { id: 'ttyUSB5', label: '/dev/ttyUSB5' }], usb: [{ id: 'usb:1-3', label: 'usb:1-3 DFU' }] }], refreshing: false, error: null })
-    // Binding checks the ports again: one that went away meanwhile is refused.
-    await expect(svc.backends.bind('user:alice', 'lab1', { host: 'lab-9', console: 'ttyUSB9', usb: 'usb:1-3' })).rejects.toThrow(/串口 ttyUSB9已经不空闲了/)
-    expect(await svc.backends.bind('user:alice', 'lab1', { host: 'lab-9', console: '/dev/ttyUSB5', usb: 'usb:1-3' })).toBe('lab1-tmp-lab-9-ttyUSB5')
-    await enable(svc, { devices: '' })
-    expect(svc.boards.list().map(board => board.name)).toContain('lab1-tmp-lab-9-ttyUSB5')
-    await expect(svc.backends.bind('user:alice', 'lab1', { host: 'lab-9', console: 'x; rm -rf /', usb: 'usb:1-3' })).rejects.toThrow(/不合法/)
-    expect(lab.calls.filter(call => !call.startsWith('verify'))).toEqual(['discover gpio', 'discover gpio', 'prefer 12,13', 'discover gpio',
-      'discover human lab-9', 'register sub0-9 {"console":"c9"}', 'remove sub0-9', 'bind lab-9 /dev/ttyUSB5 usb:1-3 tmp-lab-9-ttyUSB5'])
-  })
-
-  it('registers a manual board from the one unbound download port, and lists candidates instead of guessing', async () => {
-    class ManualLab extends FakeLab {
-      free: LabSlots[] = [
-        { host: 'host-a', consoles: [{ id: 'ttyUSB1', label: 'serial-mux a1' }, { id: 'ttyUSB2', label: 'serial-mux a2' }], usb: [{ id: '1-1.2', label: '1-1.2 BROM' }] },
-        { host: 'host-b', consoles: [{ id: 'ttyUSB3', label: 'serial-mux b1' }], usb: [{ id: '1-1.3', label: '1-1.3 BROM' }, { id: '1-1.4', label: '1-1.4 BROM' }] },
-      ]
-      async slots() { return this.free }
-      async bind(_config: LabConfig, host: string, ports: { console: string, usb: string }, name: string) {
-        this.listed.push({ ...this.listed[0]!, name, heldBy: null })
-        this.calls.push(`bind ${host} ${ports.console} ${ports.usb} ${name}`)
-      }
-      ports = { list: this.slots.bind(this), bind: this.bind.bind(this) }
-    }
-    const lab = new ManualLab()
-    const { svc } = labService(lab)
-    await enable(svc)
-    // Several download ports in download mode: no guess; they are listed with their hosts.
-    await expect(svc.backends.bindManual('user:alice', 'lab1', {})).rejects.toThrow(/有 3 个未绑定的下载口：host-a 1-1\.2（1-1\.2 BROM）、host-b 1-1\.3/)
-    // One download port, but several free consoles on its host: the person picks the board's console.
-    await expect(svc.backends.bindManual('user:alice', 'lab1', { usb: '1-1.2' })).rejects.toThrow(/host-a 上有 2 个空闲串口：ttyUSB1（serial-mux a1）、ttyUSB2（serial-mux a2）/)
-    await expect(svc.backends.bindManual('user:alice', 'lab1', { usb: '1-1.2', console: 'ttyUSB9' })).rejects.toThrow(/串口 ttyUSB9已经不空闲了/)
-    expect(await svc.backends.bindManual('user:alice', 'lab1', { usb: '1-1.2', console: 'ttyUSB2', name: 'manual-one' }))
-      .toEqual({ board: 'lab1-manual-one', host: 'host-a', console: 'ttyUSB2', usb: '1-1.2' })
-    // With exactly one unbound download port and one free console, one call is enough for a person or an agent.
-    lab.free = [{ host: 'host-c', consoles: [{ id: 'ttyUSB7', label: 'serial-mux c1' }], usb: [{ id: '1-1.7', label: '1-1.7 BROM' }] }]
-    expect(await svc.backends.bindManual('user:alice', 'lab1', {})).toEqual({ board: 'lab1-tmp-host-c-ttyUSB7', host: 'host-c', console: 'ttyUSB7', usb: '1-1.7' })
-    lab.free = [{ host: 'host-c', consoles: [{ id: 'ttyUSB7', label: 'serial-mux c1' }], usb: [] }]
-    await expect(svc.backends.bindManual('user:alice', 'lab1', {})).rejects.toThrow(/没有未绑定的下载口/)
-    expect(lab.calls.filter(call => call.startsWith('bind '))).toEqual([
-      'bind host-a ttyUSB2 1-1.2 manual-one',
-      'bind host-c ttyUSB7 1-1.7 tmp-host-c-ttyUSB7',
-    ])
+    expect(lab.calls.filter(call => !call.startsWith('verify'))).toEqual(['discover gpio', 'discover gpio', 'prefer 12,13', 'discover gpio', 'discover gpio',
+      'discover human lab-9', 'register sub0-9 {"console":"c9"}', 'remove sub0-9'])
   })
 
   it('shows what a person must do while a lab board\'s reset waits for them, and lets them confirm', async () => {
@@ -742,7 +716,8 @@ describe('remote labs', () => {
         ]
       }
       discovery = {
-        discover: async () => ({ message: '', found: [] }),
+        methods: async () => [{ id: 'gpio', title: '发现', about: '逐个拉复位线' }],
+        run: async () => ({ message: '', found: [] }),
         register: async () => {},
         rebuild: async (_config: LabConfig, host: string, _progress: (line: string) => void, registered?: (device: string) => void) => {
           this.calls.push(`rebuild ${host}`)
@@ -776,7 +751,7 @@ describe('remote labs', () => {
     class KeepLab extends FakeLab {
       constructor() { super(); this.listed = [{ name: 'k3-a', slot: 'h1/s1', model: 'k3', online: true, serialPort: 'h1:s1', serialConnected: true, downloadUsbPath: null, ip: null }] }
       discovery = {
-        discover: async () => ({ message: '', found: [] }), register: async () => {}, keepsInUse: true,
+        methods: async () => [{ id: 'gpio', title: '发现', about: '逐个拉复位线' }], run: async () => ({ message: '', found: [] }), register: async () => {}, keepsInUse: true,
         rebuild: async (_config: LabConfig, host: string, _progress: (line: string) => void, _registered?: (device: string) => void, options?: { keepInUse: boolean }) => { seen.push([host, options]); return { message: '没有变动', found: [] } },
       }
     }
@@ -830,15 +805,16 @@ describe('remote labs', () => {
         ]
       }
       discovery = {
-        discover: (_config: LabConfig, _options: unknown, report: (line: string) => void) => { progress = report; return new Promise<{ message: string, found: [] }>(resolve => { finish = () => resolve({ message: '没找到', found: [] }) }) },
+        methods: async () => [{ id: 'gpio', title: '发现', about: '逐个拉复位线', fields: [] }],
+        run: (_config: LabConfig, _method: string, _values: unknown, _context: unknown, report: (line: string) => void) => { progress = report; return new Promise<{ message: string, found: [] }>(resolve => { finish = () => resolve({ message: '没找到', found: [] }) }) },
         register: async () => {},
       }
     }
     const { svc } = labService(new SlotLab())
     await enable(svc, { devices: '' })
-    const running = svc.backends.discover('user:alice', 'lab1', true, { slots: ['h1/s2'] })
+    const running = svc.backends.discover('user:alice', 'lab1', true, { method: 'gpio', slot: 'h1/s2' })
     await new Promise(resolve => setImmediate(resolve))
-    expect(svc.boards.get('lab1-h1-s2').busy).toMatchObject({ kind: 'discover', label: '发现中', by: 'user:alice' })
+    expect(svc.boards.get('lab1-h1-s2').busy).toMatchObject({ kind: 'discover', label: '发现', by: 'user:alice' })
     expect(svc.boards.get('lab1-k3-a').busy).toBeNull()                    // only the slot asked for
     progress('round 1: pulsing P13')
     expect(svc.boards.get('lab1-h1-s2').busy?.line).toBe('round 1: pulsing P13')
@@ -858,26 +834,30 @@ describe('remote labs', () => {
     let fail: Error | null = null
     class SlotLab extends FakeLab {
       constructor() { super(); this.listed = [{ name: 'h1-s2', slot: 'h1/s2', empty: true, model: null, online: false, serialPort: 'h1:s2', serialConnected: true, downloadUsbPath: null, ip: null }] }
-      discovery = { discover: async () => { if (fail) throw fail; return { message: '没找到', found: [] } }, register: async () => {} }
+      discovery = {
+        methods: async () => [{ id: 'gpio', title: '发现', about: '逐个拉复位线', fields: [] }],
+        run: async () => { if (fail) throw fail; return { message: '没找到', found: [] } },
+        register: async () => {},
+      }
     }
     const { svc } = labService(new SlotLab())
     await enable(svc, { devices: '' })
     const discovery = () => svc.backends.labSettings()[0]!.discovery
     let done!: () => void
     const resetting = svc.kernel.doing(['lab1-h1-s2'], 'reset', '复位中', 'user:bob', () => new Promise<void>(resolve => { done = resolve }))
-    await expect(svc.backends.discover('user:alice', 'lab1', true, { slots: ['h1/s2'] })).rejects.toThrow(/正在复位/)
+    await expect(svc.backends.discover('user:alice', 'lab1', true, { method: 'gpio', slot: 'h1/s2' })).rejects.toThrow(/正在复位/)
     expect(discovery()?.line).toMatch(/^没开始：/)
     done(); await resetting
     expect(svc.history().actions.some(action => action.kind === 'lab-discover')).toBe(false)
     // The backend's own conflict, mid-search, is a failure, and recorded.
     fail = new BoardError('conflict', 'the host is probing already')
-    await expect(svc.backends.discover('user:alice', 'lab1', true, { slots: ['h1/s2'] })).rejects.toThrow(/probing already/)
+    await expect(svc.backends.discover('user:alice', 'lab1', true, { method: 'gpio', slot: 'h1/s2' })).rejects.toThrow(/probing already/)
     expect(discovery()?.line).toBe('失败：the host is probing already')
     expect(svc.history().actions.find(action => action.kind === 'lab-discover')).toMatchObject({ ok: false, message: 'the host is probing already' })
   })
 
   it('refuses to rediscover with a backend that can only rebuild a whole host', async () => {
-    class WholeLab extends FakeLab { discovery = { discover: async () => ({ message: '', found: [] }), register: async () => {}, rebuild: async () => ({ message: '', found: [] }) } }
+    class WholeLab extends FakeLab { discovery = { methods: async () => [{ id: 'gpio', title: '发现', about: '逐个拉复位线' }], run: async () => ({ message: '', found: [] }), register: async () => {}, rebuild: async () => ({ message: '', found: [] }) } }
     const { svc } = labService(new WholeLab())
     await enable(svc, { devices: '' })
     expect(svc.backends.labSettings()[0]).toMatchObject({ canRebuild: true, canRediscover: false })
@@ -888,16 +868,17 @@ describe('remote labs', () => {
     const lab = new FakeLab()
     const asked: unknown[] = []
     ;(lab as unknown as { discovery: unknown }).discovery = {
-      discover: async (_config: LabConfig, options: unknown) => { asked.push(options); return { message: '配对了 1 块', found: [] } },
+      methods: async () => [{ id: 'gpio', title: '按复位线', about: '逐个拉复位线' }, { id: 'human', title: '人工发现', about: '按提示让板子进下载模式' }],
+      run: async (_config: LabConfig, method: string, _values: unknown, context: unknown) => { asked.push([method, context]); return { message: '配对了 1 块', found: [] } },
       register: async () => {},
     }
     const { svc } = labService(lab)
     await enable(svc)
     await svc.locks.lock('lab1-sub0-0', 'user:bob', '调试')
-    // The backend pulses only reset lines no board uses, so a held board does not stop it.
-    expect((await svc.backends.discover('user:alice', 'lab1', true, {})).message).toBe('配对了 1 块')
-    expect((await svc.backends.discover('user:alice', 'lab1', true, { human: true, host: 'h1' })).message).toBe('配对了 1 块')
-    expect(asked).toEqual([{ human: false, host: null, slots: [] }, { human: true, host: 'h1', slots: [] }])
+    // The backend pulses only reset lines no board uses, so a held board does not stop it; the method is its own.
+    expect((await svc.backends.discover('user:alice', 'lab1', true, { method: 'gpio' })).message).toBe('配对了 1 块')
+    expect((await svc.backends.discover('user:alice', 'lab1', true, { method: 'human', host: 'h1' })).message).toBe('配对了 1 块')
+    expect(asked).toEqual([['gpio', { host: null, slot: null }], ['human', { host: 'h1', slot: null }]])
   })
 
   it('names boards by their slot, keeps a slot\'s lock when its board is registered or swapped, and reads a swapped board again', async () => {
@@ -917,8 +898,9 @@ describe('remote labs', () => {
         }
       }
       discovery = {
-        discover: async (_config: LabConfig, options: { slots?: string[] }, _progress: (line: string) => void, registered?: (device: string) => void) => {
-          this.calls.push(`discover ${options.slots?.join(',')}`)
+        methods: async () => [{ id: 'gpio', title: '发现', about: '按槽位发现' }],
+        run: async (_config: LabConfig, _method: string, _values: unknown, context: { slot?: string | null }, _progress: (line: string) => void, registered?: (device: string) => void) => {
+          this.calls.push(`discover ${context.slot ?? ''}`)
           this.listed[1] = { name: 'k3-new', slot: 'h1/s2', model: 'k3', online: true, serialPort: 'h1:s2', serialConnected: true, downloadUsbPath: '1-2.2', ip: null }
           registered?.('k3-new')
           return { message: '登记了 1 块：h1/k3-new', found: [] }
@@ -939,7 +921,7 @@ describe('remote labs', () => {
     // over the slot's record and lock.
     const watching = await svc.locks.lock('lab1-h1-s2', 'user:alice', '看串口接线')
     expect(watching.lease).toBeTruthy()
-    expect(await svc.backends.discover('user:alice', 'lab1', true, { slots: ['h1/s2'] })).toMatchObject({ registered: ['k3-new'] })
+    expect(await svc.backends.discover('user:alice', 'lab1', true, { method: 'gpio', slot: 'h1/s2' })).toMatchObject({ registered: ['k3-new'] })
     expect(lab.calls.at(-1)).toBe('discover h1/s2')
     expect(svc.boards.get('lab1-k3-new')).toMatchObject({ slotRef: 'lab1/h1/s2', lease: { holder: 'user:alice', purpose: '看串口接线' } })
     expect(svc.boards.exists('lab1-h1-s2')).toBe(false)
@@ -1670,14 +1652,3 @@ describe('CLI arguments', () => {
     await expect(timed).rejects.toThrow(/没有让出/)
     expect(svc.locks.held(board)?.holder).toBe('user:bob')
   })
-
-describe('preferred GPIO numbers', () => {
-  it('reads a list however a person typed it', () => {
-    expect(pinNumbers('12, 13')).toEqual([12, 13])
-    expect(pinNumbers('12，13、14;15  16\n17')).toEqual([12, 13, 14, 15, 16, 17])
-    expect(pinNumbers('GPIO12 gpio_13 GPIO 14 P15 pin 16 引脚17 gpio-18')).toEqual([12, 13, 14, 15, 16, 17, 18])
-    expect(pinNumbers('gpio_12, 12')).toEqual([12])
-    expect(pinNumbers('')).toEqual([])
-    expect(pinNumbers('abc')).toEqual([])
-  })
-})

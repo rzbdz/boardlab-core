@@ -1,6 +1,6 @@
 /**
  * Renaming a board everywhere. The backend that names the board itself (a lab's DUT and console alias, this machine's
- * serial-mux daemons) is the dependency: it is asked first, and boardd's own record changes only once every part of it
+ * devices named after boards) is the dependency: it is asked first, and boardd's own record changes only once every part of it
  * succeeded. A per-chip rename that fails halfway is put back where it was, so a retry starts from the old name
  * everywhere; a whole-board rename that the backend answers with an unusable name is given its old name back.
  */

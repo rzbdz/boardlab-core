@@ -1,4 +1,4 @@
-/** Commands on backends that list their own boards (labs): finding new boards, their free ports, and binding them. */
+/** Commands on backends that list their own boards (labs): finding new boards and their free ports. */
 import { confirm, type Command, type CommandGroup } from '../command.ts'
 
 const commands: Command[] = [
@@ -7,11 +7,12 @@ const commands: Command[] = [
       'lab kinds\t可以添加的实验室种类',
       'lab add <实验室> --kind <种类>\t添加一个实验室（之后在网页的设置里完成它的设置，比如装好主机）',
       'lab remove <实验室> [--yes]\t删除一个添加的实验室和它的板子（不能有人拿着锁）',
-      'lab discover <实验室> [--slot <主机>/s<N>,…] [--prefer <数字,…>] [--yes] [--human [--host <主机>]]\t让实验室在空槽位上找板子（会复位没登记的线），找到一块登记一块；--slot 只找这些槽位；--prefer：先试这些 GPIO（12,13、GPIO12、gpio_13、P15 都行）；--human：没接复位线的板子，由人按提示逐块进下载模式',
+      'lab methods <实验室> [--host <主机>] [--slot <主机>/<槽位>]\t列出实验室后端上报的发现方法、说明和字段',
+      'lab discover <实验室> --method <方法> [--set 字段=值 …] [--host <主机>] [--slot <主机>/<槽位>] [--yes]\t用一个后端上报的发现方法找板子（方法可能复位没登记的线），找到一块登记一块',
       'lab cancel <实验室>\t让正在进行的发现/重建停下（已经登记的和正在跑的那一步会留着）',
-      'lab rebuild <实验室> --host <主机> [--keep-used] [--yes]\t重新布线以后用：忘掉这台主机上发现过的板子和槽位，按现在的接线重新发现（以前用过的复位线先试，沿用原来的名字）；--keep-used 保留在用的板子，只去掉串口不见的、找空闲串口上的（别人拿着板子时也能用）',
+      'lab rebuild <实验室> --host <主机> [--keep-used] [--yes]\t重新布线以后用：忘掉这台主机上发现过的板子和槽位，按现在的接线重新发现并登记；--keep-used 保留在用的板子，只重做变动的（别人拿着板子时也能用）',
     ],
-    async run({ client, args, flag, flags, out }) {
+    async run({ client, args, argv, flag, flags, out }) {
       if (args[0] === 'kinds') { const kinds = await client.labKinds(); return out(kinds, () => { for (const kind of kinds) console.log(`${kind.kind}\t${kind.title}：${kind.about}`) }) }
       if (args[0] === 'add' && args[1]) {
         const kind = flag('kind')
@@ -37,12 +38,32 @@ const commands: Command[] = [
         const result = await client.cancelDiscovery(args[1])
         return out(result, () => console.log(result.message))
       }
-      if (args[0] !== 'discover' || !args[1]) throw new Error('lab 子命令：kinds | add <实验室> --kind <种类> | remove <实验室> | discover <实验室> | cancel <实验室> | rebuild <实验室> --host <主机>')
-      const slots = flag('slot')?.split(',').map(item => item.trim()).filter(Boolean)
-      // What was typed goes as it is: the gateway parses GPIO numbers the same way for the page and the CLI.
-      const prefer = flag('prefer')
-      if (!flags.has('yes') && !(await confirm(`发现板子可能复位实验室 ${args[1]} 里的板子。继续？`))) throw new Error('发现板子需要确认（交互确认或 --yes）')
-      const result = await client.discoverLab(args[1], { human: flags.has('human'), host: flag('host'), slots, prefer })
+      if (args[0] === 'methods' && args[1]) {
+        const methods = await client.discoverMethods(args[1], { host: flag('host'), slot: flag('slot') })
+        return out(methods, () => {
+          if (!methods.length) console.log('这个实验室现在没有可用的发现方法')
+          for (const method of methods) {
+            console.log(`${method.id}\t${method.title}：${method.about}`)
+            for (const field of method.fields ?? []) {
+              const options = field.options?.length ? `（${field.options.map(option => `${option.value}=${option.label}`).join('，')}）` : ''
+              console.log(`  --set ${field.id}=<${field.label}>${field.required ? ' 必填' : ''}${options}`)
+            }
+          }
+        })
+      }
+      if (args[0] !== 'discover' || !args[1]) throw new Error('lab 子命令：kinds | add <实验室> --kind <种类> | remove <实验室> | methods <实验室> | discover <实验室> --method <方法> | cancel <实验室> | rebuild <实验室> --host <主机>')
+      const method = flag('method')
+      if (!method) throw new Error('发现要指定后端上报的方法：--method <方法>（boardlab lab methods <实验室> 列出）')
+      const values: Record<string, string> = {}
+      for (let at = 0; at < argv.length - 1; at++) {
+        if (argv[at] !== '--set') continue
+        const text = argv[at + 1]!
+        const split = text.indexOf('=')
+        if (split < 1) throw new Error(`--set 要写成 字段=值：${text}`)
+        values[text.slice(0, split)] = text.slice(split + 1)
+      }
+      if (!flags.has('yes') && !(await confirm(`发现/登记会动实验室 ${args[1]} 里还没登记的端口和槽位。继续？`))) throw new Error('发现板子需要确认（交互确认或 --yes）')
+      const result = await client.discoverLab(args[1], { method, values, host: flag('host'), slot: flag('slot') })
       out(result, () => console.log(`${result.message}${result.proposals ? '\n用 boardlab proposals 查看，boardlab proposals apply <id> [--name <板名>] 登记' : ''}`))
     },
   },
@@ -60,14 +81,6 @@ const commands: Command[] = [
         }
         if (!ports.hosts.length) console.log('实验室没有报告主机')
       })
-    },
-  },
-  {
-    name: 'bind', noBoard: true, usage: ['bind <实验室> [--host <主机>] [--console <串口>] [--usb <下载口>] [--name <板名>]\t一键登记一块没有按钮控制、由人复位的板子：不指定下载口时选唯一没绑定的（请保证只有这一块在下载模式），不指定串口时选该主机唯一的空闲串口；有多个候选会列出来让你指定。默认名 tmp-<主机>-<串口>'],
-    async run({ client, args, flag, out }) {
-      if (!args[0]) throw new Error('用法：boardlab bind <实验室> [--host <主机>] [--console <串口>] [--usb <下载口>] [--name <板名>]')
-      const result = await client.bindLab(args[0], { host: flag('host'), console: flag('console'), usb: flag('usb'), name: flag('name') })
-      out(result, () => console.log(`已登记 ${result.board}（${result.host}：串口 ${result.console}，下载口 ${result.usb}；由人复位：复位时按提示操作，再 boardlab confirm ${result.board}）`))
     },
   },
 ]

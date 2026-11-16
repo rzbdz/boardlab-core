@@ -150,8 +150,8 @@ export interface LabSettings {
   /** It can rediscover a host: keep the boards in use, forget the ones whose console is gone, search the free consoles. */
   canRediscover: boolean
   canRemove: boolean
-  /** The lab lists free ports (`labSlots`) and makes boards of them (`bindLab`). */
-  canBind: boolean
+  /** The lab can say which of its ports no board uses yet (`labSlots`): what a registration method's choices come from. */
+  canListPorts: boolean
   /** The lab's relay controller works a board's relays and buttons one by one (`/api/relay`). */
   canRelay: boolean
   /** The lab's machines its boards are on, as of its last listing. */
@@ -253,6 +253,32 @@ export type BoardEvent = CoreEvent | ({ type: string } & Record<string, unknown>
 
 /** A lab host's ports that no board uses yet. */
 export interface LabSlots { host: string, consoles: Array<{ id: string, label: string }>, usb: Array<{ id: string, label: string }> }
+
+/** One input a backend's discovery method needs; a choice's options are the backend's own. */
+export interface DiscoveryField {
+  id: string
+  label: string
+  kind: 'text' | 'choice'
+  placeholder?: string | null
+  initial?: string | null
+  required?: boolean
+  note?: string | null
+  options?: Array<{ value: string, label: string }>
+}
+
+/** A way a backend can find a board, reported by the backend: text and fields travel with it, core does not know it. */
+export interface DiscoveryMethod {
+  id: string
+  title: string
+  about: string
+  fields?: DiscoveryField[]
+}
+
+/** What the page knows when it asks for methods: one host, or one empty slot on it. */
+export interface DiscoveryContext { host?: string | null, slot?: string | null }
+
+/** A method's field values, by field id. */
+export type DiscoveryValues = Record<string, string>
 
 /** A lab's free ports as boardd last heard them: shown at once, refreshed in the background. */
 export interface LabPorts { hosts: LabSlots[], at: string | null, refreshing: boolean, error: string | null }

@@ -4,7 +4,7 @@
  * offers is the same three things, a relay to reset boards, a USB download path and a serial port; the rest is optional
  * and the core offers it only for backends that have it.
  */
-import type { Channel as WireChannel, LabFields } from '../shared/types.ts'
+import type { Channel as WireChannel, DiscoveryContext, DiscoveryMethod, DiscoveryValues, LabFields } from '../shared/types.ts'
 import type { ConsoleSession } from './console.ts'
 
 /** What reaching a backend takes, as entered in its settings. */
@@ -60,7 +60,7 @@ export interface BoardTarget {
   /** The chip, and its download port where known. */
   die: string
   usbPath: string | null
-  /** The chip's serial port as the backend names it, for backends whose ports boardlab names (serial-mux aliases). */
+  /** The chip's serial port as the backend names it, for backends whose ports boardlab names (a local alias). */
   port: string | null
   /** The token of the input gate the board's lock holds, for backends whose consoles have gates (see `gated`). */
   gate: string | null
@@ -81,18 +81,6 @@ export type LabNews =
   | { kind: 'ports', host: string, added: string[], removed: string[] }
   | { kind: 'hosts', host: string }
 
-/**
- * How a backend looks for boards: by itself (pulsing reset lines), or with a person resetting each unregistered board
- * into download mode on one `host` while the backend pairs consoles with download ports.
- */
-export interface LabDiscovery {
-  human?: boolean
-  host?: string | null
-  /** Only these slots (`<host>/s4`). */
-  slots?: string[]
-  /** Header GPIO numbers to try first: the person knows which lines this batch of boards is wired to. */
-  prefer?: number[]
-}
 /** A board a scan found: what it suggests calling it, a line for people, and what registering it takes. */
 export interface LabFinding { host: string | null, name: string, summary: string, warnings: string[], detail: unknown }
 /** One host's ports no board uses: what a new cable shows up as before it is a board. */
@@ -139,7 +127,7 @@ export const CHANNEL_ACTIONS: ChannelAction[] = ['on', 'off', 'toggle', 'pulse',
 export interface Channel extends WireChannel { actions: ChannelAction[] }
 
 /**
- * For a backend whose relay controller lets each of a board's lines be worked by hand (bsp's gpio_relay): beyond reset
+ * For a backend whose relay controller lets each of a board's lines be worked by hand: beyond reset
  * and download mode, a power relay, a boot strap, a button.
  */
 export interface ChannelsCapability {
@@ -153,7 +141,7 @@ export interface SerialCapability {
   open(config: LabConfig, target: BoardTarget, options?: { history?: boolean }): Promise<ConsoleSession>
   /** Whether the port is usable right now, for a backend that can tell at once; listed backends say so in their listing. */
   online?(target: BoardTarget): boolean
-  /** Its consoles have input gates that follow the lock, so a lock comes with a gate token (`smtty --token`). */
+  /** Its consoles have input gates that follow the lock, so a lock comes with a gate token. */
   gated?: boolean
   /** Its console's log over a time range, searched (see LogQuery); for a backend that keeps logs it can read back. */
   logs?(config: LabConfig, target: BoardTarget, query: LogQuery): Promise<LogRange>
@@ -197,12 +185,12 @@ export interface InventoryCapability {
 }
 
 /**
- * A backend that keeps a board's name itself (a lab's registry, serial-mux daemons named after boards): rename it
+ * A backend that keeps a board's name itself (a lab's registry, devices named after boards): rename it
  * there too, so the old name is gone from everywhere and the console follows.
  */
 export interface RenameCapability {
   /**
-   * The backend renames one thing per chip (a local serial-mux alias) rather than the whole board. boardd calls
+   * The backend renames one thing per chip (a local alias) rather than the whole board. boardd calls
    * `rename` once per chip, with `target.die`, and the board is renamed after all of them succeed.
    */
   perChip?: boolean
@@ -229,13 +217,18 @@ export interface LeaseCapability {
 /** For a backend that can find boards itself. */
 export interface DiscoveryCapability {
   /**
-   * Look for new boards. A backend that can registers each the moment it is found and says so through `registered`;
-   * the rest are reported as findings for a person to review as proposals, and applying one calls `register`. It looks
-   * only on what no registered board uses (free reset lines, consoles and download ports), so it never touches a board
-   * in use and boardd runs it while boards are held; it may reset what is plugged into the free lines, so boardd asks
-   * a person to confirm first.
+   * The ways this backend can find a board here, each with its own title, about text and fields. Asking for a host or
+   * slot lets the backend offer choices for it (that host's ports, the slot it may touch). Empty when it has nothing
+   * to offer now.
    */
-  discover(config: LabConfig, options: LabDiscovery, progress: (line: string) => void, registered?: (device: string) => void, signal?: AbortSignal): Promise<{ message: string, found: LabFinding[] }>
+  methods(config: LabConfig, context: DiscoveryContext): Promise<DiscoveryMethod[]>
+  /**
+   * Run one of `methods`. It looks only at what no registered board uses, and may reset what is plugged into free
+   * lines, so boardd asks a person to confirm first. A backend that registers boards as it finds them calls
+   * `registered`; whatever it could not register comes back as findings for a person to apply.
+   */
+  run(config: LabConfig, method: string, values: DiscoveryValues, context: DiscoveryContext,
+    progress: (line: string) => void, registered?: (device: string) => void, signal?: AbortSignal): Promise<{ message: string, found: LabFinding[] }>
   /** Register a board a scan found, under `name` (the backend's own name for it). */
   register(config: LabConfig, finding: LabFinding, name: string): Promise<void>
   /**
@@ -253,12 +246,10 @@ export interface DiscoveryCapability {
   keepsInUse?: boolean
 }
 
-/** For a backend that can tell: its free ports, and making boards of them. */
+/** For a backend that can tell which of its ports no board uses yet (the choices a registration method may offer). */
 export interface PortsCapability {
   /** Each host's serial consoles and download ports no board uses yet. */
   list(config: LabConfig): Promise<LabSlots[]>
-  /** Make a board of a free console and download port, reset by a person (for temporary debugging, say). */
-  bind(config: LabConfig, host: string, ports: { console: string, usb: string }, name: string): Promise<void>
 }
 
 /**

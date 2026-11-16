@@ -17,8 +17,8 @@ import type { CliPresentation } from './command.ts'
 
 export { consoleKeys } from './console.ts'
 
-/** A slot reference: `<host>/s3`, `<lab>/<host>/s3`, or `slot:5` on boardd's own machine. */
-const SLOT_REF = /^(?:[A-Za-z0-9_.-]+\/){1,2}s\d+(?:\.die\d+)?$|^slot:\d+$/
+/** A slot reference: `<host>/<slot>`, `<lab>/<host>/<slot>`, or `slot:5` on boardd's own machine; the backend names slots. */
+const SLOT_REF = /^(?:[A-Za-z0-9_.:-]+\/)+[A-Za-z0-9_.:-]+(?:\.die\d+)?$|^slot:\d+$/
 
 /** Terminal cells a string takes: CJK and fullwidth characters take two. */
 const cells = (text: string) => [...text].reduce((sum, char) => sum + (/[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/.test(char) ? 2 : 1), 0)

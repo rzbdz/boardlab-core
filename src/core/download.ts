@@ -140,7 +140,7 @@ export class Download {
 
   /**
    * Boot a board with a named build: from RAM (`load`) or by flashing it (`download`). The backend gets the build to the
-   * board itself (bsp: the board host pulls it from the build server), so nothing passes through here.
+   * board itself (a board host pulls it from its build server), so nothing passes through here.
    */
   async build(board: string, caller: Caller, input: { sdk: string, method?: 'load' | 'download', variant?: string | null, brk?: string | null }): Promise<string> {
     const lease = this.lab.locks.authorize(board, caller)

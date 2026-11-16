@@ -4,13 +4,13 @@
  * lists its boards itself, and boardlab keeps them in step: the list, their backend leases, their news and free ports.
  */
 import { randomUUID } from 'node:crypto'
-import type { Board, LabPorts, LabSettings, Proposal } from '../shared/types.ts'
-import { DEVICE_PATTERN, deviceFilter, JUMP, type Backend, type BoardTarget, type LabConfig, type LabDevice, type LabDiscovery, type LabFinding, type LabNews, type LabSlots } from './backend.ts'
+import type { Board, DiscoveryContext, DiscoveryMethod, DiscoveryValues, LabPorts, LabSettings, Proposal } from '../shared/types.ts'
+import { DEVICE_PATTERN, deviceFilter, JUMP, type Backend, type BoardTarget, type LabConfig, type LabDevice, type LabFinding, type LabNews, type LabSlots } from './backend.ts'
 import { transaction } from './db.ts'
+import { checkDiscoveryContext, checkedValues, chosenMethod, HOST } from './discovery.ts'
 import { askedIn } from './relay.ts'
 import { renameBoard } from './rename.ts'
 import { BoardError, BusyError } from './errors.ts'
-import { checkPorts, choosePorts } from './ports.ts'
 import type { BoardLab } from './lab.ts'
 import type { Caller } from './locks.ts'
 import { BOARD_NAME, str } from './text.ts'
@@ -43,9 +43,6 @@ export interface Route { id: string, backend: Backend, config: LabConfig, target
 /** Free ports heard this recently are shown without asking the backend again. */
 const PORTS_FRESH_MS = 10_000
 const NO_CONFIG: LabConfig = { url: '', username: '', password: '', jump: '' }
-
-/** A host name as backends report them. */
-const HOST = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
 
 export class Backends {
   private readonly instances = new Map<string, Instance>()
@@ -282,7 +279,7 @@ export class Backends {
       const url = get('url')
       const fields = backend.fields ?? {}
       return {
-        id, kind: backend.kind, addedAs, about: backend.about ?? '', fields, canDiscover: !!backend.discovery, canRebuild: !!backend.discovery?.rebuild, canRediscover: !!backend.discovery?.rebuild && !!backend.discovery.keepsInUse, canRemove: !!backend.inventory?.remove, canBind: !!backend.ports, canRelay: !!backend.channels,
+        id, kind: backend.kind, addedAs, about: backend.about ?? '', fields, canDiscover: !!backend.discovery, canRebuild: !!backend.discovery?.rebuild, canRediscover: !!backend.discovery?.rebuild && !!backend.discovery.keepsInUse, canRemove: !!backend.inventory?.remove, canListPorts: !!backend.ports, canRelay: !!backend.channels,
         hosts: [...new Set([...this.devices].filter(([name]) => name.startsWith(`${id}-`)).map(([, device]) => device.host).filter((host): host is string => !!host))].sort(),
         discovery: this.discoveries.get(id) ?? null, busy: this.lab.kernel.busy.get(`lab:${id}`) ?? null, enabled: get('enabled') === '1', url, username: get('username'), hasPassword: !!get('password'),
         jump: get('jump'), defaultJump: url && fields.jump ? backend.defaultJump?.(new URL(url)) ?? null : null, devices: get('devices'),
@@ -333,10 +330,10 @@ export class Backends {
   }
 
   /**
-   * Rename a board everywhere: the backend's own record (a lab's DUT and console alias, this machine's serial-mux
+   * Rename a board everywhere: the backend's own record (a lab's device and console alias, this machine's alias
    * daemons), boardd's board and chips, its lock, queue, actions and proposals. While someone holds it, only they may
    * rename it and the lock goes with it; a busy board cannot be renamed. A lab board's name keeps the lab's prefix
-   * (giving `foo` renames `bsp-foo`). Returns the name afterwards. See rename.ts.
+   * (giving `foo` renames the instance's `foo`). Returns the name afterwards. See rename.ts.
    */
   rename(actor: string, board: string, to: string, caller: Caller): Promise<{ board: string, message: string }> {
     return renameBoard({
@@ -356,7 +353,7 @@ export class Backends {
     if (input.url?.trim()) {
       let parsed: URL
       try { parsed = new URL(input.url.trim()) } catch { throw new BoardError('invalid', '实验室地址不合法') }
-      // http(s), ssh, or a backend's own scheme on them (`bspd+http:`); never file: or javascript:.
+      // http(s), ssh, or a backend's own scheme on them (`name+http:`); never file: or javascript:.
       if (!/^([a-z][a-z0-9.-]*\+)?(https?|ssh):$/.test(parsed.protocol)) throw new BoardError('invalid', '实验室地址须是 http、https 或 ssh')
       url = parsed.toString().replace(/\/$/, '')
     }
@@ -409,27 +406,35 @@ export class Backends {
 
   // ---------- discovery ----------
 
+  /** The ways an instance can find a board, as its backend reports them: core knows their shape only (see discovery.ts). */
+  async discoveryMethods(id: string, context: DiscoveryContext = {}): Promise<DiscoveryMethod[]> {
+    const { backend } = this.configurable(id)
+    if (!backend.discovery) throw new BoardError('invalid', `实验室 ${id} 不能自己发现板子`)
+    checkDiscoveryContext(context)
+    return backend.discovery.methods(this.config(id), context)
+  }
+
   /**
-   * Have an instance look for new boards, as proposals for a person to apply. A backend looks only on what no board
-   * uses yet (free reset lines, consoles and download ports, or empty slots), so boards in use are never touched and
-   * held boards do not stop it. It may reset whatever is plugged into the free lines, so it needs confirmation.
+   * Have an instance look for new boards with one of its reported methods. The backend looks only on what no board
+   * uses yet, so boards in use are never touched and held boards do not stop it. It may reset what is plugged into
+   * free lines, so it needs confirmation.
    */
-  async discover(actor: string, id: string, confirmed: boolean, options: LabDiscovery = {}): Promise<{ message: string, proposals: number, registered: string[] }> {
+  async discover(actor: string, id: string, confirmed: boolean, request: { method: string, values?: DiscoveryValues, host?: string | null, slot?: string | null }): Promise<{ message: string, proposals: number, registered: string[] }> {
     const { backend } = this.configurable(id)
     if (!backend.discovery) throw new BoardError('invalid', `实验室 ${id} 不能自己发现板子`)
     if (!confirmed) throw new BoardError('forbidden', '发现板子可能复位实验室里的板子，需要用户确认')
-    if (options.host && !HOST.test(options.host)) throw new BoardError('invalid', `主机名不合法：${options.host}`)
-    const badSlot = (options.slots ?? []).find(slot => !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}\/s\d+$/.test(slot))
-    if (badSlot) throw new BoardError('invalid', `槽位要写成 <主机>/s<N>：${badSlot}`)
+    const context = { host: request.host ?? null, slot: request.slot ?? null }
+    checkDiscoveryContext(context)
     const discovery = backend.discovery
-    // The slots it looks in show as being discovered: those asked for, else the empty ones (on the host asked for).
-    const on = this.onLab(id)
-    const targets = options.slots?.length ? on.filter(([, device]) => options.slots!.includes(device.slot ?? '')).map(([name]) => name)
-      : on.filter(([, device]) => device.empty && (!options.host || device.slot?.startsWith(`${options.host}/`))).map(([name]) => name)
-    return this.finding(actor, id, 'lab-discover', targets, '发现中',
-      options.human ? `开始人工发现${options.host ? `（${options.host}）` : ''}：按提示逐块让未登记的板子进下载模式` : '开始发现板子',
-      `${id}${options.human ? ` 人工${options.host ? ` ${options.host}` : ''}` : ''}${options.slots?.length ? ` ${options.slots.join(',')}` : ''}`,
-      (progress, registered, signal) => discovery.discover(this.config(id), { human: !!options.human, host: options.host ?? null, slots: options.slots ?? [], ...(options.prefer?.length ? { prefer: options.prefer } : {}) }, progress, registered, signal))
+    const method = chosenMethod(await discovery.methods(this.config(id), context), request.method, id)
+    const values = checkedValues(method, request.values)
+    // The slots it looks in show as being discovered: the one named, else the empty ones on the host named.
+    const on = this.onLab(id), where = context.slot ?? context.host
+    const targets = context.slot ? on.filter(([, device]) => device.slot === context.slot).map(([name]) => name)
+      : on.filter(([, device]) => device.empty && (!context.host || device.slot?.startsWith(`${context.host}/`))).map(([name]) => name)
+    return this.finding(actor, id, 'lab-discover', targets, method.title, `${method.title}${where ? `（${where}）` : ''}`,
+      `${id} ${method.id}${where ? ` ${where}` : ''}`,
+      (progress, registered, signal) => discovery.run(this.config(id), method.id, values, context, progress, registered, signal))
   }
 
   /**
@@ -518,7 +523,7 @@ export class Backends {
   }
 
   /**
-   * Have a discovery or rebuild stop: the backend's current step is told to end (a probe's client is stopped; the
+   * Have a discovery or rebuild stop: the backend's current step is told to end (the backend's current step is stopped; the
    * host's job may still finish the step it runs). Boards it touched stop showing busy.
    */
   async cancelDiscovery(actor: string, id: string): Promise<{ message: string }> {
@@ -594,61 +599,6 @@ export class Backends {
     this.portRuns.set(id, run)
     this.lab.kernel.emit({ type: 'lab-ports', lab: id })
     return run
-  }
-
-  /**
-   * Make a board of a free console and download port, reset by a person: a slot for temporary debugging, named as given
-   * or after its host and console. It is listed as `<instance>-<name>` at once.
-   */
-  async bind(actor: string, id: string, input: { host: string, console: string, usb: string, name?: string | null }): Promise<string> {
-    const { backend } = this.configurable(id)
-    if (!backend.ports) throw new BoardError('invalid', `实验室 ${id} 不能用空闲端口登记板子`)
-    checkPorts({ host: input.host, console: input.console, usb: input.usb })
-    // What the page showed may be old: the ports must still be free when the board is made of them.
-    await this.refreshPorts(id)
-    const now = this.portCache.get(id)
-    if (now?.error) throw new BoardError('hardware', `问不到实验室现在的空闲端口：${now.error}`)
-    const host = now?.hosts.find(item => item.host === input.host)
-    const gone = [!host?.consoles.some(item => item.id === input.console) && `串口 ${input.console}`, !host?.usb.some(item => item.id === input.usb) && `下载口 ${input.usb}`].filter(Boolean)
-    if (gone.length) throw new BoardError('conflict', `${input.host} 上的${gone.join('、')}已经不空闲了（被占用或拔掉了），刷新后重新选`)
-    return this.createBound(actor, id, input.host, input.console, input.usb, input.name)
-  }
-
-  /**
-   * Register the board a person is holding in download mode, without naming its ports first: the only unbound
-   * download port is chosen, and on that host the only free console. With more than one candidate of either, nothing
-   * is guessed: the error lists them, so a person or agent chooses (`usb`, `console`, `host`). A given port is still
-   * checked against the lab's fresh list.
-   */
-  async bindManual(actor: string, id: string, input: { host?: string | null, console?: string | null, usb?: string | null, name?: string | null }): Promise<{ board: string, host: string, console: string, usb: string }> {
-    const { backend } = this.configurable(id)
-    if (!backend.ports) throw new BoardError('invalid', `实验室 ${id} 不能用空闲端口登记板子`)
-    checkPorts({ host: input.host, console: input.console, usb: input.usb })
-    await this.refreshPorts(id)
-    const now = this.portCache.get(id)
-    if (now?.error) throw new BoardError('hardware', `问不到实验室现在的空闲端口：${now.error}`)
-    const chosen = choosePorts(now?.hosts ?? [], input)
-    const board = await this.createBound(actor, id, chosen.host, chosen.console, chosen.usb, input.name)
-    return { board, ...chosen }
-  }
-
-  /** Validate a chosen host, console and port, hand them to the backend, and list the new board at once. */
-  private async createBound(actor: string, id: string, host: string, console: string, usb: string, nameInput?: string | null): Promise<string> {
-    const { backend } = this.configurable(id)
-    if (!backend.ports) throw new BoardError('invalid', `实验室 ${id} 不能用空闲端口登记板子`)
-    checkPorts({ host, console, usb })
-    const safe = (text: string) => text.replace(/^\/dev\//, '').replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '')
-    const name = nameInput?.trim() || `tmp-${safe(host)}-${safe(console)}`
-    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/.test(name)) throw new BoardError('invalid', `板名不合法：${name}`)
-    try { await backend.ports.bind(this.config(id), host, { console, usb }, name) }
-    catch (error) {
-      this.lab.kernel.record(actor, `${id}-${name}`, 'lab-bind', `${host} ${console} ${usb}`, false, (error as Error).message)
-      throw new BoardError('hardware', (error as Error).message)
-    }
-    this.lab.kernel.record(actor, `${id}-${name}`, 'lab-bind', `${host} ${console} ${usb}`, true)
-    await this.sync(id, actor).catch(() => {})
-    void this.refreshPorts(id)
-    return `${id}-${name}`
   }
 
   // ---------- listing and news ----------
