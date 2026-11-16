@@ -12,7 +12,7 @@ import type { CatalogEntry } from '../server/catalog.ts'
 import { splitTarget, TokenStore, write, type Command, type CommandContext, type CommandGroup } from './command.ts'
 import { boardCommands, presentBoards } from './commands/boards.ts'
 import { labCommands } from './commands/labs.ts'
-import { setupCommands } from './commands/setup.ts'
+import { presentRelease, setupCommands, type ReleaseIdentity } from './commands/setup.ts'
 import type { CliPresentation } from './command.ts'
 
 export { consoleKeys } from './console.ts'
@@ -117,6 +117,7 @@ export interface Distribution {
   groups: CommandGroup[]
   catalog: CatalogEntry[]
   presentation?: CliPresentation
+  identity?: () => ReleaseIdentity
 }
 
 export interface Cli {
@@ -126,6 +127,7 @@ export interface Cli {
 
 export function createCli(distribution: Distribution): Cli {
   presentBoards(distribution.presentation ?? {})
+  if (distribution.identity) presentRelease(distribution.identity)
   const groups = [boardCommands, labCommands, ...distribution.groups, setupCommands]
   const commands = new Map<string, Command>(groups.flatMap(group => group.commands.map(command => [command.name, command] as const)))
   const usage = (topic?: string) => usageOf(groups, topic)

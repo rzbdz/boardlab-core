@@ -12,6 +12,8 @@ export interface ModuleContext {
   shipped(path: string): string | null
   /** boardd's timing settings (`timing` in its configuration), for modules that take some. */
   timing: Record<string, unknown>
+  /** The distribution release boardd is serving. */
+  release: { version: string, revision: string }
 }
 
 export type Settings = Record<string, unknown>

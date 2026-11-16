@@ -1102,6 +1102,18 @@ describe('renaming a board', () => {
     expect(svc.boards.get('generic').soc).toBeNull()
   })
 
+  it('discovers installed agent skill destinations without owning their content', () => {
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    mkdirSync(join(dir, '.config/opencode'), { recursive: true })
+    return import('../src/cli/agents.ts').then(({ installedAgentSkills, noAgentsMessage }) => {
+      expect(installedAgentSkills(dir).map(item => [item.agent, item.directory])).toEqual([
+        ['Claude Code', join(dir, '.claude/skills')], ['opencode', join(dir, '.config/opencode/skill')],
+      ])
+      expect(installedAgentSkills(join(dir, 'empty'))).toEqual([])
+      expect(noAgentsMessage('use a local directory')).toContain('use a local directory')
+    })
+  })
+
   it('adds arbitrary module state without making it part of the core contract', () => {
     const lab = new BoardLab({ db: openDatabase(join(dir, 'state.sqlite')) })
     lab.addState(() => ({ moduleSpecific: { ready: true } }))
@@ -1238,7 +1250,7 @@ describe('boardd configuration', () => {
       { id: 'racks', about: '机架', create: (settings, context) => { const ids = instances(settings, 'rack'); return { id: 'racks', title: '机架', setup: lab => { for (const id of ids) lab.backends.register(id, new FakeLab()); made.push(context.timing.scan) } } } },
       { id: 'other', about: '别的', create: () => ({ id: 'other', title: '别的', setup: () => {} }) },
     ]
-    const context = { stateDir: dir, shipped: () => null, timing: { scan: { rounds: 3 } } }
+    const context = { stateDir: dir, shipped: () => null, timing: { scan: { rounds: 3 } }, release: { version: 'test', revision: 'test' } }
     const lab = new BoardLab({ db: openDatabase(join(dir, 'config.sqlite')), modules: createModules(catalog, { racks: { instances: ['rack-a', 'rack-b'] } }, context) })
     expect(lab.modules().map(item => item.id)).toEqual(['racks'])
     expect(lab.backends.labSettings().map(item => item.id)).toEqual(['rack-a', 'rack-b'])

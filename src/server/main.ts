@@ -38,6 +38,7 @@ export async function startBoardd(options: BoarddOptions) {
   const selection = options.modules ? Object.fromEntries(options.modules.map(id => [id, config.modules[id] ?? {}])) : config.modules
   const modules = createModules(options.catalog, selection, {
     stateDir: options.stateDir, shipped: options.shipped ?? (() => null), timing: config.timing,
+    release: { version: options.version ?? 'dev', revision: options.revision ?? 'dev' },
   })
   const db = openDatabase(join(options.stateDir, 'boards.sqlite'))
   const lab = new BoardLab({

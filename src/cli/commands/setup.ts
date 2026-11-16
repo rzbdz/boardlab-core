@@ -6,15 +6,12 @@ import { fileURLToPath } from 'node:url'
 import { BoardsClient, DEFAULT_PORT, remoteConfigPath, socketPathFor, transportFor, type RemoteConfig } from '../../shared/client.ts'
 import { API_VERSION } from '../../shared/types.ts'
 import type { Command, CommandGroup } from '../command.ts'
+import { installedAgentSkills, noAgentsMessage } from '../agents.ts'
 import { shipped } from '../shipped.ts'
 
-/** Where each agent reads skills from, under the home directory; the agent counts as installed when its own directory exists. */
-const AGENT_SKILLS: Array<{ agent: string, home: string, skills: string }> = [
-  { agent: 'Claude Code', home: '.claude', skills: '.claude/skills' },
-  { agent: 'codex', home: '.codex', skills: '.codex/skills' },
-  { agent: 'opencode', home: '.config/opencode', skills: '.config/opencode/skill' },
-  { agent: 'hermes', home: '.hermes', skills: '.hermes/skills/embedded' },
-]
+export interface ReleaseIdentity { version: string, revision: string }
+let releaseIdentity: () => ReleaseIdentity = () => ({ version: 'dev', revision: 'dev' })
+export function presentRelease(identity: () => ReleaseIdentity) { releaseIdentity = identity }
 
 /**
  * `boardlab install [--dir DIR]`: write the boardlab skill that ships with this CLI into the current directory (or DIR),
@@ -30,10 +27,10 @@ function installSkill(dir: string | undefined, agents: boolean, json: boolean) {
   const replaced: string[] = []
   if (agents) {
     const home = process.env.HOME ?? homedir()
-    const found = AGENT_SKILLS.filter(item => existsSync(join(home, item.home)))
-    if (!found.length) throw new Error(`这台机器上没找到 agent（${AGENT_SKILLS.map(item => `~/${item.home}`).join('、')} 都不存在）；装到当前目录用 boardlab install`)
+    const found = installedAgentSkills(home)
+    if (!found.length) throw new Error(noAgentsMessage('装到当前目录用 boardlab install'))
     for (const item of found) {
-      const target = join(home, item.skills)
+      const target = item.directory
       mkdirSync(target, { recursive: true })
       // An older copy is replaced, as is the skill's former name `boards`.
       if (existsSync(join(target, 'boardlab')) || existsSync(join(target, 'boards'))) replaced.push(item.agent)
@@ -137,11 +134,9 @@ const remote: Command = {
 
 export const setupCommands: CommandGroup = { id: 'setup', title: '安装和运行', summary: '状态、版本、安装、连哪台 boardd、运行 boardd', commands: [install, remote, serve] }
 
-/** This CLI's own version: VERSION and REVISION beside an installed boardlab's dist/, or the distribution's package.json. */
-function cliVersion(): { version: string, revision: string } {
-  const read = (path: string | null) => { try { return path ? readFileSync(path, 'utf8').trim() : null } catch { return null } }
-  const version = read(shipped('VERSION')) ?? (() => { try { return JSON.parse(read(shipped('package.json')) ?? '{}').version ?? 'dev' } catch { return 'dev' } })()
-  return { version, revision: read(shipped('REVISION')) ?? 'dev' }
+/** This distribution's release identity, supplied at CLI composition. */
+function cliVersion(): ReleaseIdentity {
+  return releaseIdentity()
 }
 
 const version: Command = {
