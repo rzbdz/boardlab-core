@@ -1,12 +1,15 @@
 /** Commands on boards, whatever backend they are on: the list, locks, the relay, consoles, loading and the inventory. */
 import { resolve } from 'node:path'
 import type { Board, State } from '../../shared/types.ts'
-import { parseDuration, type Command, type CommandGroup } from '../command.ts'
+import { parseDuration, type CliPresentation, type Command, type CommandGroup } from '../command.ts'
 import { pickConsole, streamConsole } from '../console.ts'
 
-/** While the lock is held only this token gets input past the board's input gate. */
+const presentation: { current: CliPresentation } = { current: {} }
+export function presentBoards(hooks: CliPresentation) { presentation.current = hooks }
+
 function gateHint(gateToken: string | null) {
-  if (gateToken) console.log(`直接用 smtty 输入时带上 --token ${gateToken}（或设 SERIAL_MUX_TOKEN）；不带的只能看输出`)
+  const hint = gateToken ? presentation.current.lockTokenHint?.(gateToken) : null
+  if (hint) console.log(hint)
 }
 
 function leaseText(board: Board) {
@@ -17,23 +20,21 @@ function leaseText(board: Board) {
 
 export function printBoards(boards: Board[]) {
   for (const board of boards) {
-    const place = board.lab ? `[实验室 ${board.lab.id} ${board.lab.empty ? '空槽位' : board.lab.device}]` : board.slot === null ? '  -' : `[${board.slot}]`
-    const slot = board.lab && board.slotRef ? `  槽位 ${board.slotRef.split('/').slice(1).join('/')}` : ''
-    const media = board.lab?.mediaBoot && board.lab.mediaBoot.method !== 'reset'
-      ? `  复位：${board.lab.mediaBoot.available ? `经 ${board.lab.mediaBoot.method} 从介质启动` : '停在下载模式'}` : ''
-    console.log(`${place} ${board.name}  ${board.lab?.empty ? '还没有登记板子，只有串口' : board.product ?? '型号未知'}${slot}${media}  ${leaseText(board)}`)
+    const place = presentation.current.boardPlace?.(board) ?? (board.slot === null ? '  -' : `[${board.slot}]`)
+    const details = presentation.current.boardDetails?.(board) ?? ''
+    console.log(`${place} ${board.name}  ${board.product ?? '型号未知'}${details}  ${leaseText(board)}`)
     for (const chip of board.chips) {
-      if (board.lab) { console.log(`      ${chip.die}: 串口 ${chip.serialPath ?? '-'}（实验室那边${chip.online ? '在线' : '没有连上'}）  下载口 ${chip.downloadUsbPath ?? '-'}`); continue }
-      console.log(`      ${chip.die}: 串口 ${chip.serialPath ?? '-'}${chip.alias ? `（serial-mux ${chip.alias}${chip.online ? '' : '，未绑定设备'}）` : ''}  下载口 ${chip.downloadUsbPath ?? '-'}${chip.usbId ? ` (${chip.usbId})` : ''}`)
+      const detail = presentation.current.chipDetails?.(board, chip) ?? `串口 ${chip.serialPath ?? '-'}  下载口 ${chip.downloadUsbPath ?? '-'}${chip.usbId ? ` (${chip.usbId})` : ''}`
+      console.log(`      ${chip.die}: ${detail}`)
     }
   }
 }
 
 function printState(state: State) {
   printBoards(state.boards)
-  const empty = (state.slots ?? []).filter(slot => !state.boards.some(board => board.slot === slot.slot))
-  for (const slot of empty) console.log(`[${slot.slot}] （空槽位）`)
-  if (state.proposals.length) console.log(`\n${state.proposals.length} 条扫描改动建议待确认：boardlab proposals`)
+  for (const line of presentation.current.emptyPlaces?.(state) ?? []) console.log(line)
+  const details = presentation.current.stateDetails?.(state)
+  if (details) console.log(details)
 }
 
 const commands: Command[] = [

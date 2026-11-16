@@ -714,7 +714,7 @@ export class Backends {
         const existing = db.prepare('SELECT lab, lab_device FROM boards WHERE name=?').get(name)
         if (!BOARD_NAME.test(name) || (existing && (existing.lab !== id || existing.lab_device !== address))) { clashes.push(device.name); continue }
         listed.add(name)
-        const soc = device.soc?.toLowerCase() ?? (device.model && /^k\d+$/i.test(device.model) ? device.model.toLowerCase() : null)
+        const soc = device.soc?.toLowerCase() ?? null
         db.prepare(`INSERT INTO boards(name, product, soc, source, lab, lab_device, lab_slot, last_seen_at) VALUES(?,?,?,'lab',?,?,?,?)
           ON CONFLICT(name) DO UPDATE SET
             product=CASE WHEN boards.product_manual THEN boards.product ELSE COALESCE(excluded.product, boards.product) END,

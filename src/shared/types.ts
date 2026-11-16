@@ -60,9 +60,9 @@ export interface Chip {
   downloadUsbPath: string | null
   usbId: string | null
   lastSeenAt: string | null
-  /** serial-mux has a daemon for the alias with a device bound; consoles and input need it. */
+  /** The backend has a live connection to this port. */
   online: boolean
-  /** Why this port's serial-mux input gate does not follow the board's lock, when it does not. */
+  /** Why the backend's input gate does not follow the board's lock, when it does not. */
   gateError: string | null
 }
 
@@ -127,40 +127,7 @@ export interface BoardInLab {
   canFlashPackage: boolean
 }
 
-/**
- * A control slot on this machine, driven by its kind's slot driver. `ha` slots are buttons on the Home Assistant
- * controller and follow it on their own; `script` slots run shell scripts entered on the page, for anything else that
- * can power-cycle a board (a smart plug, say).
- */
-export interface Slot {
-  slot: number
-  kind: string
-  label: string | null
-  resetEntity: string | null
-  fastbootEntity: string | null
-  resetScript: string | null
-  /** Empty for a slot that can only reset its board. */
-  fastbootScript: string | null
-  device: string | null
-  confirmedAt: string | null
-  canReset: boolean
-  canFastboot: boolean
-}
-
-export interface HaSettings {
-  /** boardd uses the Home Assistant controller; off, its slots are hidden and never pressed (boards stay listed). */
-  enabled: boolean
-  url: string | null
-  hasToken: boolean
-  verifiedAt: string | null
-  verifyOk: boolean | null
-  verifyMessage: string | null
-}
-
-/**
- * A remote lab boardd can use. Its boards are listed from the lab once it is enabled; the password, like the HA token,
- * is write-only.
- */
+/** A remote lab boardd can use. Its boards are listed from the lab once it is enabled; its password is write-only. */
 /** One of a lab's access settings as its driver uses it. */
 export interface LabField { label: string, placeholder: string | null, required: boolean }
 /** The access settings a lab's driver uses, by key; keys it leaves out are hidden. */
@@ -222,27 +189,8 @@ export interface Action {
 /** A firmware file boardd ships in firmware/, listed in its firmware.json. */
 export interface Firmware { soc: string, purpose: string, path: string, sha256: string, note: string | null }
 
-export type ScanStatus = 'running' | 'done' | 'failed' | 'cancelled'
-export interface ScanStep { seq: number, at: string, slot: number | null, kind: string, summary: string, data: unknown }
-export interface ScanRow {
-  slot: number
-  board: string | null
-  chips: Array<{ die: string, serialPath: string | null, downloadUsbPath: string | null, usbId: string | null, product: string | null, pending: boolean }>
-  flags: string[]
-}
-export interface Scan {
-  id: string
-  holder: string
-  scope: number[]
-  status: ScanStatus
-  startedAt: string
-  finishedAt: string | null
-  message: string | null
-  steps: ScanStep[]
-  result: ScanRow[]
-}
-
-export type ProposalKind = 'new-board' | 'replace-board' | 'serial-moved' | 'download-moved' | 'product-changed' | 'slot-empty'
+/** A proposed inventory change supplied by a distribution module. */
+export type ProposalKind = string
 export interface Proposal {
   id: string
   scanId: string
@@ -254,13 +202,10 @@ export interface Proposal {
   status: 'pending' | 'applied' | 'rejected'
 }
 
-export interface HaCandidate { slot: number, resetEntity: string | null, fastbootEntity: string | null, device: string | null }
-export interface HaDiscovery { devices: Array<{ id: string, name: string }>, slots: HaCandidate[], unassigned: string[] }
-
 /** A module boardd has loaded. */
 export interface ModuleInfo { id: string, title: string }
 
-/** The whole picture. The parts after `modules` come from the modules that keep them, so they are there only with those. */
+/** The whole picture. Modules add their own fields through the generic state-extension hook. */
 export interface State {
   boards: Board[]
   labs: LabSettings[]
@@ -271,11 +216,6 @@ export interface State {
   now: string
   /** Agents waiting for a person to let go of a board they are using. */
   yields: YieldRequest[]
-  /** `local`: this machine's control slots and its latest scan. */
-  slots?: Slot[]
-  scan?: Scan | null
-  /** `home-assistant`. */
-  ha?: HaSettings
 }
 
 /** A relay, button or line wired to a board, as its backend's relay controller names it (`<board>/power`). */
@@ -294,20 +234,22 @@ export interface BoardChannels { board: string, supported: boolean, channels: Ch
 
 export interface BoardDetail { board: Board, actions: Action[], leases: Lease[] }
 
-/** `gateToken` lets the holder type through serial-mux directly (`smtty --token`); boardd uses it for its own input. */
+/** Opaque input-gate capability supplied by a backend; boardd uses it for its own input. */
 export interface LockResult { lease: Lease | null, token: string | null, gateToken: string | null, queued: { position: number } | null }
 export interface SendResult { output: string, matched: boolean }
 
 /** Events pushed on /api/events. Console bytes use /api/console. */
-export type BoardEvent =
+export type CoreEvent =
   | { type: 'changed', board: string | null }
-  | { type: 'scan', scan: Scan }
   | { type: 'lease-stolen', board: string, from: string, by: string, reason: string }
   | { type: 'lease-granted', board: string, holder: string }
   /** A lab's free ports were asked for again, or changed. */
   | { type: 'lab-ports', lab: string, host?: string, added?: string[], removed?: string[] }
   /** A person is asked to act on a board (press RESET, …), or no longer is (message null). */
   | { type: 'attention', board: string, message: string | null, request?: string | null, holder: string | null }
+
+/** Modules may define additional event names and payloads without changing core. */
+export type BoardEvent = CoreEvent | ({ type: string } & Record<string, unknown>)
 
 /** A lab host's ports that no board uses yet. */
 export interface LabSlots { host: string, consoles: Array<{ id: string, label: string }>, usb: Array<{ id: string, label: string }> }

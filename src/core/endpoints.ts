@@ -165,8 +165,9 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     {
       method: 'POST', path: '/api/board', about: '改板子的备注、槽位或型号（product 为空则清掉；填过的型号会记下来，下次出现在下拉列表里）',
       handle: ({ body, caller }) => {
-        const patch: { notes?: string | null, slot?: number | null, product?: string | null } = { notes: body.notes, slot: body.slot }
+        const patch: { notes?: string | null, slot?: number | null, product?: string | null, soc?: string | null } = { notes: body.notes, slot: body.slot }
         if ('product' in body) patch.product = body.product === null ? null : String(body.product)
+        if ('soc' in body) patch.soc = body.soc === null ? null : String(body.soc)
         lab.boards.update(caller.holder, named(body.name, 'name'), patch)
       },
     },

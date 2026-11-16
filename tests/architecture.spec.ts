@@ -26,10 +26,14 @@ describe('architecture', () => {
       cpSync(join(root, 'architecture.json'), join(copy, 'architecture.json'))
       cpSync(join(root, 'src'), join(copy, 'src'), { recursive: true })
       write('src/core/leak.ts', "export const port = process.env.BSP_PORT\nexport const kind = 'bsp'\n")
+      write('src/shared/leak.ts', "export const kind = 'k3'\n")
+      write('src/cli/leak.ts', "export const command = 'smtty'\n")
       write('src/ui/page.ts', "export const page = 1\n")
       expect(listed(copy)).toEqual(expect.arrayContaining([
         expect.stringMatching(/^src\/core\/leak\.ts core: names a product/),
         expect.stringMatching(/^src\/core\/leak\.ts core: reads the environment/),
+        expect.stringMatching(/^src\/shared\/leak\.ts core: names a product/),
+        expect.stringMatching(/^src\/cli\/leak\.ts core: names a product/),
         expect.stringMatching(/^src\/ui\/page\.ts layers: not in any layer/),
       ]))
     })

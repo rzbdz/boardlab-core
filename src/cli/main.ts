@@ -10,9 +10,10 @@ import { fileURLToPath } from 'node:url'
 import { BoardsApiError, BoardsClient, defaultStateDir, defaultTransport, remoteConfigPath, socketPathFor, unixTransport } from '../shared/client.ts'
 import type { CatalogEntry } from '../server/catalog.ts'
 import { splitTarget, TokenStore, write, type Command, type CommandContext, type CommandGroup } from './command.ts'
-import { boardCommands } from './commands/boards.ts'
+import { boardCommands, presentBoards } from './commands/boards.ts'
 import { labCommands } from './commands/labs.ts'
 import { setupCommands } from './commands/setup.ts'
+import type { CliPresentation } from './command.ts'
 
 export { consoleKeys } from './console.ts'
 
@@ -115,6 +116,7 @@ export function parseArgs(argv: string[]): Args {
 export interface Distribution {
   groups: CommandGroup[]
   catalog: CatalogEntry[]
+  presentation?: CliPresentation
 }
 
 export interface Cli {
@@ -123,6 +125,7 @@ export interface Cli {
 }
 
 export function createCli(distribution: Distribution): Cli {
+  presentBoards(distribution.presentation ?? {})
   const groups = [boardCommands, labCommands, ...distribution.groups, setupCommands]
   const commands = new Map<string, Command>(groups.flatMap(group => group.commands.map(command => [command.name, command] as const)))
   const usage = (topic?: string) => usageOf(groups, topic)

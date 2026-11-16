@@ -17,6 +17,7 @@ export interface NewBoard {
   name: string
   slot?: number | null
   product?: string | null
+  soc?: string | null
   chips?: Array<{ die?: string, serialPath?: string | null, alias?: string | null, downloadUsbPath?: string | null, usbId?: string | null }>
 }
 
@@ -29,17 +30,10 @@ export const toAction = (row: Row): Action => ({
   detail: str(row.detail), ok: row.ok === 1, message: str(row.message),
 })
 
-/** The SoC a product name says, for the products whose names do. */
-export function socOf(product: string): string | null {
-  if (/^k3[_-]/i.test(product)) return 'k3'
-  if (/^k1[_-]/i.test(product)) return 'k1'
-  return null
-}
-
 export class Boards {
   private readonly views: BoardView[] = []
 
-  constructor(private readonly lab: BoardLab) {
+  constructor(private readonly lab: BoardLab, private readonly socFromProduct: (product: string) => string | null = () => null) {
     lab.locks.addTarget(target => this.exists(target))
   }
 
@@ -126,7 +120,8 @@ export class Boards {
       if (this.exists(input.name)) throw new BoardError('conflict', `已有板子 ${input.name}`)
       if (input.slot != null && db.prepare('SELECT 1 FROM boards WHERE slot=?').get(input.slot)) throw new BoardError('conflict', `槽位 ${input.slot} 已有别的板子`)
       const product = input.product ?? null
-      db.prepare(`INSERT INTO boards(name, slot, product, soc, source, product_manual) VALUES(?,?,?,?,'manual',?)`).run(input.name, input.slot ?? null, product, product ? socOf(product) : null, product ? 1 : 0)
+      const soc = input.soc !== undefined ? input.soc : product ? this.socFromProduct(product) : null
+      db.prepare(`INSERT INTO boards(name, slot, product, soc, source, product_manual) VALUES(?,?,?,?,'manual',?)`).run(input.name, input.slot ?? null, product, soc, product ? 1 : 0)
       ;(input.chips ?? []).forEach((chip, index) => {
         db.prepare('INSERT INTO chips(board, die, serial_path, alias, download_usb_path, usb_id) VALUES(?,?,?,?,?,?)')
           .run(input.name, chip.die ?? `die${index}`, chip.serialPath ?? null, chip.alias ?? null, chip.downloadUsbPath ?? null, chip.usbId ?? null)
@@ -156,7 +151,7 @@ export class Boards {
   /** Delete a board's record, chips included. */
   drop(name: string) { this.lab.kernel.db.prepare('DELETE FROM boards WHERE name=?').run(name) }
 
-  update(actor: string, name: string, patch: { notes?: string | null, slot?: number | null, product?: string | null }) {
+  update(actor: string, name: string, patch: { notes?: string | null, slot?: number | null, product?: string | null, soc?: string | null }) {
     if (this.get(name).lab && patch.slot !== undefined) throw new BoardError('invalid', `${name} 在实验室里，没有控制槽位`)
     const db = this.lab.kernel.db
     if (patch.notes !== undefined) db.prepare('UPDATE boards SET notes=? WHERE name=?').run(patch.notes, name)
@@ -164,9 +159,11 @@ export class Boards {
       try { db.prepare('UPDATE boards SET slot=? WHERE name=?').run(patch.slot, name) }
       catch { throw new BoardError('conflict', `槽位 ${patch.slot} 已有别的板子`) }
     }
-    if (patch.product !== undefined) {
-      const product = patch.product?.trim() || null
-      db.prepare('UPDATE boards SET product=?, soc=?, product_manual=? WHERE name=?').run(product, product ? socOf(product) : null, product ? 1 : 0, name)
+    if (patch.product !== undefined || patch.soc !== undefined) {
+      const previous = this.get(name)
+      const product = patch.product === undefined ? previous.product : patch.product?.trim() || null
+      const soc = patch.soc !== undefined ? patch.soc : product ? this.socFromProduct(product) ?? previous.soc : null
+      db.prepare('UPDATE boards SET product=?, soc=?, product_manual=? WHERE name=?').run(product, soc, product ? 1 : 0, name)
       this.rememberModel(product)
     }
     this.lab.kernel.record(actor, name, 'edit', JSON.stringify(patch), true)

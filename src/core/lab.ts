@@ -24,6 +24,8 @@ export interface BoardLabOptions extends KernelOptions {
   filesDir?: string
   bootTiming?: Partial<BootTiming>
   consoleTiming?: Partial<ConsoleTiming>
+  /** Distribution-owned product knowledge; core does not infer SoCs from model names. */
+  socFromProduct?: (product: string) => string | null
   modules?: Module[]
 }
 
@@ -44,7 +46,7 @@ export class BoardLab {
   /** Every endpoint, the core's and the modules'; a gateway serves them. */
   readonly api = new Api()
   private readonly loaded = new Map<string, { module: Module, api: unknown }>()
-  private readonly stateParts: Array<(you: string) => Partial<State>> = []
+  private readonly stateParts: Array<(you: string) => Record<string, unknown>> = []
   private readonly historyParts: Array<(limit: number) => Record<string, unknown>> = []
   private readonly services: Service[] = []
   private stops: Array<() => void> = []
@@ -54,7 +56,7 @@ export class BoardLab {
     this.events = this.kernel.events
     this.locks = new Locks(this.kernel)
     this.proposals = new Proposals(this.kernel)
-    this.boards = new Boards(this)
+    this.boards = new Boards(this, options.socFromProduct)
     this.relay = new Relay(this)
     this.download = new Download(this, options.firmwareDir, options.bootTiming)
     this.files = new Files(this.kernel, options.filesDir)
@@ -88,7 +90,7 @@ export class BoardLab {
   modules(): ModuleInfo[] { return [...this.loaded.values()].map(({ module }) => ({ id: module.id, title: module.title })) }
 
   /** Add to what `state` reports: a module's own part of the picture. */
-  addState(part: (you: string) => Partial<State>) { this.stateParts.push(part) }
+  addState(part: (you: string) => Record<string, unknown>) { this.stateParts.push(part) }
   addHistory(part: (limit: number) => Record<string, unknown>) { this.historyParts.push(part) }
   /** Run something while boardd runs (see `start`). */
   addService(service: Service) { this.services.push(service) }

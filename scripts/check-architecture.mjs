@@ -128,14 +128,14 @@ export function checkArchitecture(root = process.cwd()) {
         if (!allowed.includes(name) && !allowed.includes(spec)) report(file, line, 'layers', `${layer.name} may not use the package ${spec} (allowed: ${allowed.join(', ') || 'none'})`)
       }
     }
-    if (layer.name === 'core') {
+    if ((rules.core?.layers ?? ['core']).includes(layer.name)) {
       const code = stripComments(text).split('\n')
       for (const [index, source] of code.entries()) {
         for (const word of rules.core?.forbidden ?? []) {
           const match = source.match(new RegExp(word, 'i'))
           if (match) report(file, index + 1, 'core', `names a product or transport (${match[0]}); the core knows backends only through their contract`)
         }
-        if (rules.core?.env === false && /\bprocess\.env\b/.test(source)) report(file, index + 1, 'core', 'reads the environment; configuration comes in through options')
+        if (rules.core?.env === false && (rules.core?.envLayers ?? ['core']).includes(layer.name) && /\bprocess\.env\b/.test(source)) report(file, index + 1, 'core', 'reads the environment; configuration comes in through options')
       }
     }
     const lines = text.split('\n').length

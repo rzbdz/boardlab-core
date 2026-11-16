@@ -80,7 +80,7 @@ class FakeLab implements Backend {
   staged: Array<{ usbPath: string, sha256: string }> = []
   gone = new Set<string>()
   listed: LabDevice[] = ['sub0-0', 'sub0-1', 'sub1-0'].map((name, index) => ({
-    name, model: 'k3', online: index !== 2, serialPort: `/dev/ttyS_${index}`, serialConnected: index !== 1, downloadUsbPath: `1-2.${index + 1}`, ip: `10.0.0.${index + 10}`,
+    name, model: 'board-a', soc: 'test-soc', online: index !== 2, serialPort: `/dev/ttyS_${index}`, serialConnected: index !== 1, downloadUsbPath: `1-2.${index + 1}`, ip: `10.0.0.${index + 10}`,
   }))
   defaultJump(url: URL) { return `ubuntu@${url.hostname}` }
   async verify(config: LabConfig) {
@@ -98,8 +98,8 @@ class FakeLab implements Backend {
     this.consoles.push({ device, history: options.history })
     const listeners = new Set<(data: Buffer) => void>()
     return {
-      hello: { alias: device, device: null, baud: 115200, transport: 'lab' }, history: [`[${device}] k3 login:`],
-      send: data => { this.sent.push(`${device}: ${data}`); setTimeout(() => listeners.forEach(fn => fn(Buffer.from(`${data}root@k3:~# `))), 5) },
+      hello: { alias: device, device: null, baud: 115200, transport: 'lab' }, history: [`[${device}] test-soc login:`],
+      send: data => { this.sent.push(`${device}: ${data}`); setTimeout(() => listeners.forEach(fn => fn(Buffer.from(`${data}root@board-a:~# `))), 5) },
       onOutput: fn => { listeners.add(fn); return () => listeners.delete(fn) },
       onClose: () => {},
       close: () => listeners.clear(),
@@ -131,7 +131,7 @@ const enable = (svc: BoardLab, change: Partial<Parameters<BoardLab['backends']['
   svc.backends.configure('user:alice', 'lab1', { enabled: true, url: 'http://lab.test:8080/dashboard/modules', username: 'admin', password: 'lab-password', devices: 'sub0-*', ...change })
 const sha = (text: string) => createHash('sha256').update(text).digest('hex')
 /** Ship a firmware file the way a distribution's firmware/ does: the file plus its firmware.json entry. */
-function shipFirmware(purpose: string, content: string, soc = 'k3') {
+function shipFirmware(purpose: string, content: string, soc = 'test-soc') {
   const firmwareDir = join(dir, 'firmware')
   mkdirSync(firmwareDir, { recursive: true })
   writeFileSync(join(firmwareDir, `${purpose}.bin`), content)
@@ -211,14 +211,15 @@ describe('remote labs', () => {
     expect(lab.calls).toEqual(['verify admin ubuntu@lab.test'])
     const listed = svc.boards.list().filter(board => board.lab)
     expect(listed.map(board => [board.name, board.lab, board.source, board.soc, board.slot])).toEqual([
-      ['lab1-sub0-0', { id: 'lab1', device: 'sub0-0', online: true, ip: '10.0.0.10', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false }, 'lab', 'k3', null],
-      ['lab1-sub0-1', { id: 'lab1', device: 'sub0-1', online: true, ip: '10.0.0.11', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false }, 'lab', 'k3', null],
+      ['lab1-sub0-0', { id: 'lab1', device: 'sub0-0', online: true, ip: '10.0.0.10', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false }, 'lab', 'test-soc', null],
+      ['lab1-sub0-1', { id: 'lab1', device: 'sub0-1', online: true, ip: '10.0.0.11', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false }, 'lab', 'test-soc', null],
     ])
     expect(listed.map(board => board.chips.map(chip => [chip.serialPath, chip.downloadUsbPath, chip.online, chip.alias]))).toEqual([[['/dev/ttyS_0', '1-2.1', true, null]], [['/dev/ttyS_1', '1-2.2', false, null]]])
-    // A board whose system has not reported its model yet keeps the one it had.
+    // Missing inventory fields do not erase the model or SoC already known.
     lab.listed[0]!.model = null
+    lab.listed[0]!.soc = undefined
     await svc.backends.sync('lab1')
-    expect(svc.boards.get('lab1-sub0-0')).toMatchObject({ product: 'k3', soc: 'k3' })
+    expect(svc.boards.get('lab1-sub0-0')).toMatchObject({ product: 'board-a', soc: 'test-soc' })
     // The password stays write-only, a wrong one is reported without echoing it, and saving without one keeps it.
     const bad = await enable(svc, { password: 'wrong-password' })
     expect(bad).toMatchObject({ verifyOk: false, verifyMessage: '后台拒绝了账号或密码（401）' })
@@ -268,12 +269,12 @@ describe('remote labs', () => {
     expect(lab.calls.slice(1)).toEqual(['fastboot sub0-0', 'reset sub0-0'])
     expect(svc.boards.detail('lab1-sub0-0').actions.filter(action => action.kind === 'reset' || action.kind === 'fastboot').map(action => action.detail)).toEqual(['lab1 sub0-0', 'lab1 sub0-0'])
 
-    expect(await svc.consoles.send('lab1-sub0-0', claude, { text: 'uname -a', wait: 'root@k3' })).toMatchObject({ matched: true })
+    expect(await svc.consoles.send('lab1-sub0-0', claude, { text: 'uname -a', wait: 'root@board-a' })).toMatchObject({ matched: true })
     expect(lab.sent).toEqual(['sub0-0: uname -a\n'])
-    expect(await svc.consoles.log('lab1-sub0-0')).toEqual(['[sub0-0] k3 login:'])
+    expect(await svc.consoles.log('lab1-sub0-0')).toEqual(['[sub0-0] test-soc login:'])
     // A listing that says the port is down can be a minute old; opening the console asks the lab.
     expect(svc.boards.get('lab1-sub0-1').chips[0]!.online).toBe(false)
-    expect((await svc.consoles.open('lab1-sub0-1')).history).toEqual(['[sub0-1] k3 login:'])
+    expect((await svc.consoles.open('lab1-sub0-1')).history).toEqual(['[sub0-1] test-soc login:'])
 
     const fsbl = shipFirmware('fsbl', 'shipped FSBL')
     const kernel = join(dir, 'Image.itb')
@@ -301,7 +302,7 @@ describe('remote labs', () => {
     expect(svc.boards.detail('lab1-sub0-0').actions.find(action => action.kind === 'fastboot')?.message).toBe('下载口 7-1.4')
     await svc.backends.sync('lab1')
     expect(svc.boards.get('lab1-sub0-0').chips[0]!.downloadUsbPath).toBe('7-1.4')
-    await svc.consoles.send('lab1-sub0-0', { holder: 'claude:s1', token }, { text: 'uname -a', wait: 'root@k3' })
+    await svc.consoles.send('lab1-sub0-0', { holder: 'claude:s1', token }, { text: 'uname -a', wait: 'root@board-a' })
     await svc.consoles.log('lab1-sub0-0')
     expect(lab.consoles).toEqual([{ device: 'sub0-0', history: false }, { device: 'sub0-0', history: true }])
   })
@@ -527,7 +528,7 @@ describe('remote labs', () => {
     // A viewer coming back soon reuses the session; one long gone has it closed by the reaper.
     const again = await svc.consoles.open('lab1-sub0-0')
     expect(lab.consoles).toHaveLength(1)
-    expect(again.history).toEqual(['[sub0-0] k3 login:'])
+    expect(again.history).toEqual(['[sub0-0] test-soc login:'])
     again.close()
     clock += 60_000
     expect(svc.consoles.reap().watching).toEqual([])
@@ -1067,24 +1068,44 @@ describe('renaming a board', () => {
 
   it('remembers a model someone typed in, offers it first next time, and lets no listing replace it until it is cleared', async () => {
     const { svc, lab } = labService()
-    svc.boards.update('user:alice', 'com260', { product: 'k3-pico-itx' })
-    expect(svc.boards.get('com260').product).toBe('k3-pico-itx')
-    expect(svc.boards.models()).toEqual(['k3-pico-itx'])
-    svc.boards.add('user:alice', { name: 'k1x', product: 'k1x-deb1' })
-    expect(svc.boards.models()).toContain('k1x-deb1')
+    svc.boards.update('user:alice', 'com260', { product: 'model-a' })
+    expect(svc.boards.get('com260').product).toBe('model-a')
+    expect(svc.boards.models()).toEqual(['model-a'])
+    svc.boards.add('user:alice', { name: 'board-b', product: 'model-b' })
+    expect(svc.boards.models()).toContain('model-b')
     // Used again, it is the first offered.
-    svc.boards.update('user:alice', 'com260', { product: 'k3-pico-itx' })
-    expect(svc.boards.models()[0]).toBe('k3-pico-itx')
+    svc.boards.update('user:alice', 'com260', { product: 'model-a' })
+    expect(svc.boards.models()[0]).toBe('model-a')
     await enable(svc)
     // A model typed in for a lab board stays when the lab lists the board again.
-    svc.boards.update('user:alice', 'lab1-sub0-0', { product: 'k3-custom' })
+    svc.boards.update('user:alice', 'lab1-sub0-0', { product: 'model-custom' })
     await svc.backends.sync('lab1')
-    expect(svc.boards.get('lab1-sub0-0').product).toBe('k3-custom')
-    expect(lab.listed[0]!.model).toBe('k3')
+    expect(svc.boards.get('lab1-sub0-0').product).toBe('model-custom')
+    expect(lab.listed[0]!.model).toBe('board-a')
     // Cleared, it is the lab's own again.
     svc.boards.update('user:alice', 'lab1-sub0-0', { product: null })
     await svc.backends.sync('lab1')
-    expect(svc.boards.get('lab1-sub0-0').product).toBe('k3')
+    expect(svc.boards.get('lab1-sub0-0').product).toBe('board-a')
+  })
+  it('takes SoCs from explicit input or the distribution resolver and preserves existing records', () => {
+    const svc = new BoardLab({ db: openDatabase(join(dir, 'soc.sqlite')), socFromProduct: product => product.startsWith('family-') ? 'inferred-soc' : null })
+    svc.boards.add('user:alice', { name: 'explicit', product: 'family-board', soc: 'explicit-soc' })
+    svc.boards.add('user:alice', { name: 'inferred', product: 'family-board' })
+    svc.boards.add('user:alice', { name: 'unknown', product: 'other-board', soc: 'stored-soc' })
+    expect(svc.boards.get('explicit').soc).toBe('explicit-soc')
+    expect(svc.boards.get('inferred').soc).toBe('inferred-soc')
+    svc.boards.update('user:alice', 'unknown', { product: 'renamed-board' })
+    expect(svc.boards.get('unknown').soc).toBe('stored-soc')
+    svc.boards.update('user:alice', 'unknown', { soc: null })
+    expect(svc.boards.get('unknown').soc).toBeNull()
+    svc.boards.add('user:alice', { name: 'generic', product: 'generic-board' })
+    expect(svc.boards.get('generic').soc).toBeNull()
+  })
+
+  it('adds arbitrary module state without making it part of the core contract', () => {
+    const lab = new BoardLab({ db: openDatabase(join(dir, 'state.sqlite')) })
+    lab.addState(() => ({ moduleSpecific: { ready: true } }))
+    expect(lab.state('user:alice')).toMatchObject({ moduleSpecific: { ready: true } })
   })
 })
 

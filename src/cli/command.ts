@@ -6,6 +6,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import type { BoardsClient } from '../shared/client.ts'
+import type { Board, Chip, State } from '../shared/types.ts'
 import type { CatalogEntry } from '../server/catalog.ts'
 
 export interface Command {
@@ -24,6 +25,16 @@ export interface Command {
  * the overview.
  */
 export interface CommandGroup { title: string, commands: Command[], id?: string, summary?: string }
+
+/** Pure presentation supplied by a distribution; it cannot perform I/O or mutate board state. */
+export interface CliPresentation {
+  boardPlace?(board: Board): string
+  boardDetails?(board: Board): string
+  chipDetails?(board: Board, chip: Chip): string
+  emptyPlaces?(state: State): string[]
+  stateDetails?(state: State): string | null
+  lockTokenHint?(gateToken: string): string | null
+}
 
 export interface CommandContext {
   /** What followed the command name: positional words, and every raw argument (for commands that pass them on). */

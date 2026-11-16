@@ -9,7 +9,7 @@ import { Duplex } from 'node:stream'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import type {
-  BoardChannels, BoardDetail, HaDiscovery, HaSettings, LabPorts, LabSettings, Lease, LockResult, Scan, SendResult, Slot, State,
+  BoardChannels, BoardDetail, LabPorts, LabSettings, Lease, LockResult, SendResult, State,
 } from './types.ts'
 
 export const DEFAULT_PORT = 38127
@@ -216,18 +216,13 @@ export class BoardsClient {
     return `sha256:${sha256}`
   }
 
-  /** A boardlab command run by boardd's own CLI for this holder (for commands this client does not know). */
+  /** A command run by boardd's own CLI for this holder (for commands this client does not know). */
   proxy(args: string[], json: boolean, onOutput: (stream: 'stdout' | 'stderr', text: string) => void) {
-    return this.stream('/api/cli', { args, json }, onOutput)
+    return this.streamCommand('/api/cli', { args, json }, onOutput)
   }
 
-  /** `bsp sdk <args>` run by boardd for this holder; output arrives as it is written. */
-  sdk(args: string[], json: boolean, onOutput: (stream: 'stdout' | 'stderr', text: string) => void, group: 'sdk' | 'catalog' | 'raw' = 'sdk'): Promise<{ code: number, download: string | null }> {
-    return this.stream('/api/sdk', { args, json, group }, onOutput)
-  }
-
-  /** POST a JSON body to a streaming endpoint; output events go to `onOutput` until its exit. */
-  private stream(path: string, payload: unknown, onOutput: (stream: 'stdout' | 'stderr', text: string) => void): Promise<{ code: number, download: string | null }> {
+  /** POST a JSON body to a module's streaming endpoint; output events go to `onOutput` until its exit. */
+  streamCommand(path: string, payload: unknown, onOutput: (stream: 'stdout' | 'stderr', text: string) => void): Promise<{ code: number, download: string | null }> {
     return new Promise((resolve, reject) => {
       const body = JSON.stringify(payload)
       const req = this.open('POST', path, { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'Content-Length': String(Buffer.byteLength(body)) })
@@ -254,14 +249,14 @@ export class BoardsClient {
             else if (event === 'error') { done = true; reject(new BoardsApiError(400, value.message, null)) }
           }
         })
-        response.on('end', () => { if (!done) reject(new Error('boardd 在 sdk 命令结束前断开了')) })
+        response.on('end', () => { if (!done) reject(new Error('boardd 在命令结束前断开了')) })
       })
       req.on('error', reject)
       req.end(body)
     })
   }
 
-  /** Save a file boardd holds (a `boardlab sdk get -o` result) to `path`. */
+  /** Save a command result file (for example, a remote file-transfer result) to `path`. */
   fetchFile(sha256: string, path: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const req = this.open('GET', `/api/files/${sha256}?download=1`)
@@ -305,15 +300,7 @@ export class BoardsClient {
   cancelBoard(board: string, token?: string | null) { return this.call<{ message: string }>('POST', '/api/board/cancel', { board, token }) }
   /** Flash a package: a `url` the board's backend downloads, or a file sent first (`sendFile`'s `sha256:<hex>`). */
   flashPackage(board: string, input: { url?: string, sha256?: string, flasher?: string }, token?: string | null) { return this.call<{ output: string }>('POST', '/api/flash/package', { board, ...input, token }) }
-  scan(input: { slots?: number[], boards?: string[], confirmed: boolean }) { return this.call<Scan>('POST', '/api/scan', input) }
-  scanStatus(id: string) { return this.call<Scan>('GET', `/api/scan?id=${encodeURIComponent(id)}`) }
-  cancelScan(id: string) { return this.call<{ ok: true }>('POST', '/api/scan/cancel', { id }) }
   resolveProposals(ids: string[], decision: 'apply' | 'reject', names?: Record<string, string>) { return this.call<{ ok: true }>('POST', '/api/proposals', { ids, decision, names }) }
-  saveScriptSlot(input: { slot: number, label?: string | null, resetScript: string, fastbootScript?: string | null }) { return this.call<Slot>('POST', '/api/slots/script', input) }
-  removeScriptSlot(slot: number) { return this.call<{ ok: true }>('POST', '/api/slots/script/remove', { slot }) }
-  configureHa(url: string, token?: string) { return this.call<HaSettings>('POST', '/api/ha', { url, token }) }
-  setHaEnabled(enabled: boolean) { return this.call<HaSettings>('POST', '/api/ha/enabled', { enabled }) }
-  testHa() { return this.call<HaSettings>('POST', '/api/ha/test') }
   /** After re-cabling: have the lab start `host` over (forget its boards, find them again). */
   labKinds() { return this.call<Array<{ kind: string, title: string, about: string }>>('GET', '/api/labs/kinds') }
   addLab(id: string, kind: string) { return this.call<LabSettings>('POST', '/api/labs/add', { id, kind }) }
