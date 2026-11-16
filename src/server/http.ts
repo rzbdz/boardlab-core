@@ -294,6 +294,9 @@ export async function serve(lab: BoardLab, options: ServeOptions): Promise<{ htt
     // A large file (a flash package) may take longer to send than Node's five-minute request limit.
     const server = createServer({ requestTimeout: 0 }, handle)
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(options.port, host, resolve) })
+    // Port zero asks the OS for a free port: Host validation must use the port actually assigned.
+    const address = server.address()
+    if (options.port === 0 && address && typeof address === 'object') allowed.add(`${host}:${address.port}`)
     http.push(server)
   }
   // Under a supervisor the socket belongs to the workers together: the supervisor made its directory and removed a
