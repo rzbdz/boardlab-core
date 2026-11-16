@@ -5,7 +5,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from 'node:fs'
+import { chmodSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from 'node:fs'
 import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { basename, join } from 'node:path'
@@ -149,8 +149,10 @@ export class Files {
     // The ssh uploader is a different local user from boardd: its group may write (the deployment gives
     // `.incoming` that group and the setgid bit), but nobody else can list or read it.
     mkdirSync(incoming, { recursive: true, mode: 0o2770 })
+    chmodSync(incoming, 0o2770)   // mkdir's mode is masked by boardd's umask
     const dir = join(incoming, id)
     mkdirSync(dir, { recursive: true, mode: 0o2770 })
+    chmodSync(dir, 0o2770)
     return { id, path: join(dir, this.safeName(name)) }
   }
 
