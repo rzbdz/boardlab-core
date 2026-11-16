@@ -281,7 +281,7 @@ export class Locks {
   }
 
   /** People may take a lock from its holder with a recorded reason; the queue keeps its order. */
-  steal(target: string, holder: string, reason: string, purpose = '抢锁'): LockResult {
+  steal(target: string, holder: string, reason: string): LockResult {
     if (!isHuman(holder)) throw new BoardError('forbidden', '只有人可以抢锁')
     if (!reason.trim()) throw new BoardError('invalid', '抢锁必须写明原因')
     const result = transaction(this.k.db, () => {
@@ -291,7 +291,7 @@ export class Locks {
       if (held) this.end(held, 'stolen', `${holder}：${reason}`)
       this.k.db.prepare('DELETE FROM lease_waiters WHERE board=? AND holder=?').run(target, holder)
       this.k.record(holder, target, 'steal', reason, true, held ? `原持有人 ${held.holder}` : '没有持有人')
-      return { previous: held?.holder ?? null, ...this.grant(target, holder, `抢锁：${reason.trim()}`, purpose) }
+      return { previous: held?.holder ?? null, ...this.grant(target, holder, `抢锁：${reason.trim()}`) }
     })
     if (result.previous) this.k.emit({ type: 'lease-stolen', board: target, from: result.previous, by: holder, reason })
     this.k.changed(target)
