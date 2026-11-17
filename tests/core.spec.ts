@@ -210,8 +210,8 @@ describe('remote labs', () => {
     expect(lab.calls).toEqual(['verify admin ubuntu@lab.test'])
     const listed = svc.boards.list().filter(board => board.lab)
     expect(listed.map(board => [board.name, board.lab, board.source, board.soc, board.slot])).toEqual([
-      ['lab1-sub0-0', { id: 'lab1', device: 'sub0-0', online: true, ip: '10.0.0.10', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false }, 'lab', 'test-soc', null],
-      ['lab1-sub0-1', { id: 'lab1', device: 'sub0-1', online: true, ip: '10.0.0.11', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false }, 'lab', 'test-soc', null],
+      ['lab1-sub0-0', { id: 'lab1', device: 'sub0-0', online: true, ip: '10.0.0.10', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false, debug: null }, 'lab', 'test-soc', null],
+      ['lab1-sub0-1', { id: 'lab1', device: 'sub0-1', online: true, ip: '10.0.0.11', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false, debug: null }, 'lab', 'test-soc', null],
     ])
     expect(listed.map(board => board.chips.map(chip => [chip.serialPath, chip.downloadUsbPath, chip.online, chip.alias]))).toEqual([[['/dev/ttyS_0', '1-2.1', true, null]], [['/dev/ttyS_1', '1-2.2', false, null]]])
     // Missing inventory fields do not erase the model or SoC already known.
@@ -1722,6 +1722,20 @@ describe('a board\'s debug path', () => {
     for await (const chunk of reply.body!) text += chunk.toString()
     return text
   }
+
+  it('shows on the board what its lab can debug it with', async () => {
+    // The page and `boardlab show` read the board's own record: a listing's debug block has to reach it, or a board
+    // whose host has a debug path shows as having none.
+    const lab = new DebugLab()
+    const original = lab.listed
+    ;(lab as any).listed = original.map((device, index) => index === 0
+      ? { ...device, debug: { provider: 'fake-swd', title: 'fake SWD', kinds: ['halt', 'trace'] } } : device)
+    const { svc } = coreLab({ lab })
+    await enable(svc)
+    expect(svc.boards.get('lab1-sub0-0').lab?.debug).toEqual({ provider: 'fake-swd', title: 'fake SWD', kinds: ['halt', 'trace'] })
+    // A board its lab does not list as debuggable carries no block at all.
+    expect(svc.boards.get('lab1-sub0-1').lab?.debug ?? null).toBeNull()
+  })
 
   it('streams a session\'s bytes and ends with it, so a reader is never left waiting on a closed session', async () => {
     const lab = new DebugLab()
