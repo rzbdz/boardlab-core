@@ -202,7 +202,9 @@ export class Backends {
         empty: !!device?.empty, slotGone: !!device?.slotGone, canRefresh: !!instance.backend.inventory.refresh && !device?.empty,
         mediaBoot: device?.mediaBoot ? { method: device.mediaBoot.method, available: device.mediaBoot.available, why: device.mediaBoot.why ?? null } : null,
         attention: this.lab.relay.attention(board.name) ?? device?.attention ?? null,
-        attentionRequest: this.lab.relay.request(board.name), canConfirm: !!instance.backend.relay.confirm,
+        // The host's own id for an ask it reports with the listing; one boardd saw while a reset ran carries its own.
+        attentionRequest: this.lab.relay.request(board.name) ?? device?.attentionRequest ?? null,
+        canConfirm: !!instance.backend.relay.confirm,
         sdks: device?.sdks ?? [], progress: this.lab.download.progress(board.name),
         canFlashPackage: !!instance.backend.builds?.flash && !device?.empty,
       }

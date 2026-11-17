@@ -10,7 +10,7 @@ import { Duplex } from 'node:stream'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import type {
-  BoardChannels, BoardDetail, DiscoveryContext, DiscoveryMethod, LabPorts, LabSettings, Lease, LockResult, SendResult, State,
+  BoardChannels, BoardDetail, DebugPath, DebugResult, DiscoveryContext, DiscoveryMethod, LabPorts, LabSettings, Lease, LockResult, SendResult, State,
 } from './types.ts'
 
 export const DEFAULT_PORT = 38127
@@ -337,6 +337,14 @@ export class BoardsClient {
   answerYield(board: string, action: 'yield' | 'deny') { return this.call<{ message: string }>('POST', '/api/yields', { board, action }) }
   /** Let go of the operation running on a board (a boot stuck at a wait, a flash nobody wants). */
   cancelBoard(board: string, token?: string | null) { return this.call<{ message: string }>('POST', '/api/board/cancel', { board, token }) }
+  /** A board's debug path as its backend reports it (null: it has none); reading it changes nothing on the board. */
+  debugPath(board: string) { return this.call<{ debug: DebugPath | null }>('POST', '/api/debug', { board, action: 'path' }) }
+  /** Bring a board's debug session up, under its lock, and say where it is. */
+  debugStart(board: string, token?: string | null) { return this.call<{ debug: DebugPath }>('POST', '/api/debug', { board, action: 'start', token }) }
+  /** Stop it (the host ends the session it serves). */
+  debugStop(board: string, token?: string | null) { return this.call<{ debug: { message: string } }>('POST', '/api/debug', { board, action: 'stop', token }) }
+  /** Run one of the actions the path reports (`halt`, `regs`, …). */
+  debugAction(board: string, action: string, token?: string | null) { return this.call<{ debug: DebugResult }>('POST', '/api/debug', { board, action, token }) }
   /** Flash a package: a `url` the board's backend downloads, or a file sent first (`sendFile`'s `sha256:<hex>`). */
   flashPackage(board: string, input: { url?: string, sha256?: string, flasher?: string }, token?: string | null) { return this.call<{ output: string }>('POST', '/api/flash/package', { board, ...input, token }) }
   resolveProposals(ids: string[], decision: 'apply' | 'reject', names?: Record<string, string>) { return this.call<{ ok: true }>('POST', '/api/proposals', { ids, decision, names }) }

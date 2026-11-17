@@ -9,6 +9,7 @@ import { Backends } from './backends.ts'
 import { Boards } from './boards.ts'
 import { Consoles, type ConsoleTiming } from './consoles.ts'
 import { Download, type BootTiming } from './download.ts'
+import { debugEndpoints } from './debug-endpoints.ts'
 import { coreEndpoints } from './endpoints.ts'
 import { Files } from './files.ts'
 import { Kernel, type KernelOptions } from './kernel.ts'
@@ -62,7 +63,7 @@ export class BoardLab {
     this.files = new Files(this.kernel, options.filesDir)
     this.backends = new Backends(this)
     this.consoles = new Consoles(this, { watchIdleMs: 30_000, typingIdleMs: 60_000, watchLines: 2_000, ...options.consoleTiming })
-    this.api.add('core', coreEndpoints(this))
+    this.api.add('core', [...coreEndpoints(this), ...debugEndpoints(this)])
     for (const module of inLoadOrder(options.modules ?? [])) this.use(module)
   }
 

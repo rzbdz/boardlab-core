@@ -67,7 +67,12 @@
       "redfish",
       "smtty",
       "\\bk1\\b",
-      "\\bk3\\b"
+      "\\bk3\\b",
+      "\\bswd\\b",
+      "\\bjtag\\b",
+      "\\brtt\\b",
+      "openocd",
+      "\\bgdb\\b"
     ],
     "env": false
   },

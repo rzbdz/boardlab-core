@@ -11,6 +11,7 @@ import { BoardsApiError, BoardsClient, defaultStateDir, defaultTransport, remote
 import type { CatalogEntry } from '../server/catalog.ts'
 import { splitTarget, TokenStore, write, type Command, type CommandContext, type CommandGroup } from './command.ts'
 import { boardCommands, presentBoards } from './commands/boards.ts'
+import { debugCommands } from './commands/debug.ts'
 import { labCommands } from './commands/labs.ts'
 import { presentRelease, setupCommands, type ReleaseIdentity } from './commands/setup.ts'
 import type { CliPresentation } from './command.ts'
@@ -128,7 +129,7 @@ export interface Cli {
 export function createCli(distribution: Distribution): Cli {
   presentBoards(distribution.presentation ?? {})
   if (distribution.identity) presentRelease(distribution.identity)
-  const groups = [boardCommands, labCommands, ...distribution.groups, setupCommands]
+  const groups = [boardCommands, debugCommands, labCommands, ...distribution.groups, setupCommands]
   const commands = new Map<string, Command>(groups.flatMap(group => group.commands.map(command => [command.name, command] as const)))
   const usage = (topic?: string) => usageOf(groups, topic)
   return { usage, main: argv => run(argv, commands, usage, distribution) }

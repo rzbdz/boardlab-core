@@ -125,6 +125,8 @@ export interface BoardInLab {
   progress: string | null
   /** The lab can flash the board with a package from a link or a file sent to boardd (`boardlab flash <board> <url|file>`). */
   canFlashPackage: boolean
+  /** The lab can debug it (see `debug`): the provider's name, its title and what it offers. */
+  debug?: { provider: string, title?: string, kinds: string[] } | null
 }
 
 /** A remote lab boardd can use. Its boards are listed from the lab once it is enabled; its password is write-only. */
@@ -233,6 +235,20 @@ export interface Channel {
 export interface BoardChannels { board: string, supported: boolean, channels: Channel[] }
 
 export interface BoardDetail { board: Board, actions: Action[], leases: Lease[] }
+
+/** One way to debug a board, as its backend reports it (see `core/debug.ts` for the contract). */
+export interface DebugPath {
+  provider: string
+  title?: string
+  about?: string
+  /** What it offers: `halt`, `run`, `reset`, `step`, `regs`, `trace`, `gdb`, `write`. */
+  kinds: string[]
+  running: boolean
+  endpoint?: string | null
+  state?: Array<{ label: string, value: string }>
+}
+/** What a debug action answered: a line for people and, when it has them, label/value pairs (registers, a state). */
+export interface DebugResult { message: string, data?: Array<{ label: string, value: string }> }
 
 /** Opaque input-gate capability supplied by a backend; boardd uses it for its own input. */
 export interface LockResult { lease: Lease | null, token: string | null, gateToken: string | null, queued: { position: number } | null }

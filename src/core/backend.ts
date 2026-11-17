@@ -6,6 +6,7 @@
  */
 import type { Channel as WireChannel, DiscoveryContext, DiscoveryMethod, DiscoveryValues, LabFields } from '../shared/types.ts'
 import type { ConsoleSession } from './console.ts'
+import type { DebugCapability } from './debug.ts'
 
 /** What reaching a backend takes, as entered in its settings. */
 export interface LabConfig { url: string, username: string, password: string, jump: string }
@@ -42,11 +43,15 @@ export interface LabDevice {
   serialConnected: boolean
   /** Its download port, in the `3-2.3` form `fastboot -s usb:` takes. */
   downloadUsbPath: string | null
+  /** The backend can debug it (see `debug`): the provider's name, its title and what it offers. */
+  debug?: { provider: string, title?: string, kinds: string[] } | null
   ip: string | null
   /** Who holds the board in the backend itself, when that is not boardd (someone using it directly). */
   heldBy?: string | null
   /** What a person is asked to do on the board right now (press RESET, …), for boards reset by hand. */
   attention?: string | null
+  /** The backend's id for that request: answering it with the same id twice is answering once. */
+  attentionRequest?: string | null
 }
 
 /** A board (one of its chips) as a backend addresses it. */
@@ -305,6 +310,8 @@ export interface Backend {
   news?: NewsCapability
   /** A backend whose own record names the board: renaming it there too. */
   rename?: RenameCapability
+  /** For a backend whose boards can be debugged (halt/run/regs, a trace channel, an endpoint other tools connect to). */
+  debug?: DebugCapability
 }
 
 /** `user@host` or `user@host:port`, the form of a backend's jump-host setting. */
