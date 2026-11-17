@@ -4,6 +4,7 @@
  * any of them, and the endpoints a backend gets are the ones the contract promises.
  */
 import { RawReply, required, type Endpoint } from './api.ts'
+import type { ConsoleSession } from './console.ts'
 import type { DebugCapability } from './debug.ts'
 import { BoardError } from './errors.ts'
 import type { BoardLab } from './lab.ts'
@@ -44,26 +45,36 @@ export function debugEndpoints(lab: BoardLab): Endpoint[] {
       },
     },
     {
-      method: 'GET', path: '/api/debug/stream', about: '调试会话的字节（链路输出）：会话的水流，按到达转发（base64 的 data 帧）',
-      handle: ({ query, signal }) => {
+      method: 'GET', path: '/api/debug/stream', about: '调试会话的字节（链路输出）：会话的水流，按到达转发（base64 的 data 帧）；会话不在时是一句带原因的失败',
+      handle: async ({ query, signal }) => {
         const name = lab.boards.resolve(required(query.get('board'), 'board'))
         const { route, debug } = routeOf(name)
         const open = debug.stream
         if (!open) throw new BoardError('invalid', `${name} 的调试口没有可以看的输出`)
-        return new RawReply(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' }, (async function* () {
-          const session = await open.call(debug, route.config, route.target)
-          const queue: Buffer[] = []
-          let wake: (() => void) | null = null
-          const off = session.onOutput(data => { queue.push(Buffer.from(data)); wake?.(); wake = null })
-          session.onClose(() => { wake?.(); wake = null })
+        // Opened before the reply starts: a session that cannot be opened is a failure with its reason, rather than
+        // error text arriving as bytes a viewer would print as if the board had said it (and a 200 that never ends).
+        let session: ConsoleSession
+        try {
+          session = await open.call(debug, route.config, route.target)
+        } catch (error) {
+          throw new BoardError('invalid', `打不开 ${name} 的调试输出：${(error as Error).message}`)
+        }
+        const queue: Buffer[] = []
+        let wake: (() => void) | null = null
+        let ended = false
+        const off = session.onOutput(data => { queue.push(Buffer.from(data)); wake?.(); wake = null })
+        session.onClose(() => { ended = true; wake?.(); wake = null })
+        const events = (async function* () {
           try {
-            while (!signal.aborted) {
+            while (!signal.aborted && !ended) {
               while (queue.length) yield `data: ${queue.shift()!.toString('base64')}\n\n`
+              if (ended) break
               await new Promise<void>(resolve => { wake = resolve; setTimeout(resolve, 15_000) })
-              if (!queue.length) yield ': ping\n\n'
+              if (!queue.length && !ended) yield ': ping\n\n'
             }
           } finally { off(); session.close() }
-        })())
+        })()
+        return new RawReply(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' }, events)
       },
     },
     {

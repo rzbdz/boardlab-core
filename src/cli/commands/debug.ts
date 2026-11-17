@@ -10,15 +10,22 @@ import type { Command, CommandGroup } from '../command.ts'
 /** The actions every path offers; a path may offer more and says so (`halt`, `run`, `regs`, `trace`, …). */
 const VERBS = ['path', 'status', 'start', 'stop', 'stream', 'halt', 'run', 'reset', 'step', 'regs'] as const
 
-/** A debug session's bytes (base64 `data:` frames) written through, until interrupted. */
+/** A debug session's bytes (base64 `data:` frames) written through, until interrupted or the session ends. */
 function streamDebug(client: BoardsClient, board: string): Promise<void> {
   const req = client.open('GET', `/api/debug/stream?board=${encodeURIComponent(board)}`)
   return new Promise((resolve, reject) => {
+    // Ctrl-C (or a closed pipe) ends the stream: without this the request would keep the process alive for ever.
+    const stop = () => { req.destroy(); resolve() }
+    process.once('SIGINT', stop)
     req.on('response', response => {
       if (response.statusCode !== 200) {
         let text = ''
         response.on('data', chunk => { text += chunk })
-        response.on('end', () => { let message = text; try { message = JSON.parse(text).error ?? text } catch {}; reject(new Error(message)) })
+        response.on('end', () => {
+          let message = text
+          try { message = (JSON.parse(text) as { error?: string }).error ?? text } catch {}
+          reject(new Error(message))
+        })
         return
       }
       let buffer = ''
@@ -33,10 +40,10 @@ function streamDebug(client: BoardsClient, board: string): Promise<void> {
         }
       })
       response.on('end', () => resolve())
+      response.on('error', reject)
     })
-    req.on('error', reject)
+    req.on('error', error => { if (!req.destroyed) reject(error) })
     req.end()
-    process.once('SIGINT', () => { req.destroy(); resolve() })
   })
 }
 

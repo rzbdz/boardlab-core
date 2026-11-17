@@ -1686,3 +1686,57 @@ describe('CLI arguments', () => {
     await expect(timed).rejects.toThrow(/没有让出/)
     expect(svc.locks.held(board)?.holder).toBe('user:bob')
   })
+
+describe('a board\'s debug path', () => {
+  /** A lab whose boards can be debugged: a path that opens a trace channel or refuses to. */
+  class DebugLab extends FakeLab {
+    traces: string[] = []
+    refuse = false
+    async debugStream(_config: LabConfig, target: { device: string }): Promise<ConsoleSession> {
+      if (this.refuse) throw new Error('the board host says: its debug session is not running')
+      this.traces.push(target.device)
+      const listeners = new Set<(data: Buffer) => void>()
+      const closes: Array<(reason: string) => void> = []
+      setTimeout(() => { listeners.forEach(fn => fn(Buffer.from('pc 0x1000\r\n'))); setTimeout(() => closes.forEach(fn => fn('closed')), 5) }, 1)
+      return {
+        hello: { alias: target.device, device: null, baud: 0, transport: 'debug' }, history: [],
+        send: () => {}, onOutput: fn => { listeners.add(fn); return () => listeners.delete(fn) },
+        onClose: fn => { closes.push(fn) }, close: () => listeners.clear(),
+      }
+    }
+    debug = {
+      path: async () => ({ provider: 'fake-swd', title: 'fake SWD', about: '', kinds: ['halt', 'trace'], running: false, endpoint: null, state: [] }),
+      start: async () => ({ provider: 'fake-swd', title: 'fake SWD', about: '', kinds: ['halt', 'trace'], running: true, endpoint: '127.0.0.1:3334', state: [] }),
+      stop: async () => 'stopped',
+      action: async (_config: LabConfig, _target: unknown, action: string) => ({ message: `${action} done`, data: [] }),
+      stream: (config: LabConfig, target: { device: string }) => this.debugStream(config, target),
+    }
+  }
+
+  const streamOf = async (svc: BoardLab, board: string) => {
+    const reply = await svc.api.match('GET', '/api/debug/stream')!.endpoint.handle({
+      body: {}, query: new URLSearchParams({ board }), params: {}, caller: { holder: 'user:alice', local: true },
+      signal: new AbortController().signal, upload: null,
+    }) as RawReply
+    let text = ''
+    for await (const chunk of reply.body!) text += chunk.toString()
+    return text
+  }
+
+  it('streams a session\'s bytes and ends with it, so a reader is never left waiting on a closed session', async () => {
+    const lab = new DebugLab()
+    const { svc } = coreLab({ lab })
+    await enable(svc)
+    const text = await streamOf(svc, 'lab1-sub0-0')
+    expect(text).toContain(Buffer.from('pc 0x1000\r\n').toString('base64'))
+    expect(lab.traces).toEqual(['sub0-0'])
+  })
+
+  it('refuses a session that cannot be opened, rather than sending its error text as the board\'s output', async () => {
+    const lab = new DebugLab()
+    lab.refuse = true
+    const { svc } = coreLab({ lab })
+    await enable(svc)
+    await expect(streamOf(svc, 'lab1-sub0-0')).rejects.toThrow(/打不开 lab1-sub0-0 的调试输出.*not running/)
+  })
+})
