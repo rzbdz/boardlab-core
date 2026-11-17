@@ -24,6 +24,8 @@ function streamDebug(client: BoardsClient, board: string): Promise<void> {
         response.on('end', () => {
           let message = text
           try { message = (JSON.parse(text) as { error?: string }).error ?? text } catch {}
+          // A stream that could not be opened is a failed command, whatever the text it printed.
+          process.exitCode = 1
           reject(new Error(message))
         })
         return

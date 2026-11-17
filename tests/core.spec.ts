@@ -1740,3 +1740,37 @@ describe('a board\'s debug path', () => {
     await expect(streamOf(svc, 'lab1-sub0-0')).rejects.toThrow(/打不开 lab1-sub0-0 的调试输出.*not running/)
   })
 })
+
+
+describe('a debug stream that cannot open', () => {
+  it('is a failed command, not a success that printed why it failed', async () => {
+    // As the program runs it: boardd refusing the stream must be the CLI's exit status too, or a script reads
+    // "the session is not running" as if the trace had been read.
+    const lab = new FakeLab()
+    ;(lab as unknown as { debug: unknown }).debug = {
+      path: async () => ({ provider: 'fake-swd', kinds: ['trace'], running: false, endpoint: null, state: [] }),
+      stream: async () => { throw new Error('its debug session is not running') },
+    }
+    const { svc } = coreLab({ lab })
+    await enable(svc)
+    const sockets = join(dir, 'cli.sock')
+    const running = await serve(svc, { port: 41000 + Math.floor(Math.random() * 1000), socketPath: sockets, uiDir: null, stateDir: dir })
+    try {
+      // The command itself, against that boardd, the way the CLI wires it.
+      const { debugCommands } = await import('../src/cli/commands/debug.ts')
+      const command = debugCommands.commands.find(item => item.name === 'debug')!
+      const client = new BoardsClient(sockets, 'user:alice')
+      const previous = process.exitCode
+      process.exitCode = undefined
+      try {
+        await expect(command.run({
+          args: ['stream', 'lab1-sub0-0'], argv: [], flags: new Map(), flag: () => undefined, json: false,
+          out: (value: unknown) => console.log(JSON.stringify(value)), stateDir: dir, catalog: [], client, holder: 'user:alice',
+          remote: false, target: () => ({ board: 'lab1-sub0-0', die: undefined }),
+          token: () => null, keepToken: () => {},
+        } as never)).rejects.toThrow(/not running/)
+        expect(process.exitCode).toBe(1)
+      } finally { process.exitCode = previous }
+    } finally { await running.close() }
+  })
+})
