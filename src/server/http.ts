@@ -120,12 +120,17 @@ async function answer(response: ServerResponse, reply: unknown, abort: AbortCont
   send(response, 200, reply ?? { ok: true })
 }
 
-/** An event stream as SSE. A caller that vanished (a proxy keeping the connection, a sleeping laptop) is noticed when it cannot be written to. */
+/**
+ * An event stream as SSE. A caller that vanished (a proxy keeping the connection, a sleeping laptop) is noticed when it
+ * cannot be written to. The keepalive is an event, not a `: comment`: a comment keeps a proxy's connection open but a
+ * browser never passes it to the page, so a page could not tell a live stream from a dead one.
+ */
 async function stream(response: ServerResponse, reply: EventStream, abort: AbortController) {
   response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive' })
+  response.write('retry: 2000\n\n')
   const ping = setInterval(() => {
     if (response.destroyed || !response.writable) return abort.abort()
-    response.write(': ping\n\n')
+    response.write(`event: ping\ndata: ${Date.now()}\n\n`)
   }, 15_000)
   const stop = () => clearInterval(ping)
   abort.signal.addEventListener('abort', stop, { once: true })

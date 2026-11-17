@@ -1432,6 +1432,36 @@ describe('boardd API', () => {
     } finally { await running.close() }
   })
 
+  it('keeps an event stream alive with a frame a page can see, and asks for a quick retry when it is cut', async () => {
+    // A browser passes nothing to the page that the stream did not send: a `: ping` comment keeps a proxy's connection
+    // open, but a page behind that proxy cannot tell a live stream from one it only believes is alive. The keepalive is
+    // a `ping` event, and the stream asks for a two-second retry, so a dropped one comes back without a reload.
+    const port = 39000 + Math.floor(Math.random() * 400)
+    const svc = service()
+    const running = await serve(svc, { port, socketPath: join(dir, 'events.sock'), uiDir: null })
+    const head = await new Promise<{ status: number, headers: Record<string, unknown>, body: string }>(resolve => {
+      const req = request({ host: '127.0.0.1', port, path: '/api/events' }, res => {
+        let body = ''
+        res.setEncoding('utf8')
+        res.on('data', chunk => {
+          body += chunk
+          // The stream does not end by itself: the first frames are what this reads.
+          if (body.includes('event: hello')) { req.destroy(); resolve({ status: res.statusCode!, headers: res.headers, body }) }
+        })
+      })
+      req.on('error', () => {})
+      setTimeout(() => { req.destroy(); resolve({ status: 0, headers: {}, body: '' }) }, 3_000)
+      req.end()
+    })
+    try {
+      expect(head.status).toBe(200)
+      expect(head.headers['content-type']).toBe('text/event-stream; charset=utf-8')
+      expect(head.body).toMatch(/^retry: \d+\n\n/)                      // a cut stream is retried quickly, wherever served
+      expect(head.body).toContain('event: hello\ndata: {"ok":true}\n\n')
+      expect(head.body).not.toContain(': ping')                        // a comment reaches no page
+    } finally { await running.close() }
+  })
+
   it('passes a reply on as it comes, for every path under an endpoint that ends in /*', async () => {
     const svc = service()
     const seen: Array<{ rest: string, accept: unknown }> = []
