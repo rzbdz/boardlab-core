@@ -100,7 +100,7 @@ export class BoardLab {
   state(you: string): State {
     const state: State = {
       boards: this.boards.list(), labs: this.backends.labSettings(), firmware: this.download.firmware(),
-      proposals: this.proposals.pending(), modules: this.modules(), you, now: this.kernel.iso(), yields: this.locks.yieldsList(),
+      proposals: this.proposals.pending(), modules: this.modules(), you, now: this.kernel.iso(), yields: this.locks.yieldsList(you),
     }
     for (const part of this.stateParts) Object.assign(state, part(you))
     return state

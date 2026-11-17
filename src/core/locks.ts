@@ -47,13 +47,24 @@ export class Locks {
 
   constructor(private readonly k: Kernel) {}
 
-  /** Agents waiting for a person to let go of a board. */
-  yieldsList(): YieldRequest[] { return [...this.yields.values()].map(item => item.request) }
+  /** Agents waiting for a person to let go of a board: the ones `caller` can answer, or all when `caller` is null. */
+  yieldsList(caller: string | null = null): YieldRequest[] {
+    return [...this.yields.values()].map(item => item.request)
+      .filter(request => caller === null || request.owner === caller)
+  }
 
-  /** The holder answers an agent's request: yields the board now, or keeps it (the agent then fails after its wait). */
+  /**
+   * The holder answers an agent's request: yields the board now, or keeps it (the agent then fails after its wait).
+   * Answering the same request twice is answering once: the second answer says so instead of failing.
+   */
   answerYield(target: string, caller: string, action: 'yield' | 'deny'): string {
     const pending = this.yields.get(target)
-    if (!pending) throw new BoardError('not-found', `${target} 没有人在等让出`)
+    if (!pending) {
+      // The request is gone: the holder answered it in another window, or the agent's wait ran out.
+      const held = this.held(target)
+      if (!held || held.holder === caller) return `已经回答过了：${target}`
+      throw new BoardError('not-found', `${target} 没有人在等让出`)
+    }
     if (pending.request.owner !== caller) throw new BoardError('forbidden', `只有拿着 ${target} 的人能回答`)
     this.yields.delete(target)
     pending.answer(action)

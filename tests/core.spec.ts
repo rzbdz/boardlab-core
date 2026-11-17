@@ -1628,9 +1628,13 @@ describe('CLI arguments', () => {
     const asked = svc.locks.lock(board, 'claude:bisect', 'bisect mmc')
     await new Promise(resolve => setImmediate(resolve))
     expect(svc.locks.yieldsList()).toEqual([expect.objectContaining({ board, holder: 'claude:bisect', owner: 'user:bob', purpose: 'bisect mmc' })])
-    // Only the holder answers.
+    // Only the holder is told about it, and only the holder answers.
+    expect(svc.locks.yieldsList('user:alice')).toEqual([])
+    expect(svc.locks.yieldsList('user:bob')).toHaveLength(1)
     expect(() => svc.locks.answerYield(board, 'claude:bisect', 'yield')).toThrow(/只有拿着/)
     expect(svc.locks.answerYield(board, 'user:bob', 'yield')).toMatch(/让出了/)
+    // A second answer (another window, a second click) says it was answered instead of failing.
+    expect(svc.locks.answerYield(board, 'user:bob', 'yield')).toMatch(/已经回答过了/)
     const got = await asked
     expect(got.lease?.holder).toBe('claude:bisect')
     expect(svc.locks.held(board)?.holder).toBe('claude:bisect')

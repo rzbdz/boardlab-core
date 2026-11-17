@@ -47,7 +47,7 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     // ---------- locks ----------
     { method: 'POST', path: '/api/lock', about: '拿锁（queue: join 排队，wait 等到拿到）', handle: ({ body, caller, signal }) => lab.locks.lock(board(body), caller.holder, String(body.purpose ?? ''), { queue: body.queue === 'join' || body.queue === 'wait' ? body.queue : 'none', signal }) },
     { method: 'POST', path: '/api/unlock', about: '放锁', handle: ({ body, caller }) => { lab.locks.unlock(board(body), who(caller.holder, body)) } },
-    { method: 'GET', path: '/api/yields', about: 'AI 在等你让出的板子（拿了锁的人看得到，可以回答）', handle: () => lab.locks.yieldsList() },
+    { method: 'GET', path: '/api/yields', about: 'AI 在等你让出的板子（只列出你能回答的：你拿着锁的那些）', handle: ({ caller }) => lab.locks.yieldsList(caller.holder) },
     {
       method: 'POST', path: '/api/yields', about: '回答 AI 的让出请求：board、action=yield（让出）或 deny（继续用）；只有拿锁的人能答',
       handle: ({ body, caller }) => {
@@ -123,7 +123,9 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
         if (!busy) throw new BoardError('conflict', `${name} 没有在启动或刷机，不用取消`)
         const route = lab.backends.route(name)
         if (!route.backend.cancel) throw new BoardError('invalid', `${name} 所在的后端不能取消`)
-        return { message: await lab.kernel.doing([name], 'cancel', '取消中', caller.holder, () => route.backend.cancel!(route.config, route.target)) }
+        // Not `kernel.doing`: the point is to stop what holds the board busy, and `doing` refuses a busy board. The
+        // run under it is not touched — the backend cancels its own job, and that run ends before its next step.
+        return { message: await route.backend.cancel(route.config, route.target) }
       },
     },
     {
