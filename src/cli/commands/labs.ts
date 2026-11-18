@@ -9,6 +9,7 @@ const commands: Command[] = [
       'lab remove <实验室> [--yes]\t删除一个添加的实验室和它的板子（不能有人拿着锁）',
       'lab methods <实验室> [--host <主机>] [--slot <主机>/<槽位>]\t列出实验室后端上报的发现方法、说明和字段',
       'lab discover <实验室> --method <方法> [--set 字段=值 …] [--host <主机>] [--slot <主机>/<槽位>] [--yes]\t用一个后端上报的发现方法找板子（方法可能复位没登记的线），找到一块登记一块',
+      'lab compose <实验室> --method <方法> --set 字段=值 …\t按后端上报的手工登记方法登记一块扫不到的板子（compose 方法；不动板子，不用确认）',
       'lab cancel <实验室>\t让正在进行的发现/重建停下（已经登记的和正在跑的那一步会留着）',
       'lab rebuild <实验室> --host <主机> [--keep-used] [--yes]\t重新布线以后用：忘掉这台主机上发现过的板子和槽位，按现在的接线重新发现并登记；--keep-used 保留在用的板子，只重做变动的（别人拿着板子时也能用）',
     ],
@@ -51,7 +52,7 @@ const commands: Command[] = [
           }
         })
       }
-      if (args[0] !== 'discover' || !args[1]) throw new Error('lab 子命令：kinds | add <实验室> --kind <种类> | remove <实验室> | methods <实验室> | discover <实验室> --method <方法> | cancel <实验室> | rebuild <实验室> --host <主机>')
+      if ((args[0] !== 'discover' && args[0] !== 'compose') || !args[1]) throw new Error('lab 子命令：kinds | add <实验室> --kind <种类> | remove <实验室> | methods <实验室> | discover <实验室> --method <方法> | compose <实验室> --method <方法> --set … | cancel <实验室> | rebuild <实验室> --host <主机>')
       const method = flag('method')
       if (!method) throw new Error('发现要指定后端上报的方法：--method <方法>（boardlab lab methods <实验室> 列出）')
       const values: Record<string, string> = {}
@@ -61,6 +62,11 @@ const commands: Command[] = [
         const split = text.indexOf('=')
         if (split < 1) throw new Error(`--set 要写成 字段=值：${text}`)
         values[text.slice(0, split)] = text.slice(split + 1)
+      }
+      // Describing a board touches nothing on it; finding one may reset what is wired to free lines, so that asks first.
+      if (args[0] === 'compose') {
+        const made = await client.composeBoard(args[1], { method, values, host: flag('host'), slot: flag('slot') })
+        return out(made, () => console.log(made.message))
       }
       if (!flags.has('yes') && !(await confirm(`发现/登记会动实验室 ${args[1]} 里还没登记的端口和槽位。继续？`))) throw new Error('发现板子需要确认（交互确认或 --yes）')
       const result = await client.discoverLab(args[1], { method, values, host: flag('host'), slot: flag('slot') })

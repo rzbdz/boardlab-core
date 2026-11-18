@@ -357,6 +357,10 @@ export class BoardsClient {
     const query = new URLSearchParams({ id, ...(context.host ? { host: context.host } : {}), ...(context.slot ? { slot: context.slot } : {}) })
     return this.call<DiscoveryMethod[]>('GET', `/api/labs/discover/methods?${query}`)
   }
+  /** Register a board a scan cannot see, from a backend's compose method (a person says what each role is). */
+  composeBoard(id: string, request: { method: string, values?: Record<string, string>, host?: string, slot?: string }) {
+    return this.call<{ name: string, message: string }>('POST', '/api/labs/compose', { id, ...request })
+  }
   discoverLab(id: string, request: { method: string, values?: Record<string, string>, host?: string, slot?: string }, signal?: AbortSignal) {
     return this.call<{ message: string, proposals: number, registered?: string[] }>('POST', '/api/labs/discover', { id, confirmed: true, ...request }, signal)
   }
