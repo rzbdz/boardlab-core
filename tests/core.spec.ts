@@ -14,14 +14,14 @@ import { openDatabase } from '../src/core/db.ts'
 import { BoardLab, inLoadOrder } from '../src/core/lab.ts'
 import { main } from '../bare/boardlab.ts'
 import { BoardError } from '../src/core/errors.ts'
-import { API_VERSION, type LabFields } from '../src/shared/types.ts'
+import { API_VERSION, type DiscoveryMethod, type LabFields } from '../src/shared/types.ts'
 import type { Module } from '../src/core/module.ts'
 import type { ConsoleSession } from '../src/core/console.ts'
 import { serve } from '../src/server/http.ts'
 import { RawReply } from '../src/core/api.ts'
 import { parseConfig } from '../src/server/config.ts'
 import { createModules, instances, type CatalogEntry } from '../src/server/catalog.ts'
-import { deviceFilter, type Backend, type BoardTarget, type BootFile, type DownloadCapability, type LabConfig, type LabDevice, type LabSlots, type PortTiming, type RelayCapability, type RenameCapability } from '../src/core/backend.ts'
+import { deviceFilter, type Backend, type BoardTarget, type BootFile, type DiscoveryCapability, type DownloadCapability, type LabConfig, type LabDevice, type LabSlots, type PortTiming, type RelayCapability, type RenameCapability } from '../src/core/backend.ts'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'boardlab-core-')) })
@@ -399,6 +399,47 @@ describe('remote labs', () => {
     await expect(svc.download.boot('lab1-sub0-0', { holder: 'claude:s1', token }, { files: ['https://u:p@images.test/kernel'] })).rejects.toThrow(/不能带账号密码/)
     lab.download.backendFiles = false
     await expect(svc.download.boot('lab1-sub0-0', { holder: 'claude:s1', token }, { files: ['host:/products/Image.itb'] })).rejects.toThrow(/这个实验室不能/)
+  })
+
+  it('registers a board a person described through the compose method alone, and records a failed one', async () => {
+    // A compose method describes a board rather than finding one: no scan runs, nothing on the board is touched, and
+    // no confirmation is asked. The two kinds of method are not interchangeable, and core is what keeps them apart.
+    class ComposeLab extends FakeLab {
+      made: string[] = []
+      refuse = false
+      async methods(): Promise<DiscoveryMethod[]> {
+        return [
+          { id: 'scan', title: '自动发现', about: '逐个拉复位线' },
+          { id: 'note', title: '手工登记', about: '说出板子是什么', compose: true, fields: [
+            { id: 'name', label: '板名', kind: 'text' as const, required: true },
+            { id: 'pins', label: '引脚', kind: 'text' as const }] },
+        ]
+      }
+      async run(): Promise<{ message: string, found: [] }> { throw new Error('a compose method must not be run as a scan') }
+      async register(): Promise<void> {}
+      async compose(_config: LabConfig, method: string, values: Record<string, string>) {
+        if (this.refuse) throw new Error('主机上没有这个名字')
+        this.made.push(`${method} ${values.name} ${values.pins ?? ''}`.trim())
+        return { name: values.name!, message: `登记了 ${values.name}` }
+      }
+      discovery: DiscoveryCapability = { methods: this.methods.bind(this), run: this.run.bind(this), register: this.register.bind(this), compose: this.compose.bind(this) }
+    }
+    const lab = new ComposeLab()
+    const { svc } = labService(lab)
+    await enable(svc)
+    expect(await svc.backends.compose('user:alice', 'lab1', { method: 'note', values: { name: 'ec1', pins: '11,13' } }))
+      .toMatchObject({ name: 'ec1', message: '登记了 ec1' })
+    expect(lab.made).toEqual(['note ec1 11,13'])
+    // A required field is checked by core, from the method's own fields.
+    await expect(svc.backends.compose('user:alice', 'lab1', { method: 'note', values: {} })).rejects.toThrow(/板名/)
+    // Each kind refuses the other's method, in both directions.
+    await expect(svc.backends.compose('user:alice', 'lab1', { method: 'scan', values: {} })).rejects.toThrow(/不是手工登记/)
+    await expect(svc.backends.discover('user:alice', 'lab1', true, { method: 'note', values: { name: 'x' } })).rejects.toThrow(/不是发现方法/)
+    // A register the backend refused is in the history as a failure, not missing from it.
+    lab.refuse = true
+    await expect(svc.backends.compose('user:alice', 'lab1', { method: 'note', values: { name: 'ec2' } })).rejects.toThrow(/没有这个名字/)
+    const failed = svc.kernel.db.prepare("SELECT ok, message FROM actions WHERE kind='lab-compose' ORDER BY id DESC LIMIT 1").get()
+    expect(failed).toMatchObject({ ok: 0, message: '主机上没有这个名字' })
   })
 
   it('lets a lab with its own registry find new boards while others are held, and forget a board only while nobody holds it', async () => {

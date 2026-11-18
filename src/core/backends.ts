@@ -431,7 +431,14 @@ export class Backends {
     const method = chosenMethod(await backend.discovery.methods(this.config(id), context), request.method, id)
     if (!method.compose) throw new BoardError('invalid', `${method.title} 是发现方法，不是手工登记`)
     const values = checkedValues(method, request.values)
-    const made = await backend.discovery.compose(this.config(id), method.id, values, context)
+    let made: { name: string, message: string }
+    try {
+      made = await backend.discovery.compose(this.config(id), method.id, values, context)
+    } catch (error) {
+      // A register that cannot be made is recorded as the failure it was, like every other register.
+      this.lab.kernel.record(actor, `${id}-${values.name ?? ''}`, 'lab-compose', method.title, false, (error as Error).message)
+      throw error
+    }
     this.lab.kernel.record(actor, `${id}-${made.name}`, 'lab-compose', method.title, true, made.message)
     await this.sync(id, actor).catch(() => {})
     return made
@@ -450,6 +457,7 @@ export class Backends {
     checkDiscoveryContext(context)
     const discovery = backend.discovery
     const method = chosenMethod(await discovery.methods(this.config(id), context), request.method, id)
+    if (method.compose) throw new BoardError('invalid', `${method.title} 是手工登记，不是发现方法（用 lab compose）`)
     const values = checkedValues(method, request.values)
     // The slots it looks in show as being discovered: the one named, else the empty ones on the host named.
     const on = this.onLab(id), where = context.slot ?? context.host
