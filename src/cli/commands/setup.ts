@@ -168,12 +168,17 @@ const status: Command = {
     const real = state.boards.filter(board => !board.lab?.empty)
     const mine = real.filter(board => board.lease?.holder === holder)
     const busy = real.filter(board => board.lease && board.lease.holder !== holder)
+    // Boardd working on a board is not the same as a lock: a RAM boot or a flash runs without one, so a board can be
+    // written while its lock says nobody has it. Calling that idle would offer it to the next person.
+    const working = real.filter(board => board.busy && !board.lease)
+    const idle = real.length - mine.length - busy.length - working.length
     const attention = real.filter(board => board.lab?.attention)
-    out({ boardd: client.transport.label, remote, you: holder, version: v, boards: real.length, mine: mine.map(b => b.name), busy: busy.map(b => b.name), attention: attention.map(b => b.name), labs: state.labs }, () => {
+    out({ boardd: client.transport.label, remote, you: holder, version: v, boards: real.length, mine: mine.map(b => b.name), busy: busy.map(b => b.name), working: working.map(b => b.name), attention: attention.map(b => b.name), labs: state.labs }, () => {
       console.log(`boardd   ${client.transport.label}${v?.version ? `  ${v.version}（${v.revision}）` : ''}${v?.newer && v.latest ? `  有新版 ${v.latest.version}：boardlab update` : ''}`)
       console.log(`你       ${holder}`)
-      console.log(`板子     ${real.length} 块：空闲 ${real.length - mine.length - busy.length}，你拿着 ${mine.length}，别人在用 ${busy.length}${attention.length ? `，${attention.length} 块等人操作` : ''}`)
+      console.log(`板子     ${real.length} 块：空闲 ${idle}，你拿着 ${mine.length}，别人在用 ${busy.length}${working.length ? `，boardd 在忙 ${working.length}` : ''}${attention.length ? `，${attention.length} 块等人操作` : ''}`)
       for (const board of mine) console.log(`  你的   ${board.name}（${board.lease!.purpose}）`)
+      for (const board of working) console.log(`  在忙   ${board.name}：${board.busy!.label}（${board.busy!.by}）`)
       for (const board of attention) console.log(`  等人   ${board.name}：${board.lab!.attention}`)
       for (const lab of state.labs) console.log(`实验室   ${lab.id}  ${!lab.enabled ? '没开' : lab.verifyOk === false ? `连不上：${lab.verifyMessage}` : lab.syncOk === false ? `同步失败：${lab.syncMessage}` : `在线，${lab.syncMessage ?? ''}`}`)
       if (!state.labs.length) console.log('实验室   还没有：网页的设置里添加（或 boardlab lab add）')
