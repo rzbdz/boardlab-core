@@ -43,13 +43,18 @@ const commands: Command[] = [
         const methods = await client.discoverMethods(args[1], { host: flag('host'), slot: flag('slot') })
         return out(methods, () => {
           if (!methods.length) console.log('这个实验室现在没有可用的发现方法')
-          for (const method of methods) {
-            // A method that describes a board is not a scan: saying which it is here is what keeps a person from
-            // asking a scan to register one (the two refuse each other).
-            console.log(`${method.id}\t${method.title}${method.compose ? '（手工登记）' : ''}：${method.about}`)
-            for (const field of method.fields ?? []) {
-              const options = field.options?.length ? `（${field.options.map(option => `${option.value}=${option.label}`).join('，')}）` : ''
-              console.log(`  --set ${field.id}=<${field.label}>${field.required ? ' 必填' : ''}${options}`)
+          // A method that describes a board is not a scan (the two refuse each other's method), so a lab that offers
+          // both lists them apart. A lab that offers one kind needs no heading to tell them apart.
+          const mixed = methods.some(method => method.compose) && methods.some(method => !method.compose)
+          for (const kind of ['scan', 'compose'] as const) {
+            const group = methods.filter(method => !!method.compose === (kind === 'compose'))
+            if (mixed && group.length) console.log(kind === 'compose' ? '手工登记一块板子：' : '找没登记过的板子：')
+            for (const method of group) {
+              console.log(`${method.id}\t${method.title}：${method.about}`)
+              for (const field of method.fields ?? []) {
+                const options = field.options?.length ? `（${field.options.map(option => `${option.value}=${option.label}`).join('，')}）` : ''
+                console.log(`  --set ${field.id}=<${field.label}>${field.required ? ' 必填' : ''}${options}`)
+              }
             }
           }
         })
