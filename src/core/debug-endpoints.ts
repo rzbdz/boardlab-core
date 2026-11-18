@@ -17,6 +17,18 @@ export function debugEndpoints(lab: BoardLab): Endpoint[] {
     if (!debug) throw new BoardError('invalid', `${name} 所在的后端不提供调试`)
     return { route, debug }
   }
+  /**
+   * The boards with a session this core started that has not been stopped since. The session lives in the backend
+   * (a process, a unit, a pair of pins held), so nothing in boardd sees it end by itself; a lock ending is what ends
+   * it, as the endpoint's own description says.
+   */
+  const live = new Set<string>()
+  const end = async (board: string) => {
+    if (!live.delete(board)) return
+    try { const { route, debug } = routeOf(board); await debug.stop(route.config, route.target) }
+    catch { /* the board may be gone from its backend; the session is as stopped as it can be */ }
+  }
+  lab.locks.onEnd(board => { void end(board) })
   const streamOf = (body: any) => {
     const name = lab.boards.resolve(required(body.board, 'board'))
     const { route, debug } = routeOf(name)
@@ -39,7 +51,10 @@ export function debugEndpoints(lab: BoardLab): Endpoint[] {
           if (action === 'stop') return debug.stop(route.config, route.target).then(message => ({ message }))
           return debug.action(route.config, route.target, action)
         }
+        // A session follows the lock: once started it is stopped when the lock ends, and stopping it ends that.
         const result = await lab.kernel.doing([name], 'debug', `调试：${action}`, caller.holder, async () => run(), { lease: held.id })
+        if (action === 'start') live.add(name)
+        if (action === 'stop') live.delete(name)
         lab.kernel.record(caller.holder, name, 'debug', action, true)
         return { debug: result }
       },

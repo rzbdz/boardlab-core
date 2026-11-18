@@ -1737,6 +1737,30 @@ describe('a board\'s debug path', () => {
     expect(svc.boards.get('lab1-sub0-1').lab?.debug ?? null).toBeNull()
   })
 
+  it('stops a session its lock ended, so a board is never left debugged by nobody', async () => {
+    // The endpoint promises the session follows the lock. The session runs in the backend (a process, a unit, two
+    // held pins), which nothing in boardd watches: ending the lock is the only thing that ends it.
+    const lab = new DebugLab()
+    const stops: string[] = []
+    ;(lab.debug as any).stop = async () => { stops.push('stopped'); return 'stopped' }
+    const { svc } = coreLab({ lab })
+    await enable(svc)
+    const { token } = await svc.locks.lock('lab1-sub0-0', 'user:alice', '调试')
+    const debug = (body: Record<string, unknown>) => svc.api.match('POST', '/api/debug')!.endpoint.handle({
+      body, query: new URLSearchParams(), params: {}, caller: { holder: 'user:alice', local: true },
+      signal: new AbortController().signal, upload: null,
+    })
+    await debug({ board: 'lab1-sub0-0', action: 'start', token })
+    expect(stops).toEqual([])
+    svc.locks.unlock('lab1-sub0-0', { holder: 'user:alice', token })
+    // The end listener runs on a microtask; the stop itself is asynchronous.
+    for (let i = 0; i < 50 && stops.length === 0; i++) await new Promise(resolve => setTimeout(resolve, 2))
+    expect(stops).toEqual(['stopped'])
+    // A session stopped by hand is not stopped a second time when the lock ends.
+    try { await debug({ board: 'lab1-sub0-0', action: 'stop', token }) } catch { /* the lock is gone; the stop itself is what this checks */ }
+    expect(stops).toEqual(['stopped'])
+  })
+
   it('streams a session\'s bytes and ends with it, so a reader is never left waiting on a closed session', async () => {
     const lab = new DebugLab()
     const { svc } = coreLab({ lab })
