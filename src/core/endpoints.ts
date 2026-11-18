@@ -223,6 +223,15 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
         })
       },
     },
+    {
+      method: 'POST', path: '/api/labs/compose', about: '手工登记一块扫不到的板子（后端的 compose 方法：method、values、可选 host/slot）：比如只有 GPIO 调试口的板子', handle: ({ body, caller }) => {
+        const values = body.values && typeof body.values === 'object' && !Array.isArray(body.values)
+          ? Object.fromEntries(Object.entries(body.values).map(([key, value]) => [key, String(value)])) : {}
+        return lab.backends.compose(caller.holder, required(body.id, 'id'), {
+          method: required(body.method, 'method'), values, host: optional(body.host), slot: optional(body.slot),
+        })
+      },
+    },
     { method: 'POST', path: '/api/labs/discover/cancel', about: '让正在进行的发现或重建停下（id）：已经登记的和正在跑的那一步会留着', handle: ({ body, caller }) => lab.backends.cancelDiscovery(caller.holder, required(body.id, 'id')) },
     { method: 'POST', path: '/api/labs/rebuild', about: '重新布线以后，让实验室重建一台主机：忘掉它的板子，按现在的接线重新发现；keepInUse 只重做变动的，保留在用的板子', handle: ({ body, caller }) => lab.backends.rebuild(caller.holder, required(body.id, 'id'), body.confirmed === true, required(body.host, 'host'), body.keepInUse === true) },
   ]

@@ -237,6 +237,13 @@ export interface DiscoveryCapability {
   /** Register a board a scan found, under `name` (the backend's own name for it). */
   register(config: LabConfig, finding: LabFinding, name: string): Promise<void>
   /**
+   * A board no scan can find — its roles are not USB or a cabled console, so a person says what it is. The method
+   * (`compose: true` in its definition, see `DiscoveryMethod`) carries the backend's own fields; `values` are what a
+   * person entered, keyed by field id. Registers the board under `values.name` and returns the registered name.
+   * Throwing says why it cannot (a missing field, a choice the backend no longer offers).
+   */
+  compose?(config: LabConfig, method: string, values: DiscoveryValues, context: DiscoveryContext): Promise<{ name: string, message: string }>
+  /**
    * Start one host over after it was re-cabled: drop the backend's own record of what is wired to `host` and find
    * its boards again, registering each as found (`registered`), as `discover` does. Boards the backend was told about
    * by hand stay. It resets boards, so boardd runs it only on a person's confirmation while none of that host's boards

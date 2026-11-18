@@ -288,6 +288,12 @@ export interface DiscoveryMethod {
   title: string
   about: string
   fields?: DiscoveryField[]
+  /**
+   * A board a person describes rather than one a scan found: its roles are neither USB nor a cabled console (a debug
+   * path bit-banged on header pins, say), so the backend's `compose` registers it from the fields. A page lists it
+   * with the ways to add a board instead of with the scans, and need not ask anyone to confirm a hardware reset.
+   */
+  compose?: boolean
 }
 
 /** What the page knows when it asks for methods: one host, or one empty slot on it. */

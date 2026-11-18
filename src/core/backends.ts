@@ -419,6 +419,25 @@ export class Backends {
   }
 
   /**
+   * Have an instance register a board a person described, with one of its `compose` methods (a board whose roles a scan
+   * cannot see: a debug path on header pins, a board with no USB). The backend builds the record from the fields; the
+   * board appears in its inventory on the next sync. No confirmation: nothing on the board is touched.
+   */
+  async compose(actor: string, id: string, request: { method: string, values?: DiscoveryValues, host?: string | null, slot?: string | null }): Promise<{ name: string, message: string }> {
+    const { backend } = this.configurable(id)
+    if (!backend.discovery?.compose) throw new BoardError('invalid', `实验室 ${id} 不能手工登记板子`)
+    const context = { host: request.host ?? null, slot: request.slot ?? null }
+    checkDiscoveryContext(context)
+    const method = chosenMethod(await backend.discovery.methods(this.config(id), context), request.method, id)
+    if (!method.compose) throw new BoardError('invalid', `${method.title} 是发现方法，不是手工登记`)
+    const values = checkedValues(method, request.values)
+    const made = await backend.discovery.compose(this.config(id), method.id, values, context)
+    this.lab.kernel.record(actor, `${id}-${made.name}`, 'lab-compose', method.title, true, made.message)
+    await this.sync(id, actor).catch(() => {})
+    return made
+  }
+
+  /**
    * Have an instance look for new boards with one of its reported methods. The backend looks only on what no board
    * uses yet, so boards in use are never touched and held boards do not stop it. It may reset what is plugged into
    * free lines, so it needs confirmation.
