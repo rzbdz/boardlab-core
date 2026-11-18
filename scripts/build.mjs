@@ -20,7 +20,9 @@ const cli = option('cli', join(core, 'bare/boardlab.ts'))
 await mkdir(out, { recursive: true })
 await build({ entryPoints: { cli, client: join(core, 'src/shared/client.ts') }, outdir: out, bundle: true, splitting: true, format: 'esm', platform: 'node', target: 'node24', sourcemap: true, banner: {
   // CommonJS dependencies bundled into ES modules still call require(): give every file one.
-  js: "#!/usr/bin/env node\nimport { createRequire as __boardlabCreateRequire } from 'node:module'; const require = __boardlabCreateRequire(import.meta.url);",
+  // `--no-warnings`: node's SQLite is experimental and every run would print its warning before anything else a
+  // person or a program asked for. The program says what it needs to; nothing is hidden that a user acts on.
+  js: "#!/usr/bin/env -S node --no-warnings\nimport { createRequire as __boardlabCreateRequire } from 'node:module'; const require = __boardlabCreateRequire(import.meta.url);",
 } })
 await chmod(join(out, 'cli.js'), 0o755)
 console.log(`Built the boardlab CLI and its client into ${out}.`)
