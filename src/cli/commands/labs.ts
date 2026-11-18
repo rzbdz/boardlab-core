@@ -9,7 +9,7 @@ const commands: Command[] = [
       'lab remove <实验室> [--yes]\t删除一个添加的实验室和它的板子（不能有人拿着锁）',
       'lab methods <实验室> [--host <主机>] [--slot <主机>/<槽位>]\t列出实验室后端上报的发现方法、说明和字段',
       'lab discover <实验室> --method <方法> [--set 字段=值 …] [--host <主机>] [--slot <主机>/<槽位>] [--yes]\t用一个后端上报的发现方法找板子（方法可能复位没登记的线），找到一块登记一块',
-      'lab compose <实验室> --method <方法> --set 字段=值 …\t按后端上报的手工登记方法登记一块扫不到的板子（compose 方法；不动板子，不用确认）',
+      'lab compose <实验室> --method <方法> --set 字段=值 … [--host <主机>] [--slot <主机>/<槽位>]\t按后端上报的手工登记方法登记一块扫不到的板子（compose 方法；不动板子，不用确认）',
       'lab cancel <实验室>\t让正在进行的发现/重建停下（已经登记的和正在跑的那一步会留着）',
       'lab rebuild <实验室> --host <主机> [--keep-used] [--yes]\t重新布线以后用：忘掉这台主机上发现过的板子和槽位，按现在的接线重新发现并登记；--keep-used 保留在用的板子，只重做变动的（别人拿着板子时也能用）',
     ],
@@ -44,7 +44,9 @@ const commands: Command[] = [
         return out(methods, () => {
           if (!methods.length) console.log('这个实验室现在没有可用的发现方法')
           for (const method of methods) {
-            console.log(`${method.id}\t${method.title}：${method.about}`)
+            // A method that describes a board is not a scan: saying which it is here is what keeps a person from
+            // asking a scan to register one (the two refuse each other).
+            console.log(`${method.id}\t${method.title}${method.compose ? '（手工登记）' : ''}：${method.about}`)
             for (const field of method.fields ?? []) {
               const options = field.options?.length ? `（${field.options.map(option => `${option.value}=${option.label}`).join('，')}）` : ''
               console.log(`  --set ${field.id}=<${field.label}>${field.required ? ' 必填' : ''}${options}`)
