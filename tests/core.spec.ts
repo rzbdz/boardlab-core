@@ -226,6 +226,15 @@ describe('remote labs', () => {
     expect((await enable(svc, { password: null, jump: 'ops@lab.test:2222' })).verifyOk).toBe(true)
     expect(lab.calls.at(-1)).toBe('verify admin ops@lab.test:2222')
     expect(JSON.stringify([svc.state('user:alice'), svc.history()])).not.toMatch(/lab-password|wrong-password/)
+    // Forgetting it takes saying so: omitted, null or empty keep it (a form saved without retyping it).
+    await enable(svc, { password: '', jump: 'ops@lab.test:2222' })
+    expect(svc.backends.config('lab1').password).toBe('lab-password')
+    await expect(enable(svc, { password: null, clearPassword: true })).rejects.toThrow(/先填密码/)
+    expect(svc.backends.config('lab1').password).toBe('lab-password')
+    await svc.backends.configure('user:alice', 'lab1', { enabled: false, clearPassword: true })
+    expect(svc.backends.labSettings()).toMatchObject([{ id: 'lab1', hasPassword: false }])
+    expect(svc.history().actions.find(action => action.kind === 'lab-config')).toMatchObject({ message: '已去掉密码' })
+    await enable(svc, { jump: 'ops@lab.test:2222' })
     await expect(enable(svc, { jump: 'not a host' })).rejects.toThrow(/跳板机格式不对/)
     await expect(enable(svc, { devices: 'sub0-0; rm' })).rejects.toThrow(/不合法的名字/)
     // Lab boards follow the lab: they are not removed by hand, exported, or given a slot.

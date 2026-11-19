@@ -347,10 +347,11 @@ export class Backends {
   }
 
   /**
-   * Save an instance's access and whether boardd uses it. The password is write-only: omit it to keep the stored one.
+   * Save an instance's access and whether boardd uses it. The password is write-only: omit it (or give null or '') to
+   * keep the stored one; `clearPassword` forgets it, for an instance that now takes none (a host without a token).
    * Enabling checks the access and lists the boards; disabling takes them off the list, once nobody holds any of them.
    */
-  async configure(actor: string, id: string, input: { enabled: boolean, url?: string | null, username?: string | null, password?: string | null, jump?: string | null, devices?: string | null }): Promise<LabSettings> {
+  async configure(actor: string, id: string, input: { enabled: boolean, url?: string | null, username?: string | null, password?: string | null, clearPassword?: boolean, jump?: string | null, devices?: string | null }): Promise<LabSettings> {
     this.configurable(id)
     const settings = this.settings(id)
     let url: string | null = null
@@ -367,7 +368,8 @@ export class Backends {
     const bad = devices.find(item => !DEVICE_PATTERN.test(item))
     if (bad) throw new BoardError('invalid', `设备范围里有不合法的名字：${bad}（只能用字母、数字、点、横线、下划线和 *）`)
     const username = input.username?.trim() || null
-    const password = input.password || settings.get('password')
+    const clear = input.clearPassword === true && !input.password
+    const password = input.password || (clear ? null : settings.get('password'))
     const missing = this.missing(id, { url, username, password })
     if (input.enabled && missing.length) throw new BoardError('invalid', `开启实验室要先填${missing.join('、')}`)
     if (!input.enabled) {
@@ -379,11 +381,12 @@ export class Backends {
       settings.set('url', url)
       settings.set('username', username)
       if (input.password) settings.set('password', input.password)
+      else if (clear) settings.set('password', null)
       settings.set('jump', jump)
       settings.set('devices', devices.length ? devices.join(' ') : null)
       if (!input.enabled) this.dropBoards(id, () => true)
     })
-    this.lab.kernel.record(actor, null, 'lab-config', `${id}${input.enabled ? ' 开启' : ' 关闭'}`, true, input.password ? '已更新密码' : null)
+    this.lab.kernel.record(actor, null, 'lab-config', `${id}${input.enabled ? ' 开启' : ' 关闭'}`, true, input.password ? '已更新密码' : clear ? '已去掉密码' : null)
     this.lab.kernel.changed(null)
     this.follow()
     if (input.enabled) return this.test(actor, id)
