@@ -36,15 +36,23 @@ interface Drain { type: 'drain' }
 const isReady = (message: unknown): message is Ready => (message as Ready | undefined)?.type === 'ready'
 
 /**
- * Node's V8 in a worker segfaults on some RISC-V builds under large request bodies: a 99-200 MB file
- * upload killed the worker every time, while the same work on an x86 host and in a bare `node` server on the
- * same board was fine. `--single-threaded` (no background GC/compiler threads) was verified there: repeated
- * 200 MB uploads stay up. Workers take it on RISC-V, and a supervisor on that architecture gets it too (it is
- * harmless, and the flag does not exist on every Node build, so it never fails startup).
+ * The V8 flags a worker runs with: the supervisor's own, plus what the machine needs.
+ *
+ * On RISC-V, Node's V8 is not stable in every tier. A worker segfaulted under large request bodies (a 99-200 MB
+ * upload killed it every time, while the same work on x86 and in a bare `node` server on the same board was fine);
+ * `--single-threaded` (no background GC/compiler threads) kept it up. Long-running workers also crashed every 10-30
+ * minutes in JIT-compiled code; the baseline compiler (Sparkplug) and the mid-tier optimizer (Maglev) are the tiers
+ * they died in, so workers there run without both and keep the interpreter and TurboFan.
+ *
+ * `BOARDLAB_WORKER_NODE_FLAGS` (space-separated) replaces those machine defaults, for trying other flags without a
+ * release; set it empty to run workers with only the supervisor's flags. A flag already given is not repeated.
  */
-export function workerExecArgv(arch: string = process.arch): string[] {
-  if (arch !== 'riscv64' || process.execArgv.includes('--single-threaded')) return process.execArgv
-  return [...process.execArgv, '--single-threaded']
+export const RISCV64_WORKER_FLAGS = ['--single-threaded', '--no-sparkplug', '--no-maglev']
+
+export function workerExecArgv(arch: string = process.arch, env: NodeJS.ProcessEnv = process.env, execArgv: string[] = process.execArgv): string[] {
+  const override = env.BOARDLAB_WORKER_NODE_FLAGS
+  const wanted = override !== undefined ? override.split(/\s+/).filter(Boolean) : arch === 'riscv64' ? RISCV64_WORKER_FLAGS : []
+  return [...execArgv, ...wanted.filter((flag, index) => !execArgv.includes(flag) && wanted.indexOf(flag) === index)]
 }
 
 export async function supervise(options: SupervisorOptions): Promise<void> {
