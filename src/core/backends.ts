@@ -66,6 +66,8 @@ export class Backends {
     lab.locks.addOccupant(target => this.devices.get(target)?.heldBy ?? null)
     lab.locks.addTarget(target => [...this.instances.values()].some(instance => instance.backend.lockTarget?.(target) ?? false))
     lab.locks.addFollower({ binding: true, follow: target => this.followLease(target) })
+    // A lease kept for a run that outlived its lock is given back once the run ends.
+    lab.kernel.onIdle(target => { if (!lab.locks.held(target)) lab.locks.stir(target) })
     lab.locks.gated = target => { try { return !!this.route(target).backend.serial.gated } catch { return false } }
     lab.boards.addView((board, record) => this.view(board, record))
     lab.proposals.addOwner({ owns: proposal => typeof proposal.change.lab === 'string', resolve: (actor, proposals, decision, given) => this.resolve(actor, proposals, decision, given) })
@@ -243,7 +245,9 @@ export class Backends {
 
   /**
    * Make a board's backend lease follow its lock: held for the lock's holder (renewed, and renamed on handover or
-   * steal) while the board is locked, given back when it is free. Failures are kept and shown.
+   * steal) while the board is locked, given back when it is free. A run that outlives the lock (a flash, which is not
+   * stopped halfway) keeps the lease until it ends: the backend's run is under that lease, and stopping it takes it.
+   * Failures are kept and shown.
    */
   private async followLease(board: string): Promise<string | null> {
     let route: Route
@@ -252,10 +256,11 @@ export class Backends {
     if (!lease || !route.isBoard) return null
     const token = route.target.lease
     const held = this.lab.locks.held(board)
+    const running = held || !token ? null : this.lab.kernel.busy.get(board) ?? null
     const before = this.leaseErrors.get(board) ?? null
     let error: string | null = null
-    if (held) {
-      const who = { holder: `boardlab:${held.holder}`, purpose: held.purpose }
+    if (held || running) {
+      const who = held ? { holder: `boardlab:${held.holder}`, purpose: held.purpose } : { holder: `boardlab:${running!.by}`, purpose: running!.label }
       try {
         let next: string
         // A lease that ran out while boardd was away is taken again rather than renewed.
@@ -757,10 +762,11 @@ export class Backends {
     status(true, message)
     if (listing() !== before) this.lab.kernel.record(actor, null, 'lab-sync', id, true, message)
     if (listing() !== before || known() !== beforeStatus) this.lab.kernel.changed(null)
-    // Keep backend leases alive, and hand boards someone let go of in the backend to whoever queued for them here.
+    // Keep backend leases alive (a run that outlived its lock keeps one too), and hand boards someone let go of in the
+    // backend to whoever queued for them here.
     for (const name of listed) {
-      if (this.lab.locks.held(name)) await this.lab.locks.settle(name)
-      else if (this.lab.locks.queue(name).length) this.lab.locks.promote(name)
+      if (this.lab.locks.held(name) || this.lab.kernel.busy.has(name)) await this.lab.locks.settle(name)
+      if (!this.lab.locks.held(name) && this.lab.locks.queue(name).length) this.lab.locks.promote(name)
     }
   }
 

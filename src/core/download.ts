@@ -226,7 +226,7 @@ export class Download {
 
 /** A cancelled run ends here, before its next step. */
 function stopped(signal?: AbortSignal) {
-  if (signal?.aborted && signal.reason instanceof CancelledError) throw signal.reason
+  if (signal?.aborted && signal.reason instanceof CancelledError && !signal.reason.refused) throw signal.reason
 }
 
 /**

@@ -67,7 +67,7 @@ export class Kernel {
     this.running.set(entry, { lease: options.lease ?? null, stop, targets: boards })
     const changed = () => { if (boards.length === 1) this.changed(boards[0]!); else this.changed(null) }
     changed()
-    const cancelled = () => stop.signal.aborted && stop.signal.reason instanceof CancelledError ? stop.signal.reason : null
+    const cancelled = () => stop.signal.aborted && stop.signal.reason instanceof CancelledError && !stop.signal.reason.refused ? stop.signal.reason : null
     try {
       return await run(text => { entry.line = text; changed() }, stop.signal)
     } catch (error) {
@@ -75,27 +75,44 @@ export class Kernel {
       throw reason && !(error instanceof CancelledError) ? reason : error
     } finally {
       this.running.delete(entry)
-      for (const board of boards) if (this.busy.get(board) === entry) this.busy.delete(board)
+      const freed = boards.filter(board => this.busy.get(board) === entry)
+      for (const board of freed) this.busy.delete(board)
       changed()
+      for (const board of freed) for (const listener of this.idles) listener(board)
     }
   }
+
+  private readonly idles: Array<(target: string) => void> = []
+  /** Told each time a run ends and its board is no longer busy: what waited for the run to end (a lease to give back) goes on. */
+  onIdle(listener: (target: string) => void) { this.idles.push(listener) }
 
   /**
    * Stop what is being done to `target` (a board, or `lab:<id>`), whatever kind of operation it is: its run's signal
    * aborts with a CancelledError. Throws when nothing runs there, or when what runs cannot be stopped halfway. The
    * boards stay busy until the run has ended.
+   *
+   * `answered` settles once the run's backend has answered the cancel (`CancelledError.answer`): it rejects with the
+   * backend's reason when the backend refused to stop, and the run then goes on to its end. Asked again, the same
+   * answer comes back.
    */
-  cancel(target: string, by: string): { message: string, busy: Busy, targets: string[] } {
+  cancel(target: string, by: string): { message: string, busy: Busy, targets: string[], answered: Promise<void> } {
     const entry = this.busy.get(target)
     const run = entry ? this.running.get(entry) : undefined
     if (!entry || !run) throw new BoardError('conflict', `${target} 没有在做什么，不用取消`)
     const what = entry.label.replace(/中$/, '')
     if (!entry.cancellable) throw new BoardError('invalid', `${target} 正在${what}，这一步不能中途取消，等它结束`)
+    const board = target.startsWith('lab:') ? null : target
+    let answered: Promise<void>
     if (!run.stop.signal.aborted) {
-      run.stop.abort(new CancelledError(`已取消：${target} 的${what}被 ${by} 取消了`))
-      this.record(by, target.startsWith('lab:') ? null : target, 'cancel', entry.label, true, null)
+      const reason = new CancelledError(`已取消：${target} 的${what}被 ${by} 取消了`)
+      run.stop.abort(reason)
+      answered = reason.answered()
+      answered.then(() => this.record(by, board, 'cancel', entry.label, true, null), error => this.record(by, board, 'cancel', entry.label, false, (error as Error).message))
+    } else {
+      const reason = run.stop.signal.reason
+      answered = reason instanceof CancelledError ? reason.answered() : Promise.resolve()
     }
-    return { message: `让 ${target} 的${what}停下：正在做的那一步结束后就停`, busy: entry, targets: run.targets }
+    return { message: `让 ${target} 的${what}停下：正在做的那一步结束后就停`, busy: entry, targets: run.targets, answered }
   }
 
   /**

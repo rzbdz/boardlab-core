@@ -153,6 +153,53 @@ describe('cancelling an operation', () => {
     } finally { Object.assign(console, quiet); await running.close() }
   })
 
+  it('keeps the backend lease while a run outlives its lock, and says when the backend refused to stop it', async () => {
+    const leases: string[] = []
+    let refuse: string | null = null
+    let finish!: () => void
+    const backend: Backend = {
+      kind: '测试', relay: { reset: async () => {}, enterDownload: async () => {} }, serial: { open: async () => { throw new Error('none') } },
+      download: { stage: async () => 'OKAY', present: async () => true },
+      cancels: ['flash'],
+      lease: { take: async () => { leases.push('take'); return 'L1' }, give: async (_config, _device, token) => { leases.push(`give ${token}`) } },
+      builds: {
+        boot: async () => '',
+        flash: (_config, target, _pkg, _progress, signal) => new Promise<string>((resolve, reject) => {
+          finish = () => resolve('written')
+          signal?.addEventListener('abort', () => {
+            // The backend asks its own side to stop, under the lease the run holds, and hands the answer over.
+            const asked = refuse ? Promise.reject(new Error(refuse)) : Promise.resolve()
+            ;(signal.reason as CancelledError).answer?.(asked)
+            if (!refuse && target.lease === 'L1') setTimeout(() => reject(new Error('stopped')), 5)
+          }, { once: true })
+        }),
+      },
+    }
+    const svc = lab(backend)
+    const flash = async () => {
+      const { token } = await svc.locks.lock('b1', 'claude:s1', '刷机')
+      const running = call(svc, '/api/flash/package', 'claude:s1', { board: 'b1', token, url: 'https://images.test/pkg.zip' }).then(out => out, error => error)
+      await tick()
+      svc.locks.unlock('b1', { holder: 'claude:s1', token })
+      await svc.locks.settle('b1')
+      return { running }
+    }
+    // Unlocked while it runs: the lease stays with the run, and anyone's cancel stops it under that lease.
+    const { running: first } = await flash()
+    expect(leases).toEqual(['take', 'take'])
+    expect(await call(svc, '/api/cancel', 'user:bob', { target: 'b1' })).toMatchObject({ cancelled: true })
+    expect(await first).toBeInstanceOf(CancelledError)
+    await svc.locks.settle('b1')
+    expect(leases.at(-1)).toBe('give L1')
+    // A backend that will not stop says why, and the run goes on to its end.
+    refuse = 'the host is past the point where it can stop'
+    const { running: second } = await flash()
+    await expect(call(svc, '/api/cancel', 'user:bob', { target: 'b1' })).rejects.toMatchObject({ code: 'hardware', message: expect.stringContaining('past the point') })
+    expect(svc.boards.get('b1').busy).toMatchObject({ kind: 'boot' })
+    finish()
+    expect(await second).toMatchObject({ output: 'written' })
+  })
+
   it('cancels a run on a lab by `lab:<id>`', async () => {
     const svc = lab(new Waiting())
     let seen: AbortSignal | null = null

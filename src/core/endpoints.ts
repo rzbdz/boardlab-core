@@ -36,21 +36,33 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
    * Stop what boardd is doing to a board or a lab (`lab:<id>`), whatever it is: a lab's discovery, or a run on the
    * board or lab that its backend can stop. A board someone holds is cancelled by its holder only; what runs on a free
    * board (a lab's search, a flash whose lock was given back) by anyone. A board boardd runs nothing on, but whose
-   * backend may still be running something of its own, is handed to the backend's `cancel`.
+   * backend may still be running something of its own, is handed to the backend's `cancel`. A cancel the backend
+   * refused is an error, never an answer that it stops.
    */
   const cancel = async (target: string, holder: string, body: any): Promise<{ message: string, cancelled: true }> => {
     const lab_ = target.match(/^lab:(.+)$/)?.[1]
     if (lab_ && lab.backends.discovering(lab_)) return { ...(await lab.backends.cancelDiscovery(holder, lab_)), cancelled: true }
     const name = lab_ ? target : lab.boards.resolve(target)
     if (!lab_ && lab.locks.held(name)) lab.locks.authorize(name, who(holder, body))
-    if (lab.kernel.busy.has(name)) return { message: lab.kernel.cancel(name, holder).message, cancelled: true }
+    if (lab.kernel.busy.has(name)) {
+      const asked = lab.kernel.cancel(name, holder)
+      // A backend that refused to stop says why; the run goes on, and the board stays busy until it ends.
+      try { await asked.answered }
+      catch (error) { throw new BoardError('hardware', `${name} 没有停下：${(error as Error).message}（它还在做，做完板子才空出来）`) }
+      return { message: asked.message, cancelled: true }
+    }
     const elsewhere = lab.kernel.cancelElsewhere(name, holder)
     if (elsewhere) return { message: elsewhere, cancelled: true }
     if (lab_) throw new BoardError('conflict', `实验室 ${lab_} 没有在做什么，不用取消`)
     const route = lab.backends.route(name)
     if (!route.backend.cancel) throw new BoardError('conflict', `${name} 没有在做什么，不用取消`)
     lab.locks.authorize(name, who(holder, body))
-    const message = await route.backend.cancel(route.config, route.target)
+    let message: string
+    try { message = await route.backend.cancel(route.config, route.target) }
+    catch (error) {
+      lab.kernel.record(holder, name, 'cancel', null, false, (error as Error).message)
+      throw new BoardError('hardware', `${name} 没有停下：${(error as Error).message}`)
+    }
     lab.kernel.record(holder, name, 'cancel', null, true, message)
     return { message, cancelled: true }
   }
