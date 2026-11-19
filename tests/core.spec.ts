@@ -1688,6 +1688,12 @@ describe('CLI arguments', () => {
     expect(lock.flags.get('wait')).toBe(true)
     expect(lock.flags.get('for')).toBe('调试')
   })
+
+  it('takes --cancel-on-interrupt as a switch, so the files after it stay files', () => {
+    const boot = parseArgs(['boot', 'k1', '--cancel-on-interrupt', 'fsbl', 'uboot'])
+    expect(boot.positional).toEqual(['boot', 'k1', 'fsbl', 'uboot'])
+    expect(boot.flags.get('cancel-on-interrupt')).toBe(true)
+  })
 })
 
   it('records a lock that was refused, with who asked and why not', async () => {
