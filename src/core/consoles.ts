@@ -18,8 +18,20 @@ export interface ConsoleTiming {
   typingIdleMs: number
   /** How much recent output a watched console keeps for viewers who arrive later. */
   watchLines: number
+  /**
+   * A console whose backend failed to open (or closed again at once) is not opened again for this long, doubling with
+   * each failure up to `openRetryMaxMs`: viewers retrying meanwhile get the last error at once, rather than each retry
+   * starting another backend connection.
+   */
+  openRetryMs: number
+  openRetryMaxMs: number
 }
-export const CONSOLE_TIMING: ConsoleTiming = { watchIdleMs: 30_000, typingIdleMs: 60_000, watchLines: 2_000 }
+export const CONSOLE_TIMING: ConsoleTiming = { watchIdleMs: 30_000, typingIdleMs: 60_000, watchLines: 2_000, openRetryMs: 1_000, openRetryMaxMs: 30_000 }
+/** A backend session that ends sooner than this after it opened counts as a failed open. */
+const SHORT_LIVED_MS = 5_000
+
+/** The last time a console's backend failed to open: what it said, and when it may be tried again. */
+interface Failure { error: string, code: BoardError['code'], count: number, until: number }
 
 interface Watch {
   key: string
@@ -35,12 +47,33 @@ interface Watch {
 
 export class Consoles {
   private readonly watches = new Map<string, Watch>()
+  private readonly failures = new Map<string, Failure>()
+  private readonly shutdowns = new Set<(reason: string) => void>()
   private readonly typing = new Map<string, { session: Promise<ConsoleSession>, timer: ReturnType<typeof setTimeout> | null }>()
   /** People who typed through a watched console, so their input is recorded once per console. */
   private readonly humans = new Set<string>()
 
-  constructor(private readonly lab: BoardLab, private readonly timing: ConsoleTiming = CONSOLE_TIMING) {
+  private readonly timing: ConsoleTiming
+
+  constructor(private readonly lab: BoardLab, timing: Partial<ConsoleTiming> = {}) {
+    this.timing = { ...CONSOLE_TIMING, ...timing }
     lab.locks.onEnd(board => this.closeTyping(board))
+  }
+
+  /** Streams that want to say boardd is stopping before it closes them (see `shutdown`). */
+  onShutdown(listener: (reason: string) => void) { this.shutdowns.add(listener) }
+  offShutdown(listener: (reason: string) => void) { this.shutdowns.delete(listener) }
+  /** boardd is stopping: tell every console stream why, before its connection goes. */
+  shutdown(reason: string) {
+    for (const listener of [...this.shutdowns]) { this.shutdowns.delete(listener); try { listener(reason) } catch { /* a stream already gone */ } }
+  }
+
+  /** The backend failed to open the console (or its session ended at once): hold off the next open for a while. */
+  private failed(key: string, error: unknown) {
+    const count = (this.failures.get(key)?.count ?? 0) + 1
+    const wait = Math.min(this.timing.openRetryMs * 2 ** (count - 1), this.timing.openRetryMaxMs)
+    const message = error instanceof Error ? error.message : String(error)
+    this.failures.set(key, { error: message, code: error instanceof BoardError ? error.code : 'hardware', count, until: this.lab.kernel.now() + wait })
   }
 
   /**
@@ -52,12 +85,19 @@ export class Consoles {
     const key = `${board}\0${chip.die}`
     let watch = this.watches.get(key)
     if (!watch) {
+      // A console that just failed is not opened again yet: every viewer retrying gets the backend's last word.
+      const failure = this.failures.get(key)
+      const now = this.lab.kernel.now()
+      if (failure && now < failure.until) {
+        throw new BoardError(failure.code, `${failure.error}（${Math.ceil((failure.until - now) / 1000)} 秒后再试）`)
+      }
       const route = this.lab.backends.route(board, chip.die)
       const opening = route.backend.serial.open(route.config, route.target, { history: true })
-      const created: Watch = { key, session: opening, lines: [], partial: '', outputs: new Set(), closes: new Set(), viewers: 0, idle: null, lastSeen: this.lab.kernel.now() }
+      const created: Watch = { key, session: opening, lines: [], partial: '', outputs: new Set(), closes: new Set(), viewers: 0, idle: null, lastSeen: now }
       watch = created
       this.watches.set(key, created)
       opening.then(session => {
+        const opened = this.lab.kernel.now()
         created.lines = session.history.slice(-this.timing.watchLines)
         session.onOutput(data => {
           const text = created.partial + data.toString('utf8')
@@ -66,8 +106,18 @@ export class Consoles {
           if (parts.length) created.lines = [...created.lines, ...parts.map(line => line.replace(/\r$/, ''))].slice(-this.timing.watchLines)
           created.outputs.forEach(fn => fn(data))
         })
-        session.onClose(reason => { this.drop(created); created.closes.forEach(fn => fn(reason)) })
-      }, () => this.drop(created))
+        session.onClose(reason => {
+          // Gone as soon as it came (a pipe that dies after its handshake): a failure like one that never opened.
+          if (this.lab.kernel.now() - opened < SHORT_LIVED_MS) this.failed(key, reason || '串口刚打开就断了')
+          this.drop(created)
+          created.closes.forEach(fn => fn(reason))
+        })
+      }, error => { this.failed(key, error); this.drop(created) })
+      void opening.then(() => {
+        // Held a while: the console works again, and a later failure starts its backoff over.
+        const timer = setTimeout(() => { if (this.watches.get(key) === created) this.failures.delete(key) }, SHORT_LIVED_MS)
+        timer.unref?.()
+      }, () => {})
     }
     const shared = watch
     const session = await shared.session
@@ -115,7 +165,12 @@ export class Consoles {
     for (const watch of [...this.watches.values()]) {
       if (watch.viewers <= 0 && now - watch.lastSeen > this.timing.watchIdleMs) this.drop(watch)
     }
-    return { watching: [...this.watches.values()].map(watch => ({ console: watch.key.replace('\0', '.'), viewers: watch.viewers })), typing: this.typing.size }
+    for (const [key, failure] of this.failures) if (now >= failure.until + this.timing.openRetryMaxMs) this.failures.delete(key)
+    return {
+      watching: [...this.watches.values()].map(watch => ({ console: watch.key.replace('\0', '.'), viewers: watch.viewers })), typing: this.typing.size,
+      // Consoles whose backend failed to open lately, with what it said.
+      failing: [...this.failures].map(([key, failure]) => ({ console: key.replace('\0', '.'), error: failure.error, failures: failure.count, retryInMs: Math.max(0, failure.until - now) })),
+    }
   }
 
   /**

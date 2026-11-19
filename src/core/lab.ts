@@ -62,7 +62,7 @@ export class BoardLab {
     this.download = new Download(this, options.firmwareDir, options.bootTiming)
     this.files = new Files(this.kernel, options.filesDir)
     this.backends = new Backends(this)
-    this.consoles = new Consoles(this, { watchIdleMs: 30_000, typingIdleMs: 60_000, watchLines: 2_000, ...options.consoleTiming })
+    this.consoles = new Consoles(this, options.consoleTiming)
     this.api.add('core', [...coreEndpoints(this), ...debugEndpoints(this)])
     for (const module of inLoadOrder(options.modules ?? [])) this.use(module)
   }

@@ -2,6 +2,7 @@
  * What every part of boardlab shares: the database, the clock, the event bus, the action log and settings. Subsystems
  * and modules are built on a kernel and never on each other's internals.
  */
+import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import type { DatabaseSync } from 'node:sqlite'
 import type { BoardEvent, Busy } from '../shared/types.ts'
@@ -26,6 +27,8 @@ export class Kernel {
   readonly now: () => number
   readonly sleep: (ms: number) => Promise<void>
   readonly events = new EventEmitter()
+  /** This process's own id: a client that reconnects and sees another one knows boardd restarted in between. */
+  readonly boot = randomUUID()
 
   constructor(options: KernelOptions) {
     this.db = options.db

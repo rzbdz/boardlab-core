@@ -96,16 +96,28 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
 
     // ---------- consoles ----------
     {
-      method: 'GET', path: '/api/console', about: '看串口：先给最近的输出，再实时推送（raw=1 保留转义序列）', handle: async ({ query }) => {
-        const session = await lab.consoles.open(named(query.get('board')), query.get('die') ?? undefined)
+      method: 'GET', path: '/api/console', about: '看串口：先给最近的输出，再实时推送（raw=1 保留转义序列）；打不开时，事件流的请求收到 closed 和原因', handle: async ({ query, headers }) => {
+        const name = named(query.get('board'))
+        let session: Awaited<ReturnType<typeof lab.consoles.open>>
+        try { session = await lab.consoles.open(name, query.get('die') ?? undefined) }
+        catch (error) {
+          // A browser's EventSource cannot read an error reply, only events: it is told why in the stream it asked for.
+          if (!String(headers?.accept ?? '').includes('text/event-stream')) throw error
+          return new EventStream((emit, end) => { emit('closed', (error as Error).message); end() })
+        }
         const clean = query.get('raw') === '1' ? (text: string) => text : stripAnsi
         return new EventStream((emit, end, signal) => {
+          // Which boardd process serves it: a viewer that reconnects to another one knows boardd restarted.
+          emit('hello', { boot: lab.kernel.boot })
           // A long boot log (the last ~8 MB of it) is there when the console opens, not just the last few hundred lines.
           emit('history', recent(session.history, 8 * 1024 * 1024).map(clean))
           const decoder = new TextDecoder()
           session.onOutput(data => emit('output', clean(decoder.decode(data, { stream: true }))))
           session.onClose(reason => { emit('closed', reason); end() })
-          signal.addEventListener('abort', () => session.close(), { once: true })
+          // boardd itself stopping is not the port closing: it says so in an event of its own.
+          const stopping = (reason: string) => { emit('restart', { reason }); end() }
+          lab.consoles.onShutdown(stopping)
+          signal.addEventListener('abort', () => { lab.consoles.offShutdown(stopping); session.close() }, { once: true })
         })
       },
     },

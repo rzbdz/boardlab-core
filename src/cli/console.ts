@@ -128,6 +128,7 @@ export function streamConsole(client: BoardsClient, board: string, die: string |
             if (tty) process.stdout.write(`\r\n*** ${board}${die ? `.${die}` : ''}：${mine ? '直接输入' : human ? '直接输入（人，不查锁）' : '只读（拿锁后才能输入，人可以加 --human）'}，Ctrl-A Ctrl-X 退出 ***\r\n`)
           } else if (event === 'output') process.stdout.write(value)
           else if (event === 'closed') process.stdout.write(`${eol}[串口关闭：${value}]${eol}`)
+          else if (event === 'restart') process.stdout.write(`${eol}[${(value as { reason?: string }).reason ?? '服务重启'}，串口断开]${eol}`)
         }
       })
       response.on('end', () => finish())

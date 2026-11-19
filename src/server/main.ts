@@ -53,6 +53,12 @@ export async function startBoardd(options: BoarddOptions) {
   const address = server.http[0]?.address()
   return {
     lab, port: address && typeof address === 'object' ? address.port : port, uiDir, config, hosts: ['127.0.0.1', ...(options.hosts ?? [])],
-    async close() { lab.stop(); await server.close(); db.close() },
+    async close() {
+      lab.stop()
+      // Viewers are told boardd is restarting rather than seeing their streams cut; the events go out before the sockets.
+      lab.consoles.shutdown('服务重启')
+      await new Promise(resolve => setTimeout(resolve, 50))
+      await server.close(); db.close()
+    },
   }
 }
