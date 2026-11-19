@@ -95,6 +95,10 @@ describe('watched consoles', () => {
     try {
       const failed = await fetch(`http://127.0.0.1:${port}/api/console?board=b`, { headers: { Accept: 'text/event-stream' } })
       expect(failed.status).toBe(200)
+      // Unbuffered through a proxy: a buffered stream would hold back the pings that show it is alive.
+      expect(failed.headers.get('x-accel-buffering')).toBe('no')
+      expect(failed.headers.get('cache-control')).toMatch(/no-cache/)
+      expect(failed.headers.get('cache-control')).toMatch(/no-transform/)
       expect(await failed.text()).toContain('event: closed\ndata: "serial adapter unplugged"')
       // A plain request still gets an error reply.
       expect((await fetch(`http://127.0.0.1:${port}/api/console?board=b`)).status).toBe(502)

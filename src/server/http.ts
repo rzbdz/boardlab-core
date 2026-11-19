@@ -126,7 +126,10 @@ async function answer(response: ServerResponse, reply: unknown, abort: AbortCont
  * browser never passes it to the page, so a page could not tell a live stream from a dead one.
  */
 async function stream(response: ServerResponse, reply: EventStream, abort: AbortController) {
-  response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive' })
+  // A reverse proxy must pass each event on as it comes: one that buffers holds back the pings too, and a page then
+  // takes a quiet stream for a dead one. `X-Accel-Buffering: no` tells nginx; `no-transform` keeps any proxy from
+  // compressing it (which buffers too).
+  response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store, no-cache, no-transform', 'X-Accel-Buffering': 'no', Connection: 'keep-alive' })
   response.write('retry: 2000\n\n')
   const ping = setInterval(() => {
     if (response.destroyed || !response.writable) return abort.abort()
