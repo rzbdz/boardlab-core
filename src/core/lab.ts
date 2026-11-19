@@ -3,12 +3,15 @@
  * subsystems every deployment has (locks, the inventory, backends, relay, consoles, download, files, proposals); what a
  * deployment can do beyond that, from the hardware on this machine to a remote lab, comes from the modules it loads.
  */
+import { basename } from 'node:path'
 import type { Action, Lease, State } from '../shared/types.ts'
-import { Api } from './api.ts'
+import { Api, type Endpoint } from './api.ts'
 import { Backends } from './backends.ts'
+import { BoardError } from './errors.ts'
 import { Boards } from './boards.ts'
 import { Consoles, type ConsoleTiming } from './consoles.ts'
 import { Download, type BootTiming } from './download.ts'
+import { acknowledgeRestore, restoreRecord } from './db.ts'
 import { debugEndpoints } from './debug-endpoints.ts'
 import { coreEndpoints } from './endpoints.ts'
 import { Files } from './files.ts'
@@ -17,6 +20,7 @@ import { Locks } from './locks.ts'
 import type { Module, ModuleInfo } from './module.ts'
 import { Proposals } from './proposals.ts'
 import { Relay } from './relay.ts'
+import { isHuman } from './text.ts'
 
 export interface BoardLabOptions extends KernelOptions {
   /** firmware/: firmware.json and the files it lists. */
@@ -63,7 +67,7 @@ export class BoardLab {
     this.files = new Files(this.kernel, options.filesDir)
     this.backends = new Backends(this)
     this.consoles = new Consoles(this, options.consoleTiming)
-    this.api.add('core', [...coreEndpoints(this), ...debugEndpoints(this)])
+    this.api.add('core', [...coreEndpoints(this), ...debugEndpoints(this), ...databaseEndpoints(this)])
     for (const module of inLoadOrder(options.modules ?? [])) this.use(module)
   }
 
@@ -102,6 +106,7 @@ export class BoardLab {
     const state: State = {
       boards: this.boards.list(), labs: this.backends.labSettings(), firmware: this.download.firmware(),
       proposals: this.proposals.pending(), modules: this.modules(), you, now: this.kernel.iso(), yields: this.locks.yieldsList(you),
+      restored: restoreRecord(this.kernel.db),
     }
     for (const part of this.stateParts) Object.assign(state, part(you))
     return state
@@ -142,6 +147,24 @@ export class BoardLab {
  * Modules in an order that sets each up after the ones it requires, otherwise as given: a distribution lists its
  * modules in any order. A module requiring one that is not there is left for `use` to refuse.
  */
+/**
+ * boardd's database, as people see it: a restore it made at a start stays in the state until a person says they saw it.
+ * Agents read it, but only a person acknowledges it: what was lost is theirs to check.
+ */
+function databaseEndpoints(lab: BoardLab): Endpoint[] {
+  return [
+    { method: 'GET', path: '/api/database', about: '数据库的情况：启动时从备份恢复过、还没人确认的那次（restored）', handle: () => ({ restored: restoreRecord(lab.kernel.db) }) },
+    {
+      method: 'POST', path: '/api/database/acknowledge', about: '确认看到了数据库从备份恢复（只有人可以）；之后状态里不再报', handle: ({ caller }) => {
+        if (!isHuman(caller.holder)) throw new BoardError('forbidden', '数据库恢复要人来确认：丢了哪些改动，得人去核对')
+        const record = acknowledgeRestore(lab.kernel.db)
+        if (record) { lab.kernel.record(caller.holder, null, 'db-restore-ack', record.backup ? basename(record.backup) : null, true, null); lab.kernel.changed(null) }
+        return { acknowledged: record }
+      },
+    },
+  ]
+}
+
 export function inLoadOrder(modules: Module[]): Module[] {
   const byId = new Map(modules.map(module => [module.id, module]))
   const out: Module[] = []

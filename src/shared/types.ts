@@ -212,6 +212,21 @@ export interface Proposal {
 /** A module boardd has loaded. */
 export interface ModuleInfo { id: string, title: string }
 
+/**
+ * boardd found its database damaged when it started and put a copy in its place (or, with no good copy, started empty):
+ * what changed after that copy is gone. Reported in the state until someone acknowledges it.
+ */
+export interface DatabaseRestore {
+  /** When boardd found the file damaged. */
+  at: string
+  /** The copy it put in its place, or null when no copy was good and it started with an empty database. */
+  backup: string | null
+  /** Where the damaged file was moved. */
+  aside: string
+  /** What the check said of it. */
+  reason: string
+}
+
 /** The whole picture. Modules add their own fields through the generic state-extension hook. */
 export interface State {
   boards: Board[]
@@ -223,6 +238,8 @@ export interface State {
   now: string
   /** Agents waiting for a person to let go of a board they are using. */
   yields: YieldRequest[]
+  /** A restore of boardd's database nobody has acknowledged yet (`POST /api/database/acknowledge`), or null. */
+  restored?: DatabaseRestore | null
 }
 
 /** A relay, button or line wired to a board, as its backend's relay controller names it (`<board>/power`). */

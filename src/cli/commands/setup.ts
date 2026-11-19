@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { BoardsClient, DEFAULT_PORT, remoteConfigPath, socketPathFor, transportFor, type RemoteConfig } from '../../shared/client.ts'
-import { API_VERSION } from '../../shared/types.ts'
+import { API_VERSION, type DatabaseRestore } from '../../shared/types.ts'
 import type { Command, CommandGroup } from '../command.ts'
 import { installedAgentSkills, noAgentsMessage } from '../agents.ts'
 import { shipped } from '../shipped.ts'
@@ -132,7 +132,7 @@ const remote: Command = {
   run: ({ args, flags, json }) => remoteCommand(args, flags, json),
 }
 
-export const setupCommands: CommandGroup = { id: 'setup', title: '安装和运行', summary: '状态、版本、安装、连哪台 boardd、运行 boardd', commands: [install, remote, serve] }
+export const setupCommands: CommandGroup = { id: 'setup', title: '安装和运行', summary: '状态、版本、安装、连哪台 boardd、运行 boardd、数据库', commands: [install, remote, serve] }
 
 /** This distribution's release identity, supplied at CLI composition. */
 function cliVersion(): ReleaseIdentity {
@@ -173,8 +173,10 @@ const status: Command = {
     const working = real.filter(board => board.busy && !board.lease)
     const idle = real.length - mine.length - busy.length - working.length
     const attention = real.filter(board => board.lab?.attention)
-    out({ boardd: client.transport.label, remote, you: holder, version: v, boards: real.length, mine: mine.map(b => b.name), busy: busy.map(b => b.name), working: working.map(b => b.name), attention: attention.map(b => b.name), labs: state.labs }, () => {
+    const restored = state.restored ?? null
+    out({ boardd: client.transport.label, remote, you: holder, version: v, restored, boards: real.length, mine: mine.map(b => b.name), busy: busy.map(b => b.name), working: working.map(b => b.name), attention: attention.map(b => b.name), labs: state.labs }, () => {
       console.log(`boardd   ${client.transport.label}${v?.version ? `  ${v.version}（${v.revision}）` : ''}${v?.newer && v.latest ? `  有新版 ${v.latest.version}：boardlab update` : ''}`)
+      if (restored) console.log(restoreText(restored))
       console.log(`你       ${holder}`)
       console.log(`板子     ${real.length} 块：空闲 ${idle}，你拿着 ${mine.length}，别人在用 ${busy.length}${working.length ? `，boardd 在忙 ${working.length}` : ''}${attention.length ? `，${attention.length} 块等人操作` : ''}`)
       for (const board of mine) console.log(`  你的   ${board.name}（${board.lease!.purpose}）`)
@@ -186,4 +188,25 @@ const status: Command = {
   },
 }
 
+/** A restore of boardd's database, as `status` warns of it. */
+export function restoreText(restored: DatabaseRestore): string {
+  const at = restored.at.slice(0, 16).replace('T', ' ')
+  return `注意     ${at} boardd 的数据库损坏，${restored.backup ? `用备份 ${restored.backup} 恢复了：这份备份之后的锁、历史和反馈丢了` : '没有可用的备份，用空数据库启动了'}；损坏的文件在 ${restored.aside}。核对过后：boardlab database ack`
+}
+
+const database: Command = {
+  name: 'database', noBoard: true,
+  usage: ['database [ack]\tboardd 的数据库：启动时从备份恢复过就说出来；ack 确认看到了（只有人可以），之后 status 不再提'],
+  async run({ args, client, out }) {
+    if (args[0] === 'ack') {
+      const { acknowledged } = await client.call<{ acknowledged: DatabaseRestore | null }>('POST', '/api/database/acknowledge', {})
+      return out({ acknowledged }, () => console.log(acknowledged ? '已确认：status 不再提这次恢复' : '没有要确认的恢复'))
+    }
+    if (args[0]) throw new Error(`database 不认识 ${args[0]}（只有 ack）`)
+    const { restored } = await client.call<{ restored: DatabaseRestore | null }>('GET', '/api/database')
+    out({ restored }, () => console.log(restored ? restoreText(restored) : '数据库正常：启动时没有从备份恢复过（或者已经确认过）'))
+  },
+}
+
 setupCommands.commands.unshift(status, version)
+setupCommands.commands.push(database)

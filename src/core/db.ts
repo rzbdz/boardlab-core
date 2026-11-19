@@ -9,6 +9,7 @@
 import { DatabaseSync } from 'node:sqlite'
 import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
+import type { DatabaseRestore } from '../shared/types.ts'
 
 const SCHEMA_VERSION = 7
 
@@ -19,9 +20,12 @@ export interface OpenOptions {
   log?: (message: string) => void
 }
 
+
+const RESTORED = 'db.restored'
+
 export function openDatabase(file: string, options: OpenOptions = {}): DatabaseSync {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
-  if (options.backups) recoverDatabase(file, options.backups, options.log)
+  const recovered = options.backups ? recoverDatabase(file, options.backups, options.log) : null
   const db = new DatabaseSync(file)
   chmodSync(file, 0o600)
   // FULL, not the WAL default of NORMAL: a commit survives a power cut, not only a crash of boardd.
@@ -75,7 +79,29 @@ export function openDatabase(file: string, options: OpenOptions = {}): DatabaseS
   // Version 7 keeps a model someone typed in themselves, so a scan or a lab listing does not replace it.
   addColumn(db, 'boards', 'product_manual', 'INTEGER NOT NULL DEFAULT 0')
   db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`)
+  // A restore loses what changed after the copy: it is written down in the database it made, so boardd reports it (in
+  // its state, to the page and `boardlab status`) until someone has seen it, not only in a log nobody reads.
+  if (recovered?.corrupt) {
+    const record: DatabaseRestore = { at: recovered.at!, backup: recovered.restored, aside: recovered.corrupt, reason: recovered.reason ?? '' }
+    db.prepare('INSERT INTO settings(key, value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(RESTORED, JSON.stringify(record))
+    db.prepare('INSERT INTO actions(at, actor, board, kind, detail, ok, message) VALUES(?,?,?,?,?,?,?)').run(record.at, 'boardd', null, 'db-restore',
+      record.backup ? basename(record.backup) : null, 0, `${record.backup ? `数据库损坏，用备份 ${record.backup} 恢复，这份备份之后的改动丢了` : '数据库损坏，没有可用的备份，用空数据库启动'}；损坏的文件在 ${record.aside}`)
+  }
   return db
+}
+
+/** The restore boardd made at a start that nobody has acknowledged yet, or null. */
+export function restoreRecord(db: DatabaseSync): DatabaseRestore | null {
+  const row = db.prepare('SELECT value FROM settings WHERE key=?').get(RESTORED)
+  if (!row) return null
+  try { return JSON.parse(String(row.value)) as DatabaseRestore } catch { return null }
+}
+
+/** Someone has seen the restore: it is no longer reported. Returns the one that was, or null. */
+export function acknowledgeRestore(db: DatabaseSync): DatabaseRestore | null {
+  const record = restoreRecord(db)
+  db.prepare('DELETE FROM settings WHERE key=?').run(RESTORED)
+  return record
 }
 
 /** Add a column a table made by an older boardd lacks. */
@@ -122,19 +148,23 @@ export function listBackups(file: string, dir: string): string[] {
   return readdirSync(dir).filter(name => name.startsWith(prefix) && name.endsWith('.sqlite')).sort().reverse().map(name => join(dir, name))
 }
 
+/** What `recoverDatabase` did: the damaged file's new name, the copy put in its place, when, and what the check said. */
+export interface Recovery { corrupt: string | null, restored: string | null, at?: string, reason?: string | null }
+
 /**
  * Check `file` before boardd opens it. One that does not open or fails `PRAGMA quick_check` is moved aside (with its
  * `-wal` and `-shm`) as `<file>.corrupt-<stamp>`, never deleted, and the newest copy in `backups` that passes the same
  * check is put in its place; with none, boardd starts with an empty database. Says what it did through `log`.
  * Returns what happened, for tests and logs.
  */
-export function recoverDatabase(file: string, backups: string, log: (message: string) => void = message => console.error(message)): { corrupt: string | null, restored: string | null } {
+export function recoverDatabase(file: string, backups: string, log: (message: string) => void = message => console.error(message)): Recovery {
   if (!existsSync(file)) return { corrupt: null, restored: null }
   // Read-only, so checking never changes the files (closing a writable connection would fold or drop the -wal).
   const check = checkDatabase(file, true)
   if (check.ok) return { corrupt: null, restored: null }
   if (!check.damaged) { log(`boardd 没能检查数据库 ${file}（${check.reason}），照常打开`); return { corrupt: null, restored: null } }
-  const aside = `${file}.corrupt-${fileStamp()}`
+  const at = new Date()
+  const aside = `${file}.corrupt-${fileStamp(at)}`
   renameSync(file, aside)
   for (const suffix of ['-wal', '-shm']) if (existsSync(file + suffix)) renameSync(file + suffix, aside + suffix)
   const banner = '!!!!!!!! boardd 数据库损坏 !!!!!!!!'
@@ -147,10 +177,10 @@ export function recoverDatabase(file: string, backups: string, log: (message: st
     renameSync(temp, file)
     chmodSync(file, 0o600)
     log(`${banner}\n已经用备份 ${backup} 恢复了 ${file}；这份备份之后的改动丢了，损坏的文件留在 ${aside}`)
-    return { corrupt: aside, restored: backup }
+    return { corrupt: aside, restored: backup, at: at.toISOString(), reason: check.reason }
   }
   log(`${banner}\n没有可用的备份：boardd 用一个空数据库启动，损坏的文件留在 ${aside}`)
-  return { corrupt: aside, restored: null }
+  return { corrupt: aside, restored: null, at: at.toISOString(), reason: check.reason }
 }
 
 export interface BackupOptions {
