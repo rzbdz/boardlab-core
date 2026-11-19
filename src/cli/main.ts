@@ -201,6 +201,7 @@ export function runIfMain(cli: Cli, entry: string) {
   if (!process.argv[1] || realpathSync(process.argv[1]) !== realpathSync(fileURLToPath(entry))) return
   cli.main(process.argv.slice(2)).catch(error => {
     console.error(error instanceof BoardsApiError || error instanceof Error ? error.message : String(error))
-    process.exit(error instanceof BoardsApiError && error.status === 423 ? 3 : 1)
+    // A cancelled operation is neither done nor broken: exit 4, as boardd's backends do.
+    process.exit(error instanceof BoardsApiError && error.code === 'cancelled' ? 4 : error instanceof BoardsApiError && error.status === 423 ? 3 : 1)
   })
 }

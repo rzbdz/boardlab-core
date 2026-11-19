@@ -3,13 +3,15 @@
  * of operation a backend says it can stop, the board busy until the run has ended, and the run answering cancelled.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDatabase } from '../src/core/db.ts'
 import { BoardLab } from '../src/core/lab.ts'
 import { CancelledError } from '../src/core/errors.ts'
 import type { Backend, BoardTarget, BootFile, LabConfig } from '../src/core/backend.ts'
+import { serve } from '../src/server/http.ts'
+import { main } from '../bare/boardlab.ts'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'boardlab-cancel-')) })
@@ -127,6 +129,28 @@ describe('cancelling an operation', () => {
     release()
     expect(await booting).toBeInstanceOf(CancelledError)
     expect(staged).toEqual(['/etc/hostname'])
+  })
+
+  it('is `boardlab cancel <board>` on the command line, with the token the CLI holds', async () => {
+    const backend = new Waiting()
+    backend.download.backendFiles = true
+    const svc = lab(backend)
+    const running = await serve(svc, { port: 44000 + Math.floor(Math.random() * 1000), socketPath: join(dir, 'boardd.sock'), uiDir: null })
+    const said: string[] = []
+    const quiet = { log: console.log, error: console.error }
+    console.log = (...args: unknown[]) => { said.push(args.join(' ')) }; console.error = () => {}
+    try {
+      await main(['lock', 'b1', '--for', '启动', '--state-dir', dir, '--as', 'claude:cli'])
+      const token = JSON.parse(readFileSync(join(dir, 'cli-tokens.json'), 'utf8'))
+      expect(JSON.stringify(token)).toContain('b1')
+      const booting = main(['boot', 'b1', 'https://images.test/Image.itb', '--state-dir', dir, '--as', 'claude:cli']).then(() => 'done', error => error)
+      while (!svc.boards.get('b1').busy) await tick()
+      await main(['cancel', 'b1', '--state-dir', dir, '--as', 'claude:cli'])
+      expect(said.at(-1)).toMatch(/停下/)
+      const failed = await booting
+      // The client sees the operation's code: the CLI exits 4 for it, as boardctrl does.
+      expect(failed).toMatchObject({ code: 'cancelled', message: expect.stringMatching(/^已取消/) })
+    } finally { Object.assign(console, quiet); await running.close() }
   })
 
   it('cancels a run on a lab by `lab:<id>`', async () => {

@@ -1,7 +1,7 @@
 /** Commands on boards, whatever backend they are on: the list, locks, the relay, consoles, loading and the inventory. */
 import { resolve } from 'node:path'
 import type { Board, State } from '../../shared/types.ts'
-import { parseDuration, type CliPresentation, type Command, type CommandGroup } from '../command.ts'
+import { following, parseDuration, type CliPresentation, type Command, type CommandGroup } from '../command.ts'
 import { pickConsole, streamConsole } from '../console.ts'
 
 const presentation: { current: CliPresentation } = { current: {} }
@@ -229,6 +229,7 @@ const commands: Command[] = [
     usage: [
       'boot <board> --sdk <SDK> [--method load|download] [--variant V] [--break 名字]\t后端能取构建产物的板子用 SDK 的产物内存启动或刷机，板子所在主机自己去构建服务器取',
       'boot <board>[.<die>] <固件名|http(s)链接|host:/板卡主机路径|本机文件>...\t按顺序内存启动，不写板子；URL 和 host: 路径由板卡主机取，本机文件上传是兜底；只改内核：boot <board> fsbl u-boot-opensbi <Image.itb>',
+      '（boot、flash：Ctrl-C 只是不再跟着看，操作在 boardd 里继续，用 boardlab cancel <board> 停下它；--cancel-on-interrupt 让 Ctrl-C 直接取消）',
     ],
     run: context => boot(context, 'boot'),
   },
@@ -241,10 +242,13 @@ const commands: Command[] = [
     run: context => boot(context, 'flash'),
   },
   {
-    name: 'cancel',
-    usage: ['cancel <board>\t让板子上正在做的启动或刷机停下（要拿锁）：它在下一步之前结束'],
-    async run({ client, out, target, token }) {
-      out(await client.cancelBoard(target().board, token()), () => `已让 ${target().board} 停下`)
+    name: 'cancel', noBoard: true,
+    usage: ['cancel <board|lab:实验室>\t让 boardd 在板子或实验室上正在做的事停下（启动、刷机、复位、发现…；板子有锁时要拿着锁）：它在正在做的那一步结束后停下'],
+    async run({ client, args, out, token }) {
+      const target = args[0]
+      if (!target) throw new Error('缺少要取消的板子或实验室：boardlab cancel <board|lab:实验室>')
+      const result = await client.cancel(target, target.startsWith('lab:') ? null : token(target))
+      out(result, () => console.log(result.message))
     },
   },
   {
@@ -286,7 +290,13 @@ const commands: Command[] = [
  * `boot` and `flash`: with --sdk the backend boots or flashes the board with an SDK's build, fetching it itself; `flash`
  * with a link or a file flashes that package.
  */
-async function boot({ client, args, flag, json, out, remote, target, token }: Parameters<Command['run']>[0], command: 'boot' | 'flash') {
+async function boot(context: Parameters<Command['run']>[0], command: 'boot' | 'flash') {
+  const { client, flags, target, token } = context
+  const { board } = target()
+  return following(client, board, () => booting(context, command), { cancelOnInterrupt: flags.has('cancel-on-interrupt'), token: token() })
+}
+
+async function booting({ client, args, flag, json, out, remote, target, token }: Parameters<Command['run']>[0], command: 'boot' | 'flash') {
   const { board, die } = target()
   if (command === 'flash' && !flag('sdk')) {
     const from = args[1]

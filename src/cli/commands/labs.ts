@@ -1,5 +1,5 @@
 /** Commands on backends that list their own boards (labs): finding new boards and their free ports. */
-import { confirm, type Command, type CommandGroup } from '../command.ts'
+import { confirm, following, type Command, type CommandGroup } from '../command.ts'
 
 const commands: Command[] = [
   {
@@ -10,7 +10,7 @@ const commands: Command[] = [
       'lab methods <实验室> [--host <主机>] [--slot <主机>/<槽位>]\t列出实验室后端上报的发现方法、说明和字段',
       'lab discover <实验室> --method <方法> [--set 字段=值 …] [--host <主机>] [--slot <主机>/<槽位>] [--yes]\t用一个后端上报的发现方法找板子（方法可能复位没登记的线），找到一块登记一块',
       'lab compose <实验室> --method <方法> --set 字段=值 … [--host <主机>] [--slot <主机>/<槽位>]\t按后端上报的手工登记方法登记一块扫不到的板子（compose 方法；不动板子，不用确认）',
-      'lab cancel <实验室>\t让正在进行的发现/重建停下（已经登记的和正在跑的那一步会留着）',
+      'lab cancel <实验室>\t让正在进行的发现/重建停下（已经登记的和正在跑的那一步会留着），同 boardlab cancel lab:<实验室>',
       'lab rebuild <实验室> --host <主机> [--keep-used] [--yes]\t重新布线以后用：忘掉这台主机上发现过的板子和槽位，按现在的接线重新发现并登记；--keep-used 保留在用的板子，只重做变动的（别人拿着板子时也能用）',
     ],
     async run({ client, args, argv, flag, flags, out }) {
@@ -32,11 +32,11 @@ const commands: Command[] = [
         const keep = flags.has('keep-used')
         const ask = keep ? `重新发现 ${host}：保留在用的板子，忘掉串口不见的，在空闲串口上找板子（会复位没人用的线）。继续？` : `重建会忘掉 ${host} 上发现过的板子和槽位并复位它们，按现在的接线重新发现。继续？`
         if (!flags.has('yes') && !(await confirm(ask))) throw new Error(`${keep ? '重新发现' : '重建'}需要确认（交互确认或 --yes）`)
-        const result = await client.rebuildLab(args[1], host, keep)
+        const result = await following(client, `lab:${args[1]}`, () => client.rebuildLab(args[1]!, host, keep), { cancelOnInterrupt: flags.has('cancel-on-interrupt') })
         return out(result, () => console.log(result.message))
       }
       if (args[0] === 'cancel' && args[1]) {
-        const result = await client.cancelDiscovery(args[1])
+        const result = await client.cancel(`lab:${args[1]}`)
         return out(result, () => console.log(result.message))
       }
       if (args[0] === 'methods' && args[1]) {
@@ -76,7 +76,7 @@ const commands: Command[] = [
         return out(made, () => console.log(made.message))
       }
       if (!flags.has('yes') && !(await confirm(`发现/登记会动实验室 ${args[1]} 里还没登记的端口和槽位。继续？`))) throw new Error('发现板子需要确认（交互确认或 --yes）')
-      const result = await client.discoverLab(args[1], { method, values, host: flag('host'), slot: flag('slot') })
+      const result = await following(client, `lab:${args[1]}`, () => client.discoverLab(args[1]!, { method, values, host: flag('host'), slot: flag('slot') }), { cancelOnInterrupt: flags.has('cancel-on-interrupt') })
       out(result, () => console.log(`${result.message}${result.proposals ? '\n用 boardlab proposals 查看，boardlab proposals apply <id> [--name <板名>] 登记' : ''}`))
     },
   },

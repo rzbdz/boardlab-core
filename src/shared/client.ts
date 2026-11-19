@@ -335,7 +335,20 @@ export class BoardsClient {
   yields() { return this.call<Array<{ id: string, board: string, holder: string, purpose: string, owner: string, at: string, until: string }>>('GET', '/api/yields') }
   /** Answer one: `yield` lets the agent have the board now, `deny` keeps it. */
   answerYield(board: string, action: 'yield' | 'deny') { return this.call<{ message: string }>('POST', '/api/yields', { board, action }) }
-  /** Let go of the operation running on a board (a boot stuck at a wait, a flash nobody wants). */
+  /**
+   * Stop what boardd is doing to a board or a lab (`lab:<id>`): a boot stuck at a wait, a flash nobody wants, a
+   * discovery. It ends after the step it is on, and the operation answers `cancelled`.
+   */
+  async cancel(target: string, token?: string | null): Promise<{ message: string, cancelled: true }> {
+    try { return await this.call<{ message: string, cancelled: true }>('POST', '/api/cancel', { target, token }) }
+    catch (error) {
+      // A boardd from before `/api/cancel` has no such endpoint: its own ones for a board and a lab's discovery.
+      if (!(error instanceof BoardsApiError && error.status === 404 && error.code === null)) throw error
+      const lab = target.match(/^lab:(.+)$/)?.[1]
+      return { ...(lab ? await this.cancelDiscovery(lab) : await this.cancelBoard(target, token)), cancelled: true }
+    }
+  }
+  /** `cancel` for a board, through the older endpoint every boardd has. */
   cancelBoard(board: string, token?: string | null) { return this.call<{ message: string }>('POST', '/api/board/cancel', { board, token }) }
   /** A board's debug path as its backend reports it (null: it has none); reading it changes nothing on the board. */
   debugPath(board: string) { return this.call<{ debug: DebugPath | null }>('POST', '/api/debug', { board, action: 'path' }) }

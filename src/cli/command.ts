@@ -60,6 +60,27 @@ export interface CommandContext {
   keepToken(board: string, token: string | null): void
 }
 
+/**
+ * Run a long operation on boardd (a boot, a flash, a discovery) that `target` names for `boardlab cancel`. Ctrl-C asks
+ * nothing: this CLI stops following, and the operation goes on in boardd, so a board half written is never left by a
+ * keystroke; it prints how to stop it. With `cancelOnInterrupt` Ctrl-C cancels it instead and waits for it to end.
+ */
+export async function following<T>(client: BoardsClient, target: string, run: () => Promise<T>, options: { cancelOnInterrupt?: boolean, token?: string | null } = {}): Promise<T> {
+  let interrupted = false
+  const onInterrupt = () => {
+    if (options.cancelOnInterrupt && !interrupted) {
+      interrupted = true
+      console.error(`\n正在取消 ${target}（再按一次 Ctrl-C 不再等它）…`)
+      void client.cancel(target, options.token).then(result => console.error(result.message), error => console.error(`没能取消：${(error as Error).message}`))
+      return
+    }
+    console.error(`\n不再跟着看了；${target} 上的操作在 boardd 里继续。要停下它：boardlab cancel ${target}`)
+    process.exit(130)
+  }
+  process.on('SIGINT', onInterrupt)
+  try { return await run() } finally { process.off('SIGINT', onInterrupt) }
+}
+
 export const splitTarget = (target: string) => { const [board, die] = target.split('.', 2) as [string, string | undefined]; return { board, die } }
 
 export function parseDuration(text: string): number {
