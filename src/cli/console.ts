@@ -86,6 +86,15 @@ export function consoleKeys(): (chunk: Buffer) => { send: Buffer, quit: boolean,
 }
 
 /**
+ * Why a console stream ended, as the CLI prints it: the page's words (串口断开 once the port was live, 串口打不开 when it
+ * never came up, 服务重启 when boardd stops), without the page's 重连中, since the CLI does not reconnect.
+ */
+export function consoleEndText(event: 'closed' | 'restart', value: unknown, opened: boolean): string {
+  if (event === 'restart') return `[${(value as { reason?: string } | null)?.reason || '服务重启'}]`
+  return `[${opened ? '串口断开' : '串口打不开'}：${String(value)}]`
+}
+
+/**
  * `boardlab console`: the chip's serial console as a terminal. Output streams as the board writes it; on a terminal,
  * what you type goes to the board as you type it while you hold the lock (Ctrl-C too), and Ctrl-A Ctrl-X leaves, as in
  * picocom. Without a terminal it only prints the output, until interrupted.
@@ -112,7 +121,7 @@ export function streamConsole(client: BoardsClient, board: string, die: string |
         return
       }
       const eol = tty ? '\r\n' : '\n'
-      let buffer = ''
+      let buffer = '', opened = false
       response.setEncoding('utf8')
       response.on('data', chunk => {
         buffer += chunk
@@ -124,11 +133,11 @@ export function streamConsole(client: BoardsClient, board: string, die: string |
           if (!data) continue
           const value = JSON.parse(data)
           if (event === 'history') {
+            opened = true
             process.stdout.write((value as string[]).join(eol) + eol)
             if (tty) process.stdout.write(`\r\n*** ${board}${die ? `.${die}` : ''}：${mine ? '直接输入' : human ? '直接输入（人，不查锁）' : '只读（拿锁后才能输入，人可以加 --human）'}，Ctrl-A Ctrl-X 退出 ***\r\n`)
           } else if (event === 'output') process.stdout.write(value)
-          else if (event === 'closed') process.stdout.write(`${eol}[串口关闭：${value}]${eol}`)
-          else if (event === 'restart') process.stdout.write(`${eol}[${(value as { reason?: string }).reason ?? '服务重启'}，串口断开]${eol}`)
+          else if (event === 'closed' || event === 'restart') process.stdout.write(`${eol}${consoleEndText(event, value, opened)}${eol}`)
         }
       })
       response.on('end', () => finish())

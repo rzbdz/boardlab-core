@@ -8,6 +8,7 @@ import { BoardLab } from '../src/core/lab.ts'
 import type { Backend } from '../src/core/backend.ts'
 import type { ConsoleSession } from '../src/core/console.ts'
 import { serve } from '../src/server/http.ts'
+import { consoleEndText } from '../src/cli/console.ts'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'boardlab-consoles-')) })
@@ -54,7 +55,8 @@ describe('watched consoles', () => {
     await expect(svc.consoles.open('b')).rejects.toThrow('serial adapter unplugged')
     expect(backend.opens).toBe(1)
     // Viewers retrying at once all get the error without another backend open.
-    for (let i = 0; i < 5; i++) await expect(svc.consoles.open('b')).rejects.toThrow(/serial adapter unplugged（1 秒后再试）/)
+    // The message is the backend's own, the same each time: the wait is reported apart from it, never in it.
+    for (let i = 0; i < 5; i++) await expect(svc.consoles.open('b')).rejects.toMatchObject({ message: 'serial adapter unplugged' })
     expect(backend.opens).toBe(1)
     expect(svc.consoles.reap().failing).toEqual([{ console: 'b.die0', error: 'serial adapter unplugged', failures: 1, retryInMs: 1_000 }])
     clock += 1_000
@@ -62,7 +64,7 @@ describe('watched consoles', () => {
     expect(backend.opens).toBe(2)
     // Each failure doubles the wait, up to the cap.
     clock += 1_999
-    await expect(svc.consoles.open('b')).rejects.toThrow(/后再试/)
+    await expect(svc.consoles.open('b')).rejects.toMatchObject({ message: 'serial adapter unplugged' })
     expect(backend.opens).toBe(2)
     clock += 1
     backend.working = true
@@ -81,7 +83,7 @@ describe('watched consoles', () => {
     session.onClose(reason => reasons.push(reason))
     backend.closers[0]!('pipe ended')
     expect(reasons).toEqual(['pipe ended'])
-    await expect(svc.consoles.open('b')).rejects.toThrow(/pipe ended（1 秒后再试）/)
+    await expect(svc.consoles.open('b')).rejects.toMatchObject({ message: 'pipe ended' })
     expect(backend.opens).toBe(1)
     clock += 1_000
     await svc.consoles.open('b')
@@ -114,5 +116,13 @@ describe('watched consoles', () => {
       for (;;) { const { value, done } = await reader.read(); if (done) break; text += new TextDecoder().decode(value) }
       expect(text).toContain('event: restart\ndata: {"reason":"服务重启"}')
     } finally { await running.close() }
+  })
+})
+
+describe('the CLI\'s console', () => {
+  it('says why the stream ended in the page\'s words: 串口断开 once live, 串口打不开 when it never came up, 服务重启', () => {
+    expect(consoleEndText('closed', 'serial-mux b 丢了串口', true)).toBe('[串口断开：serial-mux b 丢了串口]')
+    expect(consoleEndText('closed', 'no such device', false)).toBe('[串口打不开：no such device]')
+    expect(consoleEndText('restart', { reason: '服务重启' }, true)).toBe('[服务重启]')
   })
 })

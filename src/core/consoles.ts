@@ -85,12 +85,11 @@ export class Consoles {
     const key = `${board}\0${chip.die}`
     let watch = this.watches.get(key)
     if (!watch) {
-      // A console that just failed is not opened again yet: every viewer retrying gets the backend's last word.
+      // A console that just failed is not opened again yet: every viewer retrying gets the backend's last word, as it
+      // said it. The wait is not in the message (`reap` reports it): a viewer compares reasons to tell a new one.
       const failure = this.failures.get(key)
       const now = this.lab.kernel.now()
-      if (failure && now < failure.until) {
-        throw new BoardError(failure.code, `${failure.error}（${Math.ceil((failure.until - now) / 1000)} 秒后再试）`)
-      }
+      if (failure && now < failure.until) throw new BoardError(failure.code, failure.error)
       const route = this.lab.backends.route(board, chip.die)
       const opening = route.backend.serial.open(route.config, route.target, { history: true })
       const created: Watch = { key, session: opening, lines: [], partial: '', outputs: new Set(), closes: new Set(), viewers: 0, idle: null, lastSeen: now }
