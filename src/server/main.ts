@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { DEFAULT_PORT, socketPathFor } from '../shared/client.ts'
-import { openDatabase } from '../core/db.ts'
+import { openDatabase, scheduleBackups } from '../core/db.ts'
 import { BoardLab } from '../core/lab.ts'
 import { createModules, type CatalogEntry } from './catalog.ts'
 import { loadConfig } from './config.ts'
@@ -40,11 +40,16 @@ export async function startBoardd(options: BoarddOptions) {
     stateDir: options.stateDir, shipped: options.shipped ?? (() => null), timing: config.timing,
     release: { version: options.version ?? 'dev', revision: options.revision ?? 'dev' },
   })
-  const db = openDatabase(join(options.stateDir, 'boards.sqlite'))
+  // Checked before it opens: a broken file is moved aside and the newest good copy from backups/ put in its place.
+  const file = join(options.stateDir, 'boards.sqlite'), backups = join(options.stateDir, 'backups')
+  const db = openDatabase(file, { backups })
   const lab = new BoardLab({
     db, firmwareDir: options.firmwareDir, filesDir: join(options.stateDir, 'files'),
     bootTiming: config.timing.boot, consoleTiming: config.timing.console, modules,
   })
+  // A copy a little after start and every 6 hours, while this boardd (or worker) is the one serving: a worker an update
+  // drained stops with the lab's other services, and a lock in backups/ keeps two workers from copying at once.
+  lab.addService(() => scheduleBackups(db, file, backups))
   lab.start({ syncMs: config.timing.syncMs, reapMs: config.timing.reapMs })
   const port = options.port ?? DEFAULT_PORT
   // One frontend (index.html at the top), or several (frontends.json, see http.ts).
