@@ -186,6 +186,11 @@ describe('lab kinds', () => {
     const { token } = await again.locks.lock('lab1-sub0-0', 'user:bob', '调试')
     await expect(again.backends.removeLab('user:alice', 'lab1')).rejects.toThrow(/正被 user:bob 使用/)
     again.locks.unlock('lab1-sub0-0', { holder: 'user:bob', token })
+    // Nor while something runs on the lab itself (an install): removing it would pull the lab out from under it.
+    let installed!: () => void
+    const installing = again.kernel.doing(['lab:lab1'], 'install', '安装中', 'user:carol', () => new Promise<void>(resolve => { installed = resolve }))
+    await expect(again.backends.removeLab('user:alice', 'lab1')).rejects.toThrow(/正在安装（user:carol）/)
+    installed(); await installing
     await again.backends.removeLab('user:alice', 'lab1')
     expect(again.backends.labSettings()).toEqual([])
     expect(again.boards.list().filter(board => board.name.startsWith('lab1-'))).toEqual([])

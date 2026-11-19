@@ -112,10 +112,15 @@ export class Backends {
     return this.labSetting(id)
   }
 
-  /** Remove a lab added at runtime: its boards go, so none may be held. */
-  async removeLab(actor: string, id: string): Promise<void> {
+  /**
+   * Remove a lab added at runtime: its boards go, so none may be held, and nothing may run on the lab (an install):
+   * `within` names the run on the lab that is itself the removal, which a module's uninstall is.
+   */
+  async removeLab(actor: string, id: string, options: { within?: boolean } = {}): Promise<void> {
     const instance = this.get(id)
     if (!instance.kind) throw new BoardError('invalid', `实验室 ${id} 是在 boardd 的配置里写的，不能在这里删`)
+    const busy = this.lab.kernel.busy.get(`lab:${id}`)
+    if (busy && !options.within) throw new BoardError('conflict', `实验室 ${id} 正在${busy.label.replace(/中$/, '')}（${busy.by}），等它结束再删`)
     const held = this.heldIn(id)
     if (held) throw new BoardError('locked', `${String(held.board)} 正被 ${String(held.holder)} 使用，放锁以后才能删实验室`)
     this.watches.get(id)?.()
