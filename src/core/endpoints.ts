@@ -1,6 +1,6 @@
 /** The endpoints of the core: state, locks, the relay, consoles, download, files, inventory, backends and proposals. */
 import type { BoardEvent } from '../shared/types.ts'
-import type { ChannelAction } from './backend.ts'
+import { stops, type CancellableOperation, type ChannelAction } from './backend.ts'
 import { EventStream, FileReply, optional, required, TextReply, type Endpoint } from './api.ts'
 import { BoardError } from './errors.ts'
 import type { BoardLab } from './lab.ts'
@@ -22,11 +22,37 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
   // An operation on one board under its lock, shown on it while it runs. Only the lock's holder gets that far, so
   // someone refused never marks the board busy for the holder meanwhile.
   // It lasts as long as the lock: `signal` aborts once the lock is released or stolen. A load or a flash (`untilDone`)
-  // is not stopped halfway: the board stays busy until it ends, so the next holder sees it is still being written.
-  // `line` shows a progress line on the board while it runs.
-  const doing = <T>(name: string, kind: string, label: string, holder: string, body: any, run: (signal: AbortSignal, line: (text: string) => void) => Promise<T>, untilDone = false) => {
+  // is not stopped halfway by the lock ending: the board stays busy until it ends, so the next holder sees it is still
+  // being written. Either can be cancelled (`POST /api/cancel`) when the board's backend says it stops that operation
+  // (`operation`), or always, when boardd runs it step by step itself (`true`). `line` shows a progress line on the
+  // board while it runs.
+  const doing = <T>(name: string, kind: string, label: string, holder: string, body: any, run: (signal: AbortSignal, line: (text: string) => void) => Promise<T>,
+    untilDone = false, operation: CancellableOperation | boolean = false) => {
     const lease = lab.locks.authorize(name, who(holder, body))
-    return lab.kernel.doing([name], kind, label, holder, (line, signal) => run(signal, line), { lease: untilDone ? null : lease.id })
+    const cancellable = typeof operation === 'boolean' ? operation : stops(lab.backends.route(name).backend, operation)
+    return lab.kernel.doing([name], kind, label, holder, (line, signal) => run(signal, line), { lease: untilDone ? null : lease.id, cancellable })
+  }
+  /**
+   * Stop what boardd is doing to a board or a lab (`lab:<id>`), whatever it is: a lab's discovery, or a run on the
+   * board or lab that its backend can stop. A board someone holds is cancelled by its holder only; what runs on a free
+   * board (a lab's search, a flash whose lock was given back) by anyone. A board boardd runs nothing on, but whose
+   * backend may still be running something of its own, is handed to the backend's `cancel`.
+   */
+  const cancel = async (target: string, holder: string, body: any): Promise<{ message: string, cancelled: true }> => {
+    const lab_ = target.match(/^lab:(.+)$/)?.[1]
+    if (lab_ && lab.backends.discovering(lab_)) return { ...(await lab.backends.cancelDiscovery(holder, lab_)), cancelled: true }
+    const name = lab_ ? target : lab.boards.resolve(target)
+    if (!lab_ && lab.locks.held(name)) lab.locks.authorize(name, who(holder, body))
+    if (lab.kernel.busy.has(name)) return { message: lab.kernel.cancel(name, holder).message, cancelled: true }
+    const elsewhere = lab.kernel.cancelElsewhere(name, holder)
+    if (elsewhere) return { message: elsewhere, cancelled: true }
+    if (lab_) throw new BoardError('conflict', `实验室 ${lab_} 没有在做什么，不用取消`)
+    const route = lab.backends.route(name)
+    if (!route.backend.cancel) throw new BoardError('conflict', `${name} 没有在做什么，不用取消`)
+    lab.locks.authorize(name, who(holder, body))
+    const message = await route.backend.cancel(route.config, route.target)
+    lab.kernel.record(holder, name, 'cancel', null, true, message)
+    return { message, cancelled: true }
   }
   return [
     { method: 'GET', path: '/api', about: '列出所有接口和模块', handle: () => ({ endpoints: lab.api.list().map(item => `${item.method} ${item.path}`), described: lab.api.list(), modules: lab.modules() }) },
@@ -59,8 +85,8 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     { method: 'POST', path: '/api/steal', about: '抢锁（只有人可以，要写原因）', handle: ({ body, caller }) => lab.locks.steal(board(body), caller.holder, String(body.reason ?? '')) },
 
     // ---------- relay ----------
-    { method: 'POST', path: '/api/reset', about: '复位', handle: async ({ body, caller }) => { const name = board(body); await doing(name, 'reset', '复位中', caller.holder, body, signal => lab.relay.reset(name, who(caller.holder, body), signal)) } },
-    { method: 'POST', path: '/api/fastboot', about: '进下载模式', handle: async ({ body, caller }) => { const name = board(body); await doing(name, 'fastboot', '进下载模式中', caller.holder, body, signal => lab.relay.fastboot(name, who(caller.holder, body), signal)) } },
+    { method: 'POST', path: '/api/reset', about: '复位', handle: async ({ body, caller }) => { const name = board(body); await doing(name, 'reset', '复位中', caller.holder, body, signal => lab.relay.reset(name, who(caller.holder, body), signal), false, 'reset') } },
+    { method: 'POST', path: '/api/fastboot', about: '进下载模式', handle: async ({ body, caller }) => { const name = board(body); await doing(name, 'fastboot', '进下载模式中', caller.holder, body, signal => lab.relay.fastboot(name, who(caller.holder, body), signal), false, 'download') } },
     { method: 'GET', path: '/api/relay', about: '板子的继电器和按钮（后端能单独控制时）', handle: ({ query }) => lab.relay.channels(named(query.get('board'))) },
     {
       method: 'POST', path: '/api/relay', about: '控制板子的一个继电器或按钮：on、off、toggle、pulse、press、release、click（要拿锁）',
@@ -103,30 +129,23 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     { method: 'POST', path: '/api/send', about: '往串口发一行，可以等某个输出', handle: ({ body, caller }) => lab.consoles.send(board(body), who(caller.holder, body), { die: body.die, text: String(body.text ?? ''), newline: body.newline, wait: body.wait, timeoutMs: body.timeoutMs }) },
 
     // ---------- download ----------
-    { method: 'POST', path: '/api/stage', about: '往内存加载 boardd 自带的固件', handle: async ({ body, caller }) => { const name = board(body); return { output: await doing(name, 'stage', '加载固件中', caller.holder, body, () => lab.download.stage(name, who(caller.holder, body), { die: body.die, firmware: required(body.firmware, 'firmware') }), true) } } },
+    { method: 'POST', path: '/api/stage', about: '往内存加载 boardd 自带的固件', handle: async ({ body, caller }) => { const name = board(body); return { output: await doing(name, 'stage', '加载固件中', caller.holder, body, signal => lab.download.stage(name, who(caller.holder, body), { die: body.die, firmware: required(body.firmware, 'firmware') }, signal), true, 'stage') } } },
     {
       method: 'POST', path: '/api/boot', about: '按顺序加载文件，从内存启动', handle: async ({ body, caller }) => {
         if (!Array.isArray(body.files) || body.files.some((file: unknown) => typeof file !== 'string')) throw new BoardError('invalid', 'files 要是文件路径数组')
         const name = board(body)
-        return { output: await doing(name, 'boot', '启动中', caller.holder, body, () => lab.download.boot(name, who(caller.holder, body), { die: body.die, files: body.files }), true) }
+        // A backend that runs the whole boot itself stops it if it says so; boardd's own file-by-file boot stops between files.
+        const operation = lab.backends.route(name).backend.download.boot ? 'boot' as const : true
+        return { output: await doing(name, 'boot', '启动中', caller.holder, body, signal => lab.download.boot(name, who(caller.holder, body), { die: body.die, files: body.files }, signal), true, operation) }
       },
     },
     {
-      method: 'POST', path: '/api/board/cancel', about: '让板子上正在做的启动或刷机停下（要拿锁）：它在下一步之前结束',
-      handle: async ({ body, caller }) => {
-        const name = board(body)
-        const busy = lab.kernel.busy.get(name)
-        if (busy && (busy.kind === 'discover' || busy.kind === 'rebuild')) {
-          throw new BoardError('conflict', `${name} 正在${busy.label.replace(/中$/, '')}（实验室的操作，没有单独的锁）：到实验室那一栏取消发现，或者等它结束`)
-        }
-        lab.locks.authorize(name, who(caller.holder, body))
-        if (!busy) throw new BoardError('conflict', `${name} 没有在启动或刷机，不用取消`)
-        const route = lab.backends.route(name)
-        if (!route.backend.cancel) throw new BoardError('invalid', `${name} 所在的后端不能取消`)
-        // Not `kernel.doing`: the point is to stop what holds the board busy, and `doing` refuses a busy board. The
-        // run under it is not touched — the backend cancels its own job, and that run ends before its next step.
-        return { message: await route.backend.cancel(route.config, route.target) }
-      },
+      method: 'POST', path: '/api/cancel', about: '让正在做的操作停下：target 是板子（要拿锁，板子有锁时）或 lab:<实验室>；它在正在做的那一步结束后停下，回答 cancelled',
+      handle: ({ body, caller }) => cancel(required(body.target, 'target'), caller.holder, body),
+    },
+    {
+      method: 'POST', path: '/api/board/cancel', about: '同 /api/cancel，target 是 board',
+      handle: ({ body, caller }) => cancel(required(body.board, 'board'), caller.holder, body),
     },
     {
       method: 'GET', path: '/api/boot/breaks', about: '一个 SDK 的启动流程可以在哪停下（recipe 里的 breaker），调试 U-Boot、内核时用',
@@ -139,14 +158,14 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     },
     { method: 'POST', path: '/api/boot/sdk', about: '用 SDK 的构建启动（load）或刷机（download）', handle: async ({ body, caller }) => {
         const name = board(body), method = body.method === 'download' ? 'download' : 'load'
-        return { output: await doing(name, 'boot', method === 'download' ? '刷机中' : '启动中', caller.holder, body, () => lab.download.build(name, who(caller.holder, body), { sdk: required(body.sdk, 'sdk'), method, variant: optional(body.variant), brk: optional(body.brk) }), true) }
+        return { output: await doing(name, 'boot', method === 'download' ? '刷机中' : '启动中', caller.holder, body, (signal, line) => lab.download.build(name, who(caller.holder, body), { sdk: required(body.sdk, 'sdk'), method, variant: optional(body.variant), brk: optional(body.brk) }, signal, line), true, 'build') }
       },
     },
     {
       method: 'POST', path: '/api/flash/package', about: '用刷机包刷机：url（http/https，后端自己下载）或传上来的文件（sha256），flasher 选刷机工具', handle: async ({ body, caller }) => {
         const name = board(body)
         const input = { url: optional(body.url), sha256: optional(body.sha256), flasher: optional(body.flasher) }
-        return { output: await doing(name, 'boot', '刷机中', caller.holder, body, (signal, line) => lab.download.flashPackage(name, who(caller.holder, body), input, signal, line), true) }
+        return { output: await doing(name, 'boot', '刷机中', caller.holder, body, (signal, line) => lab.download.flashPackage(name, who(caller.holder, body), input, signal, line), true, 'flash') }
       },
     },
 
@@ -196,7 +215,7 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
       }),
     },
     { method: 'GET', path: '/api/models', about: '人们自己填过的板子型号，最近用的在前（给下拉列表）', handle: () => ({ models: lab.boards.models() }) },
-    { method: 'POST', path: '/api/boards/refresh', about: '槽位里换了板子以后重新读取它（要拿锁；name 改名，rename 按读到的改名）', handle: ({ body, caller }) => { const name = board(body); return doing(name, 'refresh', '读取中', caller.holder, body, signal => lab.backends.refresh(name, who(caller.holder, body), { name: optional(body.name), rename: body.rename === true }, signal)) } },
+    { method: 'POST', path: '/api/boards/refresh', about: '槽位里换了板子以后重新读取它（要拿锁；name 改名，rename 按读到的改名）', handle: ({ body, caller }) => { const name = board(body); return doing(name, 'refresh', '读取中', caller.holder, body, signal => lab.backends.refresh(name, who(caller.holder, body), { name: optional(body.name), rename: body.rename === true }, signal), false, 'refresh') } },
     { method: 'POST', path: '/api/proposals', about: '应用或拒绝改动建议', handle: async ({ body, caller }) => { await lab.proposals.resolve(caller.holder, body.ids ?? [], body.decision === 'apply' ? 'apply' : 'reject', body.names && typeof body.names === 'object' ? body.names : {}) } },
 
     // ---------- backends ----------

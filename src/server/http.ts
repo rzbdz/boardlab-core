@@ -14,7 +14,7 @@ import type { BoardLab } from '../core/lab.ts'
 import { HOLDER } from '../core/text.ts'
 import { API_VERSION } from '../shared/types.ts'
 
-const STATUS: Record<BoardError['code'], number> = { 'not-found': 404, invalid: 400, locked: 423, forbidden: 403, conflict: 409, hardware: 502 }
+const STATUS: Record<BoardError['code'], number> = { 'not-found': 404, invalid: 400, locked: 423, forbidden: 403, conflict: 409, hardware: 502, cancelled: 409 }
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.map': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png' }
 const HOLDER_HEADER = 'x-boards-holder'
 const USER_HEADER = 'x-boards-user'

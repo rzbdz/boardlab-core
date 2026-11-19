@@ -164,15 +164,15 @@ export interface LogRange { lines: string[], matched: number, truncated: boolean
 export interface DownloadCapability {
   /** Can fetch HTTP(S) URLs and read absolute paths on its own host during a whole-sequence boot. */
   backendFiles?: boolean
-  /** Load a file into RAM through the download port and let it run. */
-  stage(config: LabConfig, target: BoardTarget, file: BootFile, timeoutMs?: number): Promise<string>
+  /** Load a file into RAM through the download port and let it run. `signal` aborts it (see `Backend.cancels`). */
+  stage(config: LabConfig, target: BoardTarget, file: BootFile, timeoutMs?: number, signal?: AbortSignal): Promise<string>
   /** Whether the download port is enumerated. */
   present(config: LabConfig, target: BoardTarget): Promise<boolean>
   /**
    * For a backend that can run a whole RAM boot itself: load the files in order, waiting for the download port between
    * them as `timing` says, in one call. Without it boardd stages file by file.
    */
-  boot?(config: LabConfig, target: BoardTarget, files: BootFile[], timing: PortTiming): Promise<string>
+  boot?(config: LabConfig, target: BoardTarget, files: BootFile[], timing: PortTiming, signal?: AbortSignal): Promise<string>
 }
 
 /** The boards of a backend that lists them itself; the rest register boards through boardd. */
@@ -272,7 +272,7 @@ export interface FlashPackage { url?: string, path?: string, sha256?: string | n
 
 /** For a backend that knows named builds (SDKs): booting or flashing a board with one, fetching the build itself. */
 export interface BuildsCapability {
-  boot(config: LabConfig, target: BoardTarget, build: { sdk: string, method: 'load' | 'download', variant: string | null, brk?: string | null }, progress: (line: string) => void): Promise<string>
+  boot(config: LabConfig, target: BoardTarget, build: { sdk: string, method: 'load' | 'download', variant: string | null, brk?: string | null }, progress: (line: string) => void, signal?: AbortSignal): Promise<string>
   /** Where an SDK's boot recipe can stop early (`breaker: NAME` in the recipe), for debugging one stage on its own. */
   breaks?(config: LabConfig, sdk: string): Promise<{ load: string[], download: string[] }>
   /**
@@ -312,7 +312,17 @@ export interface Backend {
   discovery?: DiscoveryCapability
   ports?: PortsCapability
   builds?: BuildsCapability
-  /** Let go of the operation running on a board (a boot stuck at a wait, a flash nobody wants): it ends soon. */
+  /**
+   * The operations this backend stops when the signal it was given aborts: boardd then offers a cancel for them
+   * (`Busy.cancellable`, `POST /api/cancel`). A backend that stops one by telling its own job to end should keep
+   * following that job until it has ended, so the board's state is known, and then throw a `CancelledError`.
+   * What boardd runs step by step itself (a RAM boot file by file) stops between steps whatever is listed here.
+   */
+  cancels?: readonly CancellableOperation[]
+  /**
+   * Let go of the operation running on a board that boardd is not running itself (one left by a boardd that
+   * restarted, a job started outside boardd): it ends soon.
+   */
   cancel?(config: LabConfig, target: BoardTarget): Promise<string>
   news?: NewsCapability
   /** A backend whose own record names the board: renaming it there too. */
@@ -320,6 +330,16 @@ export interface Backend {
   /** For a backend whose boards can be debugged (halt/run/regs, a trace channel, an endpoint other tools connect to). */
   debug?: DebugCapability
 }
+
+/**
+ * The long operations a backend can be asked to stop: restarting (`reset`, `download`), loading (`stage`, a backend's
+ * own RAM `boot`), a named build (`build`), a package (`flash`), reading a board again (`refresh`), and finding boards
+ * (`discover`, which a rebuild is too).
+ */
+export type CancellableOperation = 'reset' | 'download' | 'stage' | 'boot' | 'build' | 'flash' | 'refresh' | 'discover'
+
+/** Whether `backend` stops `operation` when its signal aborts. */
+export const stops = (backend: Backend, operation: CancellableOperation) => !!backend.cancels?.includes(operation)
 
 /** `user@host` or `user@host:port`, the form of a backend's jump-host setting. */
 export const JUMP = /^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+(:\d{1,5})?$/

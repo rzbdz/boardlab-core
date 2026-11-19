@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs'
 import { basename, isAbsolute } from 'node:path'
 import type { Firmware } from '../shared/types.ts'
 import type { BootFile, DownloadCapability, FlashPackage, LabConfig, BoardTarget } from './backend.ts'
-import { BoardError } from './errors.ts'
+import { BoardError, CancelledError, isCancelled } from './errors.ts'
 import { readFirmware, verifiedFirmware } from './firmware.ts'
 import { askedIn } from './relay.ts'
 import type { BoardLab } from './lab.ts'
@@ -52,18 +52,19 @@ export class Download {
   }
 
   /** Load one of boardd's own firmware files into a chip's RAM through its download port. Never flashes. */
-  async stage(board: string, caller: Caller, input: { die?: string, firmware: string }): Promise<string> {
+  async stage(board: string, caller: Caller, input: { die?: string, firmware: string }, signal?: AbortSignal): Promise<string> {
     const lease = this.lab.locks.authorize(board, caller)
     const { board: target, chip, route } = this.port(board, input.die)
     const image = this.verifiedFirmware(input.firmware, target.soc)
     try {
-      const output = await route.backend.download.stage(route.config, route.target, image)
+      const output = await route.backend.download.stage(route.config, route.target, image, undefined, signal)
       this.lab.kernel.record(lease.holder, board, 'stage', `${chip.die}: ${image.purpose} ${image.sha256.slice(0, 12)}`, true)
       this.unknown(board)
       return output
     } catch (error) {
-      this.lab.kernel.record(lease.holder, board, 'stage', `${chip.die}: ${image.purpose}`, false, (error as Error).message)
-      throw new BoardError('hardware', (error as Error).message)
+      const failure = failed(error, signal)
+      this.lab.kernel.record(lease.holder, board, 'stage', `${chip.die}: ${image.purpose}`, false, failure.message)
+      throw failure
     }
   }
 
@@ -73,7 +74,7 @@ export class Download {
    * CLI sent. A backend that declares `backendFiles` can also fetch an HTTP(S) URL or read `host:/absolute/path`
    * itself. Anything else is a file on this machine. Never flashes.
    */
-  async boot(board: string, caller: Caller, input: { die?: string, files: string[] }): Promise<string> {
+  async boot(board: string, caller: Caller, input: { die?: string, files: string[] }, signal?: AbortSignal): Promise<string> {
     const lease = this.lab.locks.authorize(board, caller)
     const { board: target, chip, route } = this.port(board, input.die)
     if (!input.files.length) throw new BoardError('invalid', '要按顺序给出启动文件，例如 fsbl u-boot-opensbi /path/Image.itb')
@@ -103,12 +104,13 @@ export class Download {
       // The backend runs the whole sequence, under its own busy guard and log.
       const names = files.map((file, index) => `${index + 1}/${files.length} ${basename(file.path)} ${file.sha256.slice(0, 12) || '板卡主机取文件'}`).join('，')
       try {
-        const output = await download.boot(route.config, route.target, files, this.timing)
+        const output = await download.boot(route.config, route.target, files, this.timing, signal)
         this.lab.kernel.record(lease.holder, board, 'boot', `${chip.die}: ${names}`, true, files.map(file => file.path).join(' '))
         return [...listing, output].join('\n')
       } catch (error) {
-        this.lab.kernel.record(lease.holder, board, 'boot', `${chip.die}: ${names}`, false, (error as Error).message)
-        throw new BoardError('hardware', `实验室没能内存启动：${(error as Error).message}`)
+        const failure = failed(error, signal, '实验室没能内存启动：')
+        this.lab.kernel.record(lease.holder, board, 'boot', `${chip.die}: ${names}`, false, failure.message)
+        throw failure
       } finally { this.unknown(board) }
     }
     const outputs: string[] = []
@@ -116,12 +118,15 @@ export class Download {
       for (const [index, file] of files.entries()) {
         const step = `${chip.die}: ${index + 1}/${files.length} ${basename(file.path)} ${file.sha256.slice(0, 12)}`
         try {
-          if (index) await this.portBack(download, route.config, route.target, index === 1 ? this.timing.firstMs : this.timing.laterMs)
-          outputs.push(await download.stage(route.config, route.target, file, this.timing.stageMs))
+          // Each file is a step: a cancel takes effect before the next one starts.
+          stopped(signal)
+          if (index) await this.portBack(download, route.config, route.target, index === 1 ? this.timing.firstMs : this.timing.laterMs, signal)
+          outputs.push(await download.stage(route.config, route.target, file, this.timing.stageMs, signal))
           this.lab.kernel.record(lease.holder, board, 'boot', step, true, file.path)
         } catch (error) {
-          this.lab.kernel.record(lease.holder, board, 'boot', step, false, (error as Error).message)
-          throw new BoardError('hardware', `第 ${index + 1} 个文件 ${file.path} 没有加载成功：${(error as Error).message}`)
+          const failure = failed(error, signal, `第 ${index + 1} 个文件 ${file.path} 没有加载成功：`)
+          this.lab.kernel.record(lease.holder, board, 'boot', step, false, failure.message)
+          throw failure
         }
       }
     } finally { this.unknown(board) }
@@ -129,9 +134,10 @@ export class Download {
   }
 
   /** Wait for the stage just started to bring the download port back. */
-  private async portBack(download: DownloadCapability, config: LabConfig, target: BoardTarget, settleMs: number): Promise<void> {
+  private async portBack(download: DownloadCapability, config: LabConfig, target: BoardTarget, settleMs: number, signal?: AbortSignal): Promise<void> {
     await this.lab.kernel.sleep(settleMs)
     for (let waited = 0; ; waited += this.timing.pollMs) {
+      stopped(signal)
       if (await download.present(config, target)) return
       if (waited >= this.timing.waitMs) throw new Error(`下载口 ${target.usbPath} 在 ${(settleMs + this.timing.waitMs) / 1000} 秒内没有重新出现，上一个文件可能没有起来；看串口日志`)
       await this.lab.kernel.sleep(this.timing.pollMs)
@@ -142,7 +148,7 @@ export class Download {
    * Boot a board with a named build: from RAM (`load`) or by flashing it (`download`). The backend gets the build to the
    * board itself (a board host pulls it from its build server), so nothing passes through here.
    */
-  async build(board: string, caller: Caller, input: { sdk: string, method?: 'load' | 'download', variant?: string | null, brk?: string | null }): Promise<string> {
+  async build(board: string, caller: Caller, input: { sdk: string, method?: 'load' | 'download', variant?: string | null, brk?: string | null }, signal?: AbortSignal, line?: (text: string) => void): Promise<string> {
     const lease = this.lab.locks.authorize(board, caller)
     const route = this.lab.backends.route(board)
     const builds = route.backend.builds
@@ -155,12 +161,13 @@ export class Download {
     if (known.length && !known.includes(input.sdk)) throw new BoardError('invalid', `${board} 不能跑 SDK ${input.sdk}（可以：${known.join('、')}）`)
     const detail = `${input.sdk} ${method === 'download' ? '刷机' : '内存启动'}${input.variant ? ` ${input.variant}` : ''}${input.brk ? ` 停在 ${input.brk}` : ''}`
     try {
-      const output = await builds.boot(route.config, route.target, { sdk: input.sdk, method, variant: input.variant ?? null, brk: input.brk ?? null }, this.follow(board))
+      const output = await builds.boot(route.config, route.target, { sdk: input.sdk, method, variant: input.variant ?? null, brk: input.brk ?? null }, this.follow(board, line), signal)
       this.lab.kernel.record(lease.holder, board, method === 'download' ? 'flash' : 'boot', detail, true)
       return output
     } catch (error) {
-      this.lab.kernel.record(lease.holder, board, method === 'download' ? 'flash' : 'boot', detail, false, (error as Error).message)
-      throw new BoardError('hardware', `${detail}没有成功：${(error as Error).message}`)
+      const failure = failed(error, signal, `${detail}没有成功：`)
+      this.lab.kernel.record(lease.holder, board, method === 'download' ? 'flash' : 'boot', detail, false, failure.message)
+      throw failure
     } finally { this.ended(board) }
   }
 
@@ -191,8 +198,9 @@ export class Download {
       this.lab.kernel.record(lease.holder, board, 'flash', detail, true)
       return output
     } catch (error) {
-      this.lab.kernel.record(lease.holder, board, 'flash', detail, false, (error as Error).message)
-      throw new BoardError('hardware', `${detail} 没有刷成功：${(error as Error).message}`)
+      const failure = failed(error, signal, `${detail} 没有刷成功：`)
+      this.lab.kernel.record(lease.holder, board, 'flash', detail, false, failure.message)
+      throw failure
     } finally { this.ended(board) }
   }
 
@@ -214,6 +222,20 @@ export class Download {
     this.lab.relay.attend(board, null)
     this.unknown(board)
   }
+}
+
+/** A cancelled run ends here, before its next step. */
+function stopped(signal?: AbortSignal) {
+  if (signal?.aborted && signal.reason instanceof CancelledError) throw signal.reason
+}
+
+/**
+ * What a load or flash that threw reports: a cancel as itself (已取消, whatever the backend said), a failure of the
+ * hardware with `prefix` before the backend's words.
+ */
+function failed(error: unknown, signal: AbortSignal | undefined, prefix = ''): BoardError {
+  if (isCancelled(error, signal)) return error instanceof CancelledError ? error : signal!.reason as CancelledError
+  return new BoardError('hardware', `${prefix}${(error as Error).message}`)
 }
 
 /** A package's address: http or https, with no login in it (a backend's host downloads it; logs show it). */

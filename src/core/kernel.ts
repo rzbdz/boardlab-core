@@ -5,7 +5,7 @@
 import { EventEmitter } from 'node:events'
 import type { DatabaseSync } from 'node:sqlite'
 import type { BoardEvent, Busy } from '../shared/types.ts'
-import { BoardError, BusyError } from './errors.ts'
+import { BoardError, BusyError, CancelledError } from './errors.ts'
 import { addColumn } from './db.ts'
 
 export interface KernelOptions {
@@ -36,35 +36,76 @@ export class Kernel {
 
   /** What is being done to each board right now (`doing`). */
   readonly busy = new Map<string, Busy>()
-  /** The lease each of them runs under, if any, and how to stop it. */
-  private readonly running = new Map<Busy, { lease: string | null, stop: AbortController }>()
+  /** The lease each of them runs under (null: it holds its boards until it ends), and how to stop it. */
+  private readonly running = new Map<Busy, { lease: string | null, stop: AbortController, targets: string[] }>()
 
   /**
    * Do `run` to `boards` (or to a lab, as `lab:<id>`), shown as busy on each of them while it runs (with its progress lines, through the `line`
    * it is given). A board already busy is refused, so two operations never overlap on one board. One done under a lock
    * (`lease`) holds the boards only as long as the lock: once it is released or stolen (`leaseEnded`) the boards are
-   * free for the next holder and `run`'s signal aborts.
+   * free for the next holder and `run`'s signal aborts. One without a lease (a load or a flash, which must not be left
+   * halfway) keeps its boards busy until it ends, whatever happens to the lock.
+   *
+   * `cancellable` (what the run's backend reports) says the run honours its signal: `cancel` then aborts it with a
+   * CancelledError, and its boards stay busy until the run returns, so the backend ends what it was doing first and the
+   * board's state is known. A run that fails after a cancel fails with that CancelledError; one that finished anyway
+   * (its backend was already past the last step) returns what it did.
    */
   async doing<T>(boards: string[], kind: string, label: string, by: string, run: (line: (text: string) => void, signal: AbortSignal) => Promise<T>,
-    options: { lease?: string | null } = {}): Promise<T> {
+    options: { lease?: string | null, cancellable?: boolean } = {}): Promise<T> {
     const taken = boards.find(board => this.busy.has(board))
     if (taken) {
       const now = this.busy.get(taken)!
       throw new BusyError(`${taken} 正在${now.label.replace(/中$/, '')}（${now.by}，${now.since.slice(11, 19)} 开始），等它完成`)
     }
-    const entry: Busy = { kind, label, by, since: this.iso(), line: null }
+    const entry: Busy = { kind, label, by, since: this.iso(), line: null, cancellable: options.cancellable ?? false }
     for (const board of boards) this.busy.set(board, entry)
     const stop = new AbortController()
-    this.running.set(entry, { lease: options.lease ?? null, stop })
+    this.running.set(entry, { lease: options.lease ?? null, stop, targets: boards })
     const changed = () => { if (boards.length === 1) this.changed(boards[0]!); else this.changed(null) }
     changed()
+    const cancelled = () => stop.signal.aborted && stop.signal.reason instanceof CancelledError ? stop.signal.reason : null
     try {
       return await run(text => { entry.line = text; changed() }, stop.signal)
+    } catch (error) {
+      const reason = cancelled()
+      throw reason && !(error instanceof CancelledError) ? reason : error
     } finally {
       this.running.delete(entry)
       for (const board of boards) if (this.busy.get(board) === entry) this.busy.delete(board)
       changed()
     }
+  }
+
+  /**
+   * Stop what is being done to `target` (a board, or `lab:<id>`), whatever kind of operation it is: its run's signal
+   * aborts with a CancelledError. Throws when nothing runs there, or when what runs cannot be stopped halfway. The
+   * boards stay busy until the run has ended.
+   */
+  cancel(target: string, by: string): { message: string, busy: Busy, targets: string[] } {
+    const entry = this.busy.get(target)
+    const run = entry ? this.running.get(entry) : undefined
+    if (!entry || !run) throw new BoardError('conflict', `${target} 没有在做什么，不用取消`)
+    const what = entry.label.replace(/中$/, '')
+    if (!entry.cancellable) throw new BoardError('invalid', `${target} 正在${what}，这一步不能中途取消，等它结束`)
+    if (!run.stop.signal.aborted) {
+      run.stop.abort(new CancelledError(`已取消：${target} 的${what}被 ${by} 取消了`))
+      this.record(by, target.startsWith('lab:') ? null : target, 'cancel', entry.label, true, null)
+    }
+    return { message: `让 ${target} 的${what}停下：正在做的那一步结束后就停`, busy: entry, targets: run.targets }
+  }
+
+  /**
+   * What a module runs outside `doing` and can stop (a scan over several boards, say): asked, in turn, to cancel what
+   * it does to a target. Each answers with a message when it stopped something there, or null when it runs nothing
+   * there. `POST /api/cancel` asks them after the runs `doing` keeps.
+   */
+  private readonly cancellers: Array<(target: string, by: string) => string | null> = []
+  addCanceller(canceller: (target: string, by: string) => string | null) { this.cancellers.push(canceller) }
+  /** Ask the modules' cancellers to stop what they do to `target`; null when none runs anything there. */
+  cancelElsewhere(target: string, by: string): string | null {
+    for (const canceller of this.cancellers) { const said = canceller(target, by); if (said) return said }
+    return null
   }
 
   /** A lock ended: what ran under it no longer keeps its boards busy, and is told to stop. */

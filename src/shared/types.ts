@@ -49,6 +49,11 @@ export interface Busy {
   since: string
   /** The latest progress line, while there is one. */
   line: string | null
+  /**
+   * Whether it can be stopped (`POST /api/cancel`): the backend doing it says it honours a cancel. A run that cannot
+   * be stopped halfway (writing a backend's settings, say) is not.
+   */
+  cancellable: boolean
 }
 
 export interface Chip {

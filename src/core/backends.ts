@@ -10,7 +10,7 @@ import { transaction } from './db.ts'
 import { checkDiscoveryContext, checkedValues, chosenMethod, HOST } from './discovery.ts'
 import { askedIn } from './relay.ts'
 import { renameBoard } from './rename.ts'
-import { BoardError, BusyError } from './errors.ts'
+import { BoardError, BusyError, CancelledError } from './errors.ts'
 import type { BoardLab } from './lab.ts'
 import type { Caller } from './locks.ts'
 import { BOARD_NAME, str } from './text.ts'
@@ -521,14 +521,15 @@ export class Backends {
     // A person's cancel and the lock's end both stop it: whichever comes first.
     const run = (line: (text: string) => void, signal: AbortSignal) => search(
       text => { report(text); line(text) }, onRegistered, AbortSignal.any([signal, stop.signal]))
-    try { result = targets.length ? await this.lab.kernel.doing(targets, kind === 'lab-discover' ? 'discover' : 'rebuild', label, actor, run) : await run(() => {}, stop.signal) }
+    // A search stops when it is told to, so the boards it holds can be cancelled one by one too (`Kernel.cancel`).
+    try { result = targets.length ? await this.lab.kernel.doing(targets, kind === 'lab-discover' ? 'discover' : 'rebuild', label, actor, run, { cancellable: true }) : await run(() => {}, stop.signal) }
     catch (error) {
       if (error instanceof BusyError) { report(`没开始：${error.message}`, false); this.findingStops.delete(id); throw error }
-      if (stop.signal.aborted) {
+      if (stop.signal.aborted || error instanceof CancelledError) {
         report('已取消', false)
         this.lab.kernel.record(actor, null, kind, detail, false, '已取消')
         this.findingStops.delete(id)
-        throw new BoardError('conflict', `实验室 ${id} 的发现已取消（已经登记和正在跑的那一步可能还会完成）`)
+        throw new CancelledError(`已取消：实验室 ${id} 的发现（已经登记和正在跑的那一步可能还会完成）`)
       }
       report(`失败：${(error as Error).message}`, false)
       this.lab.kernel.record(actor, null, kind, detail, false, (error as Error).message)
@@ -553,6 +554,9 @@ export class Backends {
     return { message: result.message, proposals: result.found.length, registered }
   }
 
+  /** A discovery or rebuild is running on instance `id`. */
+  discovering(id: string): boolean { return !!this.findingStops.get(id) && !!this.discoveries.get(id)?.running }
+
   /**
    * Have a discovery or rebuild stop: the backend's current step is told to end (the backend's current step is stopped; the
    * host's job may still finish the step it runs). Boards it touched stop showing busy.
@@ -561,7 +565,7 @@ export class Backends {
     this.configurable(id)
     const stop = this.findingStops.get(id)
     if (!stop || !this.discoveries.get(id)?.running) throw new BoardError('conflict', `实验室 ${id} 没有在找板子`)
-    stop.abort(new Error('取消'))
+    stop.abort(new CancelledError(`已取消：${actor} 取消了实验室 ${id} 的发现`))
     this.lab.kernel.record(actor, null, 'lab-discover-cancel', id, true, null)
     this.lab.kernel.changed(null)
     return { message: `让 ${id} 的发现停下：已经登记和正在进行的那一步会留着，不会影响别的板子` }
