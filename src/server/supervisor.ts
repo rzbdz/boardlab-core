@@ -36,6 +36,18 @@ interface Drain { type: 'drain' }
 const isReady = (message: unknown): message is Ready => (message as Ready | undefined)?.type === 'ready'
 
 /**
+ * Set to `1` for a worker started while another one is still alive (an update's new worker beside the old one, a
+ * replacement while retired workers finish their connections): it shares the database with that one, so it must not
+ * move a damaged file aside and restore a copy under it. It refuses to start instead, and the live one keeps serving.
+ */
+export const SHARED_DATABASE_ENV = 'BOARDLAB_SHARED_DATABASE'
+
+/** The environment for a new worker: whether any other worker is still alive decides whether it shares the database. */
+export function workerEnv(base: NodeJS.ProcessEnv, others: Array<{ isDead(): boolean }>): NodeJS.ProcessEnv {
+  return { ...base, [SHARED_DATABASE_ENV]: others.some(worker => !worker.isDead()) ? '1' : '0' }
+}
+
+/**
  * The V8 flags a worker runs with: the supervisor's own, plus what the machine needs.
  *
  * On RISC-V, Node's V8 is not stable in every tier. A worker segfaulted under large request bodies (a 99-200 MB
@@ -89,15 +101,19 @@ export async function supervise(options: SupervisorOptions): Promise<void> {
   const fork = (exec: string, what: string): Worker => {
     setup(exec)
     latestCli = exec
-    const worker = cluster.fork(env)
-    worker.on('message', message => { if (isReady(message)) { current = worker; serve(message) } })
+    const worker = cluster.fork(workerEnv(env, Object.values(cluster.workers ?? {}).filter((item): item is Worker => !!item)))
+    let ready = false
+    worker.on('message', message => { if (isReady(message)) { ready = true; current = worker; serve(message) } })
     worker.on('exit', (code, signal) => {
       if (current === worker) current = null
       // An old generation going away once its last connection ended, or a worker the update replaced: not a crash.
       if (stopping || retired.has(worker)) return
       if (updating) return
       console.error(`boardd worker ${worker.process.pid} (${what}) exited (${signal ?? code}); starting another`)
-      fork(latestCli, 'replacement')
+      // One that never came up (a database it may not restore while retired workers still use it) is not retried at
+      // once: the next try comes when they may have gone.
+      if (ready) fork(latestCli, 'replacement')
+      else setTimeout(() => { if (!stopping && !updating) fork(latestCli, 'replacement') }, 5_000).unref()
     })
     return worker
   }

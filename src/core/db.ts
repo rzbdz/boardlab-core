@@ -16,6 +16,12 @@ const SCHEMA_VERSION = 7
 export interface OpenOptions {
   /** Check the file first and, when it fails, restore it from the newest good copy in this directory (see `recoverDatabase`). */
   backups?: string
+  /**
+   * Whether a damaged file may be moved aside and restored (default true). False for a process that shares the file
+   * with another one still using it (a worker an update starts beside the old one): it refuses to open a damaged file
+   * instead, and leaves it to the other process.
+   */
+  restore?: boolean
   /** Where to say what recovery did; it is loud on purpose. */
   log?: (message: string) => void
 }
@@ -25,7 +31,7 @@ const RESTORED = 'db.restored'
 
 export function openDatabase(file: string, options: OpenOptions = {}): DatabaseSync {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
-  const recovered = options.backups ? recoverDatabase(file, options.backups, options.log) : null
+  const recovered = options.backups ? recoverDatabase(file, options.backups, options.log, { restore: options.restore ?? true }) : null
   const db = new DatabaseSync(file)
   chmodSync(file, 0o600)
   // FULL, not the WAL default of NORMAL: a commit survives a power cut, not only a crash of boardd.
@@ -155,14 +161,19 @@ export interface Recovery { corrupt: string | null, restored: string | null, at?
  * Check `file` before boardd opens it. One that does not open or fails `PRAGMA quick_check` is moved aside (with its
  * `-wal` and `-shm`) as `<file>.corrupt-<stamp>`, never deleted, and the newest copy in `backups` that passes the same
  * check is put in its place; with none, boardd starts with an empty database. Says what it did through `log`.
+ * With `restore: false` (another process still has the file open) a damaged file is left as it is and this throws:
+ * moving it aside under the other process would leave the two on different databases.
  * Returns what happened, for tests and logs.
  */
-export function recoverDatabase(file: string, backups: string, log: (message: string) => void = message => console.error(message)): Recovery {
+export function recoverDatabase(file: string, backups: string, log: (message: string) => void = message => console.error(message), options: { restore?: boolean } = {}): Recovery {
   if (!existsSync(file)) return { corrupt: null, restored: null }
   // Read-only, so checking never changes the files (closing a writable connection would fold or drop the -wal).
   const check = checkDatabase(file, true)
   if (check.ok) return { corrupt: null, restored: null }
   if (!check.damaged) { log(`boardd 没能检查数据库 ${file}（${check.reason}），照常打开`); return { corrupt: null, restored: null } }
+  if (options.restore === false) {
+    throw new Error(`数据库 ${file} 没有通过检查（${check.reason}）；另一个 boardd 还在用它，这个不去动它，不启动`)
+  }
   const at = new Date()
   const aside = `${file}.corrupt-${fileStamp(at)}`
   renameSync(file, aside)

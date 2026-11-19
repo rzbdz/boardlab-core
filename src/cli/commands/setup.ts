@@ -104,7 +104,9 @@ const serve: Command = {
       const { supervise } = await import('../../server/supervisor.ts')
       return supervise({ stateDir, cli, args: argv.filter(arg => arg !== '--supervisor' && arg !== '--worker'), version, revision })
     }
-    const boardd = await startBoardd({ stateDir, catalog, shipped: path => shipped(path), port: flag('port') ? Number(flag('port')) : undefined, hosts, origins, uiDir, firmwareDir, cli, config: flag('config'), modules, version, revision, worker: flags.has('worker') })
+    // A worker started beside another live one shares its database: it leaves a damaged file to that one (exiting non-zero).
+    const sharedDatabase = flags.has('worker') && process.env[(await import('../../server/supervisor.ts')).SHARED_DATABASE_ENV] === '1'
+    const boardd = await startBoardd({ stateDir, catalog, shipped: path => shipped(path), port: flag('port') ? Number(flag('port')) : undefined, hosts, origins, uiDir, firmwareDir, cli, config: flag('config'), modules, version, revision, worker: flags.has('worker'), sharedDatabase })
     console.log(`boardd 已启动：${boardd.hosts.map(host => `http://${host}:${boardd.port}/`).join('  ')}  socket ${socketPathFor(stateDir)}${boardd.uiDir ? '' : flags.has('no-ui') ? '（不带网页）' : '（网页未构建）'}`)
     console.log(`模块：${boardd.lab.modules().map(item => item.id).join(', ') || '（无）'}${boardd.config.source ? `（配置 ${boardd.config.source}）` : ''}`)
     if (flags.has('worker')) {

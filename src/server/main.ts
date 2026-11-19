@@ -30,6 +30,11 @@ export interface BoarddOptions {
   revision?: string
   /** One worker under a supervisor: it shares the Unix socket with the other workers. */
   worker?: boolean
+  /**
+   * Another boardd (an older worker) still has the database open: a damaged file is left to it, and this one refuses
+   * to start rather than restore a copy under it (see supervisor.ts, SHARED_DATABASE_ENV).
+   */
+  sharedDatabase?: boolean
 }
 
 export async function startBoardd(options: BoarddOptions) {
@@ -40,9 +45,10 @@ export async function startBoardd(options: BoarddOptions) {
     stateDir: options.stateDir, shipped: options.shipped ?? (() => null), timing: config.timing,
     release: { version: options.version ?? 'dev', revision: options.revision ?? 'dev' },
   })
-  // Checked before it opens: a broken file is moved aside and the newest good copy from backups/ put in its place.
+  // Checked before it opens: a broken file is moved aside and the newest good copy from backups/ put in its place, by
+  // a boardd that is the only one using it. One that shares it with another worker refuses to start instead.
   const file = join(options.stateDir, 'boards.sqlite'), backups = join(options.stateDir, 'backups')
-  const db = openDatabase(file, { backups })
+  const db = openDatabase(file, { backups, restore: !options.sharedDatabase })
   const lab = new BoardLab({
     db, firmwareDir: options.firmwareDir, filesDir: join(options.stateDir, 'files'),
     bootTiming: config.timing.boot, consoleTiming: config.timing.console, modules,
