@@ -268,7 +268,8 @@ export interface PortsCapability {
  * A flash package to write to a board: an http(s) `url` the backend downloads itself, or a file on this machine (`path`,
  * with its `sha256`). `flasher` names the backend's tool to write it with; null lets the backend choose.
  */
-export interface FlashPackage { url?: string, path?: string, sha256?: string | null, flasher?: string | null }
+/** `refresh`: download `url` again even when the backend keeps a cached copy of it. */
+export interface FlashPackage { url?: string, path?: string, sha256?: string | null, flasher?: string | null, refresh?: boolean }
 
 /** For a backend that knows named builds (SDKs): booting or flashing a board with one, fetching the build itself. */
 export interface BuildsCapability {

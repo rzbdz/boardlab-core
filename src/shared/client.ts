@@ -359,7 +359,7 @@ export class BoardsClient {
   /** Run one of the actions the path reports (`halt`, `regs`, …). */
   debugAction(board: string, action: string, token?: string | null) { return this.call<{ debug: DebugResult }>('POST', '/api/debug', { board, action, token }) }
   /** Flash a package: a `url` the board's backend downloads, or a file sent first (`sendFile`'s `sha256:<hex>`). */
-  flashPackage(board: string, input: { url?: string, sha256?: string, flasher?: string }, token?: string | null) { return this.call<{ output: string }>('POST', '/api/flash/package', { board, ...input, token }) }
+  flashPackage(board: string, input: { url?: string, sha256?: string, flasher?: string, refresh?: boolean }, token?: string | null) { return this.call<{ output: string }>('POST', '/api/flash/package', { board, ...input, token }) }
   resolveProposals(ids: string[], decision: 'apply' | 'reject', names?: Record<string, string>) { return this.call<{ ok: true }>('POST', '/api/proposals', { ids, decision, names }) }
   /** After re-cabling: have the lab start `host` over (forget its boards, find them again). */
   labKinds() { return this.call<Array<{ kind: string, title: string, about: string }>>('GET', '/api/labs/kinds') }

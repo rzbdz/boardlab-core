@@ -186,9 +186,9 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
       },
     },
     {
-      method: 'POST', path: '/api/flash/package', about: '用刷机包刷机：url（http/https，后端自己下载）或传上来的文件（sha256），flasher 选刷机工具', handle: async ({ body, caller }) => {
+      method: 'POST', path: '/api/flash/package', about: '用刷机包刷机：url（http/https，后端自己下载）或传上来的文件（sha256），flasher 选刷机工具，refresh 让后端不用它缓存的这个链接、重新下载', handle: async ({ body, caller }) => {
         const name = board(body)
-        const input = { url: optional(body.url), sha256: optional(body.sha256), flasher: optional(body.flasher) }
+        const input = { url: optional(body.url), sha256: optional(body.sha256), flasher: optional(body.flasher), refresh: body.refresh === true }
         return { output: await doing(name, 'boot', '刷机中', caller.holder, body, (signal, line) => lab.download.flashPackage(name, who(caller.holder, body), input, signal, line), true, 'flash') }
       },
     },

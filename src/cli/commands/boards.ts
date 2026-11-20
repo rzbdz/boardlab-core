@@ -236,7 +236,7 @@ const commands: Command[] = [
   {
     name: 'flash',
     usage: [
-      'flash <board> <链接|文件> [--flasher <工具>]\t用刷机包刷机（要拿锁）：http(s) 链接由板子所在主机下载，本机的文件先传给 boardd；不给 --flasher 时板卡主机按板子、SoC、主机的顺序选第一个能用的刷机工具，下载和复位前就先检查；--flasher 指定一个，主机上没有或用不了就报错并列出可用的',
+      'flash <board> <链接|文件> [--flasher <工具>] [--refresh]\t用刷机包刷机（要拿锁）：http(s) 链接由板子所在主机下载（后端可以按链接缓存一段时间，--refresh 重新下载），本机的文件先传给 boardd；不给 --flasher 时板卡主机按板子、SoC、主机的顺序选第一个能用的刷机工具，下载和复位前就先检查；--flasher 指定一个，主机上没有或用不了就报错并列出可用的',
       'flash <board> --sdk <SDK> [--variant V]\t用 SDK 的产物刷机，同 boot --sdk <SDK> --method download',
     ],
     run: context => boot(context, 'flash'),
@@ -296,7 +296,7 @@ async function boot(context: Parameters<Command['run']>[0], command: 'boot' | 'f
   return following(client, board, () => booting(context, command), { cancelOnInterrupt: flags.has('cancel-on-interrupt'), token: token() })
 }
 
-async function booting({ client, args, flag, json, out, remote, target, token }: Parameters<Command['run']>[0], command: 'boot' | 'flash') {
+async function booting({ client, args, flag, flags, json, out, remote, target, token }: Parameters<Command['run']>[0], command: 'boot' | 'flash') {
   const { board, die } = target()
   if (command === 'flash' && !flag('sdk')) {
     const from = args[1]
@@ -305,7 +305,7 @@ async function booting({ client, args, flag, json, out, remote, target, token }:
     const link = /^[a-z][a-z0-9+.-]*:\/\//i.test(from)
     const sha256 = link ? undefined : await client.sendFile(resolve(from), size => { if (!json) console.error(`已传 ${from}（${size} 字节）`) })
     if (!json) console.error(`${board}：刷机包 ${from}，要几分钟…`)
-    const result = await client.flashPackage(board, { ...(link ? { url: from } : { sha256 }), flasher: flag('flasher') }, token())
+    const result = await client.flashPackage(board, { ...(link ? { url: from, ...(flags.has('refresh') ? { refresh: true } : {}) } : { sha256 }), flasher: flag('flasher') }, token())
     return out(result, () => console.log(result.output))
   }
   if (flag('sdk') || command === 'flash') {

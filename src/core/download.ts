@@ -173,9 +173,9 @@ export class Download {
 
   /**
    * Flash a board with a package: an http(s) `url` the backend downloads itself, or a file sent to boardd (`sha256`,
-   * bare or as `sha256:<hex>`). `flasher` names the backend's tool to write it with. `line` gets each progress line.
+   * bare or as `sha256:<hex>`). `flasher` names the backend's tool to write it with; `refresh` asks it to download a link again rather than use a copy it cached. `line` gets each progress line.
    */
-  async flashPackage(board: string, caller: Caller, input: { url?: string | null, sha256?: string | null, flasher?: string | null }, signal?: AbortSignal, line?: (text: string) => void): Promise<string> {
+  async flashPackage(board: string, caller: Caller, input: { url?: string | null, sha256?: string | null, flasher?: string | null, refresh?: boolean }, signal?: AbortSignal, line?: (text: string) => void): Promise<string> {
     const lease = this.lab.locks.authorize(board, caller)
     const route = this.lab.backends.route(board)
     const builds = route.backend.builds
@@ -187,7 +187,7 @@ export class Download {
     if (input.url) {
       const url = packageUrl(input.url)
       // The log names the package without its query, which may carry a signed URL's token.
-      pkg = { url: url.href, flasher }; what = `${url.origin}${url.pathname}`
+      pkg = { url: url.href, flasher, ...(input.refresh ? { refresh: true } : {}) }; what = `${url.origin}${url.pathname}`
     } else {
       const file = this.lab.files.resolve(input.sha256!.replace(/^sha256:/, ''))
       pkg = { path: file.path, sha256: file.sha256, flasher }; what = `${basename(file.path)} ${file.sha256.slice(0, 12)}`
