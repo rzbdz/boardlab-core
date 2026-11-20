@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDatabase } from '../src/core/db.ts'
 import { BoardLab } from '../src/core/lab.ts'
-import { CancelledError } from '../src/core/errors.ts'
+import { BoardError, CancelledError } from '../src/core/errors.ts'
 import type { Backend, BoardTarget, BootFile, LabConfig } from '../src/core/backend.ts'
 import { serve } from '../src/server/http.ts'
 import { main } from '../bare/boardlab.ts'
@@ -21,6 +21,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }))
 class Waiting implements Backend {
   kind = '测试'
   cancels: Backend['cancels'] = ['boot', 'reset']
+  cancel?: Backend['cancel']
   boots: Array<{ signal: AbortSignal | undefined }> = []
   resets = 0
   relay: Backend['relay'] = {
@@ -107,6 +108,18 @@ describe('cancelling an operation', () => {
     await again
     // Nothing running: nothing to cancel.
     await expect(call(svc, '/api/cancel', 'user:alice', { target: 'b1' })).rejects.toThrow(/不用取消/)
+  })
+
+  it("passes on a backend's own answer that nothing runs, and names a refusal as one", async () => {
+    const backend = new Waiting()
+    const svc = lab(backend)
+    const { token } = await svc.locks.lock('b1', 'claude:s1', '刷机')
+    backend.cancel = async () => { throw new BoardError('conflict', 'b1：主机上没有在跑的任务；上一个 j-1（flash）failed') }
+    const nothing = await call(svc, '/api/cancel', 'claude:s1', { target: 'b1', token }).catch(error => error)
+    expect(nothing).toBeInstanceOf(BoardError)
+    expect(nothing).toMatchObject({ code: 'conflict', message: expect.stringMatching(/上一个 j-1/) })
+    backend.cancel = async () => { throw new Error('host unreachable') }
+    await expect(call(svc, '/api/cancel', 'claude:s1', { target: 'b1', token })).rejects.toMatchObject({ code: 'hardware', message: expect.stringMatching(/没有停下：host unreachable/) })
   })
 
   it('stops a file-by-file boot between files, even on a backend that lists nothing', async () => {

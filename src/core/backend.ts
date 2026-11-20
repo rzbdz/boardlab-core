@@ -322,7 +322,8 @@ export interface Backend {
   cancels?: readonly CancellableOperation[]
   /**
    * Let go of the operation running on a board that boardd is not running itself (one left by a boardd that
-   * restarted, a job started outside boardd): it ends soon.
+   * restarted, a job started outside boardd): it ends soon. When nothing runs there, throw a `BoardError('conflict', …)`
+   * that says so (and what ran last): boardd passes it on as it is, not as a board that would not stop.
    */
   cancel?(config: LabConfig, target: BoardTarget): Promise<string>
   news?: NewsCapability

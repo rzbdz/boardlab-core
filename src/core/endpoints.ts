@@ -61,6 +61,9 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     try { message = await route.backend.cancel(route.config, route.target) }
     catch (error) {
       lab.kernel.record(holder, name, 'cancel', null, false, (error as Error).message)
+      // A backend that answers with a BoardError says what kind of answer it is (nothing to cancel is a conflict,
+      // not a board that would not stop): it stands as given.
+      if (error instanceof BoardError) throw error
       throw new BoardError('hardware', `${name} 没有停下：${(error as Error).message}`)
     }
     lab.kernel.record(holder, name, 'cancel', null, true, message)
