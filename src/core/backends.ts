@@ -184,7 +184,8 @@ export class Backends {
         : db.prepare('SELECT die, alias, download_usb_path FROM chips WHERE board=? ORDER BY die LIMIT 1').get(target)
       return {
         id, backend: instance.backend, config: this.config(id), isBoard: true,
-        target: { board: target, device: str(row.lab_device) ?? target, lease: str(row.lab_token), die: str(chip?.die) ?? die ?? 'die0', usbPath: str(chip?.download_usb_path), port: str(chip?.alias), gate: this.lab.locks.held(target)?.gateToken ?? null },
+        // The lease is read when asked: a long run's cancel goes under the token the lab holds then (`followLease` may take a new one).
+        target: { board: target, device: str(row.lab_device) ?? target, get lease() { return str(db.prepare('SELECT lab_token FROM boards WHERE name=?').get(target)?.lab_token) }, die: str(chip?.die) ?? die ?? 'die0', usbPath: str(chip?.download_usb_path), port: str(chip?.alias), gate: this.lab.locks.held(target)?.gateToken ?? null },
       }
     }
     const instance = [...this.instances.values()].find(item => item.backend.lockTarget?.(target))
