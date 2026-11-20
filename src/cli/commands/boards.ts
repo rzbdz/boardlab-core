@@ -236,7 +236,7 @@ const commands: Command[] = [
   {
     name: 'flash',
     usage: [
-      'flash <board> <链接|文件> [--flasher <工具>]\t用刷机包刷机（要拿锁）：http(s) 链接由板子所在主机下载，本机的文件先传给 boardd；--flasher 选刷机工具',
+      'flash <board> <链接|文件> [--flasher <工具>]\t用刷机包刷机（要拿锁）：http(s) 链接由板子所在主机下载，本机的文件先传给 boardd；不给 --flasher 时板卡主机按板子、SoC、主机的顺序选第一个能用的刷机工具，下载和复位前就先检查；--flasher 指定一个，主机上没有或用不了就报错并列出可用的',
       'flash <board> --sdk <SDK> [--variant V]\t用 SDK 的产物刷机，同 boot --sdk <SDK> --method download',
     ],
     run: context => boot(context, 'flash'),
