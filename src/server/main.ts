@@ -35,6 +35,10 @@ export interface BoarddOptions {
    * to start rather than restore a copy under it (see supervisor.ts, SHARED_DATABASE_ENV).
    */
   sharedDatabase?: boolean
+  /** Listen on nothing: a supervisor owns the port and the socket and hands connections over (`accept`). */
+  handed?: boolean
+  /** Told of each request's method and path (see ServeOptions.observe). */
+  observe?: (method: string, path: string) => void
 }
 
 export async function startBoardd(options: BoarddOptions) {
@@ -60,10 +64,11 @@ export async function startBoardd(options: BoarddOptions) {
   const port = options.port ?? DEFAULT_PORT
   // One frontend (index.html at the top), or several (frontends.json, see http.ts).
   const uiDir = options.uiDir && (existsSync(join(options.uiDir, 'index.html')) || existsSync(join(options.uiDir, 'frontends.json'))) ? options.uiDir : null
-  const server = await serve(lab, { port, hosts: options.hosts, origins: options.origins, cli: options.cli, stateDir: options.stateDir, socketPath: socketPathFor(options.stateDir), uiDir, docsDir: options.shipped?.('docs/help') ?? null, version: options.version, revision: options.revision, ownSocket: !options.worker })
+  const server = await serve(lab, { port, hosts: options.hosts, origins: options.origins, cli: options.cli, stateDir: options.stateDir, socketPath: socketPathFor(options.stateDir), uiDir, docsDir: options.shipped?.('docs/help') ?? null, version: options.version, revision: options.revision, ownSocket: !options.worker, handed: options.handed, observe: options.observe })
   const address = server.http[0]?.address()
   return {
     lab, port: address && typeof address === 'object' ? address.port : port, uiDir, config, hosts: ['127.0.0.1', ...(options.hosts ?? [])],
+    accept: server.accept, connections: server.connections, stopListening: server.stopListening, closeIdle: server.closeIdle, endEvents: server.endEvents,
     async close() {
       lab.stop()
       // Viewers are told boardd is restarting rather than seeing their streams cut; the events go out before the sockets.

@@ -102,20 +102,31 @@ const serve: Command = {
     if (flags.has('supervisor')) {
       if (!cli) throw new Error('serve --supervisor 需要从装好的 CLI 文件运行')
       const { supervise } = await import('../../server/supervisor.ts')
-      return supervise({ stateDir, cli, args: argv.filter(arg => arg !== '--supervisor' && arg !== '--worker'), version, revision })
+      return supervise({ stateDir, cli, args: argv.filter(arg => arg !== '--supervisor' && arg !== '--worker'), version, revision, port: flag('port') ? Number(flag('port')) : DEFAULT_PORT, hosts: hosts ?? [] })
     }
+    const supervisor = flags.has('worker') ? await import('../../server/supervisor.ts') : null
     // A worker started beside another live one shares its database: it leaves a damaged file to that one (exiting non-zero).
-    const sharedDatabase = flags.has('worker') && process.env[(await import('../../server/supervisor.ts')).SHARED_DATABASE_ENV] === '1'
-    const boardd = await startBoardd({ stateDir, catalog, shipped: path => shipped(path), port: flag('port') ? Number(flag('port')) : undefined, hosts, origins, uiDir, firmwareDir, cli, config: flag('config'), modules, version, revision, worker: flags.has('worker'), sharedDatabase })
+    const sharedDatabase = !!supervisor && process.env[supervisor.SHARED_DATABASE_ENV] === '1'
+    // A supervisor that owns the port and the socket hands this worker its connections (protocol 2); an older one has
+    // the worker listen through the cluster module.
+    const handed = !!supervisor && process.env[supervisor.SUPERVISOR_PROTOCOL_ENV] === '2'
+    const requests: string[] = []
+    const observe = handed ? (method: string, path: string) => { requests.push(`${method} ${path}`); if (requests.length > 8) requests.shift() } : undefined
+    const boardd = await startBoardd({ stateDir, catalog, shipped: path => shipped(path), port: flag('port') ? Number(flag('port')) : undefined, hosts, origins, uiDir, firmwareDir, cli, config: flag('config'), modules, version, revision, worker: flags.has('worker'), sharedDatabase, handed, observe })
     console.log(`boardd 已启动：${boardd.hosts.map(host => `http://${host}:${boardd.port}/`).join('  ')}  socket ${socketPathFor(stateDir)}${boardd.uiDir ? '' : flags.has('no-ui') ? '（不带网页）' : '（网页未构建）'}`)
     console.log(`模块：${boardd.lab.modules().map(item => item.id).join(', ') || '（无）'}${boardd.config.source ? `（配置 ${boardd.config.source}）` : ''}`)
-    if (flags.has('worker')) {
+    const stop = async () => { await boardd.close(); process.exit(0) }
+    if (supervisor && handed) {
+      const { superviseWorker } = await import('../../server/worker.ts')
+      // BOARDLAB_DRAIN_CAP_MS: how long a drained worker may keep its connections (default 6 hours).
+      const cap = Number(process.env.BOARDLAB_DRAIN_CAP_MS)
+      superviseWorker(boardd, { version, revision, requests, wanted: supervisor.workerExecArgv(process.arch, process.env, []), ...(cap > 0 ? { drainCapMs: cap } : {}) })
+    } else if (supervisor) {
       process.send?.({ type: 'ready', version, revision })
       // The supervisor starts a new worker and asks this one to stop taking background work; its existing connections
       // (console and event streams) and the tasks it runs live on until they end.
       process.on('message', message => { if ((message as { type?: string } | undefined)?.type === 'drain') boardd.lab.stop() })
     }
-    const stop = async () => { await boardd.close(); process.exit(0) }
     process.on('SIGINT', stop); process.on('SIGTERM', stop)
   },
 }

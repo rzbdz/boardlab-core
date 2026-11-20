@@ -29,8 +29,12 @@ export function defaultStateDir(): string {
 export const socketPathFor = (stateDir: string) => join(stateDir, 'boardd.sock')
 
 export class BoardsApiError extends Error {
-  constructor(readonly status: number, message: string, readonly code: string | null) { super(message) }
+  /** `why`: the transport said why it failed (an ssh login refused), so trying again would not help. */
+  constructor(readonly status: number, message: string, readonly code: string | null, readonly why = false) { super(message) }
 }
+
+/** The waits before a read is tried again while boardd is away: about 30 s in all, which covers a worker restart. */
+export const READ_RETRY_MS: readonly number[] = [200, 300, 500, 1000, 2000, 3000, 5000, 8000, 10_000]
 
 /**
  * Where boardd is: its Unix socket on this machine, or a boardd elsewhere reached through an ssh tunnel to its loopback
@@ -155,6 +159,8 @@ export function transportFor(config: RemoteConfig): Transport {
 
 export class BoardsClient {
   readonly transport: Transport
+  /** The waits before a read finding boardd away is tried again; a caller with its own way to wait (a hub) sets fewer. */
+  retryMs: readonly number[] = READ_RETRY_MS
   constructor(target: string | Transport = socketPathFor(defaultStateDir()), readonly holder?: string) {
     this.transport = typeof target === 'string' ? unixTransport(target) : target
   }
@@ -165,25 +171,28 @@ export class BoardsClient {
   }
 
   /**
-   * One call. A read that loses its connection before any answer (an ssh tunnel coming up, a proxy restarting) is
-   * tried once more; a write never is, since it may have been done.
+   * One call. A read that finds boardd away (its connection refused or dropped before any answer: a worker restarting,
+   * an ssh tunnel coming up, a proxy restarting) is tried again with a short backoff for about half a minute; a write
+   * never is, since it may have been done.
    */
   async call<T>(method: 'GET' | 'POST', path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-    try { return await this.once<T>(method, path, body, signal) }
-    catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      const dropped = code === 'ECONNRESET' || code === 'EPIPE' || /socket hang up/.test((error as Error).message)
-      // The transport knows why (an ssh login refused): say that, not the socket's bare "hang up". ssh may still be
-      // exiting when the write fails, so give it a moment to say why.
-      let why = dropped ? this.transport.failure?.() : null
-      for (let tries = 0; dropped && !why && this.transport.failure && tries < 20 && !signal?.aborted; tries++) {
-        await new Promise(resolve => setTimeout(resolve, 25))
-        why = this.transport.failure()
+    for (let attempt = 0; ; attempt++) {
+      try { return await this.once<T>(method, path, body, signal) }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        const dropped = code === 'ECONNRESET' || code === 'EPIPE' || /socket hang up/.test((error as Error).message)
+        const away = error instanceof BoardsApiError && error.code === 'unavailable' && error.status === 503 && !error.why
+        // The transport knows why (an ssh login refused): say that, not the socket's bare "hang up". ssh may still be
+        // exiting when the write fails, so give it a moment to say why.
+        let why = dropped ? this.transport.failure?.() : null
+        for (let tries = 0; dropped && !why && this.transport.failure && tries < 20 && !signal?.aborted; tries++) {
+          await new Promise(resolve => setTimeout(resolve, 25))
+          why = this.transport.failure()
+        }
+        if (why) throw new BoardsApiError(503, why, 'unavailable', true)
+        if (method !== 'GET' || signal?.aborted || !(dropped || away) || attempt >= this.retryMs.length) throw error
+        await new Promise(resolve => setTimeout(resolve, this.retryMs[attempt]))
       }
-      if (why) throw new BoardsApiError(503, why, 'unavailable')
-      if (method !== 'GET' || signal?.aborted || !dropped) throw error
-      await new Promise(resolve => setTimeout(resolve, 300))
-      return this.once<T>(method, path, body, signal)
     }
   }
 

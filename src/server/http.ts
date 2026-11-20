@@ -6,6 +6,7 @@
 import { spawn } from 'node:child_process'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { chmodSync, createReadStream, existsSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs'
+import type { Socket } from 'node:net'
 import { userInfo } from 'node:os'
 import { extname, join } from 'node:path'
 import { Api, EventStream, FileReply, RawReply, TextReply, type Caller, type Emit, type Endpoint } from '../core/api.ts'
@@ -34,6 +35,32 @@ export interface ServeOptions {
    * shared by every worker, so a worker neither removes nor re-permissions it.
    */
   ownSocket?: boolean,
+  /**
+   * Listen on nothing: a supervisor owns the port and the socket and hands each connection to this process (`accept`),
+   * so a worker going away never closes them.
+   */
+  handed?: boolean,
+  /** Told of each request (method and path, never the query), for the supervisor's log of what a worker last did. */
+  observe?: (method: string, path: string) => void,
+}
+
+/** What `serve` started: its servers, and how a supervised worker takes connections and knows when it is idle. */
+export interface Serving {
+  http: Server[], unix: Server
+  /** Serve a connection a supervisor accepted: on the TCP side (`http`, Host checked as usual) or the Unix socket. */
+  accept(kind: 'http' | 'unix', socket: Socket): void
+  /** Connections open now, upgraded ones included. */
+  connections(): number
+  /** Stop listening, keeping every open connection. */
+  stopListening(): void
+  /** Close the kept-alive connections no request is using (a drained worker keeps only the ones still in use). */
+  closeIdle(): void
+  /**
+   * End every `/api/events` stream: it only tells a page or a CLI that something changed, so a drained worker ends it
+   * and the client reconnects to the worker serving now (and reads the state again) instead of keeping this one alive.
+   */
+  endEvents(): void
+  close(): Promise<void>
 }
 /**
  * What the gateway's own endpoints need from how boardd runs: its own CLI (to run commands for older clients), state
@@ -252,7 +279,7 @@ function serveStatic(uiDir: string, pathname: string, response: ServerResponse) 
 }
 
 /** The page always listens on loopback; extra hosts (such as a Tailscale address) are opt-in. */
-export async function serve(lab: BoardLab, options: ServeOptions): Promise<{ http: Server[], unix: Server, close(): Promise<void> }> {
+export async function serve(lab: BoardLab, options: ServeOptions): Promise<Serving> {
   const listFrontends = () => readFrontends(options.uiDir)
   const current = (list: Frontends) => { const chosen = lab.kernel.setting(FRONTEND_SETTING); return chosen && list.frontends.some(item => item.name === chosen) ? chosen : list.default }
   const api = createApi(lab, { cli: options.cli, stateDir: options.stateDir, docsDir: options.docsDir, version: options.version, revision: options.revision })
@@ -261,12 +288,16 @@ export async function serve(lab: BoardLab, options: ServeOptions): Promise<{ htt
   const allowed = new Set([...hosts, 'localhost'].map(host => `${host}:${options.port}`))
   const origins = new Set((options.origins ?? []).map(origin => origin.replace(/\/+$/, '')))
 
+  const events = new Set<ServerResponse>()
+  const notices = (response: ServerResponse) => { events.add(response); response.once('close', () => events.delete(response)) }
   const handle = (request: IncomingMessage, response: ServerResponse) => {
     // Refuse rebinding hosts and cross-site writes.
     if (!allowed.has(request.headers.host ?? '')) return send(response, 403, { error: '不接受这个地址的访问' })
     const origin = request.headers.origin
     if (request.method !== 'GET' && origin && !allowed.has(origin.replace(/^https?:\/\//, '')) && !origins.has(origin)) return send(response, 403, { error: '拒绝跨站请求' })
     const pathname = new URL(request.url ?? '/', 'http://boardd').pathname
+    options.observe?.(request.method ?? 'GET', pathname)
+    if (pathname === '/api/events') notices(response)
     // People on the page name themselves so several of them can queue for one board; the default is the local user.
     const name = String(request.headers[USER_HEADER] ?? '')
     const person = /^[A-Za-z0-9_.@-]{1,40}$/.test(name) ? `user:${name}` : human
@@ -293,26 +324,60 @@ export async function serve(lab: BoardLab, options: ServeOptions): Promise<{ htt
     serveStatic(frontends ? join(options.uiDir, current(frontends)) : options.uiDir, pathname, response)
   }
   const unix = createServer((request, response) => {
+    const pathname = new URL(request.url ?? '/', 'http://boardd').pathname
+    options.observe?.(request.method ?? 'GET', pathname)
+    if (pathname === '/api/events') notices(response)
     const holder = String(request.headers[HOLDER_HEADER] ?? human)
     void api(request, response, { holder, local: true })
   })
 
+  // Every connection, counted until it closes: a drained worker exits once none is left. Requests in progress are
+  // counted per connection, so the idle ones can be closed (Node's own tracking starts only on a server that listens).
+  const open = new Map<Socket, { since: number, requests: number, served: boolean }>()
+  const track = (socket: Socket) => { open.set(socket, { since: Date.now(), requests: 0, served: false }); socket.once('close', () => open.delete(socket)) }
+  const using = (request: IncomingMessage, response: ServerResponse) => {
+    const entry = open.get(request.socket as Socket)
+    if (!entry) return
+    entry.requests++; entry.served = true
+    response.once('close', () => { entry.requests-- })
+  }
+  unix.on('connection', track)
+  unix.on('request', using)
   const http: Server[] = []
-  for (const host of hosts) {
+  if (options.handed) {
     // A large file (a flash package) may take longer to send than Node's five-minute request limit.
     const server = createServer({ requestTimeout: 0 }, handle)
-    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(options.port, host, resolve) })
-    // Port zero asks the OS for a free port: Host validation must use the port actually assigned.
-    const address = server.address()
-    if (options.port === 0 && address && typeof address === 'object') allowed.add(`${host}:${address.port}`)
+    server.on('connection', track)
+    server.on('request', using)
     http.push(server)
+  } else {
+    for (const host of hosts) {
+      const server = createServer({ requestTimeout: 0 }, handle)
+      server.on('connection', track)
+      server.on('request', using)
+      await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(options.port, host, resolve) })
+      // Port zero asks the OS for a free port: Host validation must use the port actually assigned.
+      const address = server.address()
+      if (options.port === 0 && address && typeof address === 'object') allowed.add(`${host}:${address.port}`)
+      http.push(server)
+    }
+    // Under a supervisor the socket belongs to the workers together: the supervisor made its directory and removed a
+    // stale one before the first worker started it.
+    const ownSocket = options.ownSocket ?? true
+    if (ownSocket && existsSync(options.socketPath)) unlinkSync(options.socketPath)
+    await new Promise<void>(resolve => unix.listen(options.socketPath, resolve))
+    if (ownSocket) chmodSync(options.socketPath, 0o600)
   }
-  // Under a supervisor the socket belongs to the workers together: the supervisor made its directory and removed a
-  // stale one before the first worker started it.
-  const ownSocket = options.ownSocket ?? true
-  if (ownSocket && existsSync(options.socketPath)) unlinkSync(options.socketPath)
-  await new Promise<void>(resolve => unix.listen(options.socketPath, resolve))
-  if (ownSocket) chmodSync(options.socketPath, 0o600)
-  const closeServer = (server: Server) => new Promise<void>(done => { server.closeAllConnections(); server.close(() => done()) })
-  return { http, unix, close: async () => { await Promise.all([...http, unix].map(closeServer)) } }
+  const servers = [...http, unix]
+  const stopListening = () => { for (const server of servers) if (server.listening) server.close() }
+  const closeServer = (server: Server) => new Promise<void>(done => { server.close(() => done()) })
+  return {
+    http, unix, stopListening,
+    // A connection just handed over has had no time to send its request yet: it is idle only after a few seconds.
+    closeIdle: () => { const now = Date.now(); for (const [socket, entry] of open) if (!entry.requests && (entry.served || now - entry.since > 5_000)) socket.destroy() },
+    endEvents: () => { for (const response of events) if (!response.writableEnded) response.end() },
+    accept: (kind, socket) => { (kind === 'unix' ? unix : http[0]!).emit('connection', socket); socket.resume() },
+    connections: () => open.size,
+    close: async () => { for (const socket of open.keys()) socket.destroy(); await Promise.all(servers.map(closeServer)) },
+  }
 }
