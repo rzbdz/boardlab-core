@@ -20,6 +20,17 @@ describe('the client while boardd is away', () => {
     } finally { server.close(); rmSync(dir, { recursive: true, force: true }) }
   })
 
+  it('gives up soon on a read when boardd has no socket at all', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'boardlab-client-'))
+    try {
+      const client = new BoardsClient(join(dir, 'boardd.sock'))
+      const started = Date.now()
+      await expect(client.call('GET', '/api/state')).rejects.toMatchObject({ code: 'unavailable' })
+      // A boardd that is not there is said in a few seconds, not after the half minute a restarting one gets.
+      expect(Date.now() - started).toBeLessThan(6_000)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
   it('fails a read at once when its caller asks for no waits', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'boardlab-client-'))
     try {

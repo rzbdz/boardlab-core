@@ -35,6 +35,11 @@ export class BoardsApiError extends Error {
 
 /** The waits before a read is tried again while boardd is away: about 30 s in all, which covers a worker restart. */
 export const READ_RETRY_MS: readonly number[] = [200, 300, 500, 1000, 2000, 3000, 5000, 8000, 10_000]
+/**
+ * How many of those waits a read gets when boardd's socket is not there at all: no boardd on this machine, or one between
+ * a stop and its next start (about 4 s of waits). A worker restarting keeps the socket (the supervisor owns it).
+ */
+const ABSENT_TRIES = 5
 
 /**
  * Where boardd is: its Unix socket on this machine, or a boardd elsewhere reached through an ssh tunnel to its loopback
@@ -208,7 +213,8 @@ export class BoardsClient {
           why = this.transport.failure()
         }
         if (why) throw new BoardsApiError(503, why, 'unavailable', true)
-        if (method !== 'GET' || signal?.aborted || !(dropped || away) || attempt >= this.retryMs.length) throw error
+        const absent = away && ((error as Error).cause as NodeJS.ErrnoException | undefined)?.code === 'ENOENT'
+        if (method !== 'GET' || signal?.aborted || !(dropped || away) || attempt >= (absent ? Math.min(ABSENT_TRIES, this.retryMs.length) : this.retryMs.length)) throw error
         await new Promise(resolve => setTimeout(resolve, this.retryMs[attempt]))
       }
     }
@@ -235,7 +241,7 @@ export class BoardsClient {
         })
       })
       req.on('error', error => reject((error as NodeJS.ErrnoException).code === 'ENOENT' || (error as NodeJS.ErrnoException).code === 'ECONNREFUSED'
-        ? new BoardsApiError(503, `boardd 没有运行（${this.transport.label}）`, 'unavailable') : error))
+        ? Object.assign(new BoardsApiError(503, `boardd 没有运行（${this.transport.label}）`, 'unavailable'), { cause: error }) : error))
       if (payload) req.write(payload)
       req.end()
     })
