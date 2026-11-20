@@ -9,18 +9,16 @@ import type { RunRow } from './runs.ts'
 
 export const INTERRUPTED = 'boardd 在它运行时重启了，没能跟到它结束；后端可能还在做（boardlab show 看板子现在的样子）'
 
-/** Whether the process that ran a run is still there (a worker being replaced finishes its own runs). */
-function alive(pid: number): boolean {
-  if (pid === process.pid) return false
-  try { process.kill(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM' }
-}
-
-/** Take over every run left running by a boardd that is gone; returns the ids followed again and those interrupted. */
-export function resumeRuns(lab: BoardLab, isAlive: (pid: number) => boolean = alive): { followed: string[], interrupted: string[] } {
+/**
+ * Take over every run left running by a boardd that is gone, or that stopped saying it still runs it (hung, or its pid
+ * now belongs to another process): a worker being replaced finishes its own runs. Returns the ids followed again and
+ * those interrupted.
+ */
+export function resumeRuns(lab: BoardLab, isAlive: (pid: number) => boolean = lab.kernel.alive): { followed: string[], interrupted: string[] } {
   const kernel = lab.kernel
   const followed: string[] = [], interrupted: string[] = []
   for (const row of kernel.runs.leftover(kernel.boot)) {
-    if (isAlive(row.pid)) continue
+    if (kernel.runs.live(row, isAlive)) continue
     if (!kernel.runs.take(row.id, row.boot, kernel.boot, process.pid)) continue
     const how = row.handle ? follower(lab, row) : null
     if (!how) {

@@ -178,7 +178,7 @@ export class Locks {
       if (heldNow && heldNow.holder !== holder && isHuman(heldNow.holder)) {
         const yielded = await this.askYield(target, holder, purpose, heldNow)
         if (!yielded) {
-          const why = this.k.busy.has(target) ? '正忙' : '人还在用'
+          const why = this.k.occupied(target) ? '正忙' : '人还在用'
           throw new BoardError('locked', `${target} 正被 ${heldNow.holder} 使用（${heldNow.purpose}）：${why}，没有让出`)
         }
       }
@@ -221,7 +221,7 @@ export class Locks {
         this.followers.forEach((follower, index) => { if (!follower.binding) void this.follow(index, target) })
         // Until the lab agrees the board shows as being locked, and nothing that needs the lab's lease starts.
         const agree = () => Promise.all(this.followers.map((follower, index) => follower.binding ? this.follow(index, target) : null))
-        const refusals = this.followers.some(follower => follower.binding) && !this.k.busy.has(target)
+        const refusals = this.followers.some(follower => follower.binding) && !this.k.occupied(target)
           ? await this.k.doing([target], 'lock', '拿锁中', holder, agree, { lease: result.lease.id }) : await agree()
         const refused = refusals.find(Boolean)
         if (refused && this.held(target)?.id === result.lease.id) {

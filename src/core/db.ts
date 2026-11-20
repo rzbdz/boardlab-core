@@ -11,7 +11,7 @@ import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, re
 import { basename, dirname, join } from 'node:path'
 import type { DatabaseRestore } from '../shared/types.ts'
 
-const SCHEMA_VERSION = 8
+const SCHEMA_VERSION = 9
 
 export interface OpenOptions {
   /** Check the file first and, when it fails, restore it from the newest good copy in this directory (see `recoverDatabase`). */
@@ -94,6 +94,8 @@ export function openDatabase(file: string, options: OpenOptions = {}): DatabaseS
   addColumn(db, 'boards', 'lab_slot', 'TEXT')
   // Version 7 keeps a model someone typed in themselves, so a scan or a lab listing does not replace it.
   addColumn(db, 'boards', 'product_manual', 'INTEGER NOT NULL DEFAULT 0')
+  // Version 9: when the boardd running a run last said it still does (`RunStore.beat`).
+  addColumn(db, 'runs', 'beat', 'TEXT')
   db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`)
   // A restore loses what changed after the copy: it is written down in the database it made, so boardd reports it (in
   // its state, to the page and `boardlab status`) until someone has seen it, not only in a log nobody reads.

@@ -11,7 +11,7 @@ import { openDatabase } from '../src/core/db.ts'
 import { BoardLab } from '../src/core/lab.ts'
 import type { Backend } from '../src/core/backend.ts'
 import { resumeRuns } from '../src/core/resume.ts'
-import { withRunId } from '../src/core/runs.ts'
+import { STALE_MS, withRunId } from '../src/core/runs.ts'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'boardlab-runs-')) })
@@ -36,9 +36,9 @@ function backend(follow?: Backend['follow']) {
   return { fake, flashes }
 }
 
-function lab(fake: Backend, add = true) {
+function lab(fake: Backend, add = true, options: { alive?: (pid: number) => boolean, now?: () => number } = {}) {
   const svc = new BoardLab({
-    db: openDatabase(join(dir, 'lab.sqlite')), sleep: async () => {}, firmwareDir: join(dir, 'firmware'), filesDir: join(dir, 'files'),
+    ...options, db: openDatabase(join(dir, 'lab.sqlite')), sleep: async () => {}, firmwareDir: join(dir, 'firmware'), filesDir: join(dir, 'files'),
     modules: [{ id: 'test-here', title: '测试', setup: core => core.backends.register('local', fake, { configurable: false, isDefault: true }) }],
   })
   if (add) svc.boards.add('user:alice', { name: 'b1', slot: 1, chips: [{ serialPath: '/dev/ttyUSB1', alias: 'b1', downloadUsbPath: '3-2.3' }] })
@@ -133,5 +133,44 @@ describe('runs', () => {
     expect(after.boards.get('b1').busy).toBeNull()
     expect(after.kernel.runs.get('client-run-0004')).toMatchObject({ status: 'succeeded', message: 'written after all' })
     expect(after.boards.detail('b1').actions[0]).toMatchObject({ kind: 'boot', ok: true })
+  })
+
+  it('keeps a board busy while a worker being replaced still runs on it, and takes the run once that worker goes quiet', async () => {
+    const old = backend()
+    const before = lab(old.fake)
+    const { token } = await flash(before, 'client-run-0005')
+    let end!: (output: string) => void
+    const next = backend((_config, _target, _handle, progress) => new Promise<string>(resolve => { progress('writing 90%'); end = resolve }))
+    // The new worker shares the database; the old one is still there (both are this test's process, so liveness is told).
+    let clock = Date.now()
+    const after = lab(next.fake, false, { alive: () => true, now: () => clock })
+    // The board shows the old worker's run, nothing else starts on it, and a cancel here says who runs it.
+    expect(after.boards.get('b1').busy).toMatchObject({ id: 'client-run-0005', label: '刷机中', by: 'claude:s1' })
+    const second = await call(after, 'POST', '/api/flash/package', 'claude:s1', { board: 'b1', token, url: 'https://images.test/pkg.zip' }).then(out => out, error => error)
+    expect(second).toMatchObject({ message: expect.stringContaining('正在刷机') })
+    expect(next.flashes).toHaveLength(0)
+    await expect(call(after, 'POST', '/api/cancel', 'claude:s1', { target: 'b1', token })).rejects.toThrow(/升级前的 boardd/)
+    expect(resumeRuns(after)).toEqual({ followed: [], interrupted: [] })
+    // That worker stopped saying it runs it (hung, or its pid now someone else's): the new one follows it.
+    clock += STALE_MS + 1
+    expect(after.boards.get('b1').busy).toBeNull()
+    expect(resumeRuns(after)).toEqual({ followed: ['client-run-0005'], interrupted: [] })
+    await tick()
+    expect(after.boards.get('b1').busy).toMatchObject({ id: 'client-run-0005', line: 'writing 90%' })
+    end('written')
+    await tick()
+    expect(after.kernel.runs.get('client-run-0005')).toMatchObject({ status: 'succeeded', boot: after.kernel.boot })
+  })
+
+  it('beats while it runs, so another boardd can tell it is still there', async () => {
+    const { fake, flashes } = backend()
+    let clock = Date.now()
+    const svc = lab(fake, true, { now: () => clock })
+    const { running } = await flash(svc, 'client-run-0006')
+    const first = svc.kernel.runs.get('client-run-0006')!.beat!
+    clock += 20_000
+    svc.kernel.runs.beat(svc.kernel.boot)
+    expect(Date.parse(svc.kernel.runs.get('client-run-0006')!.beat!)).toBe(Date.parse(first) + 20_000)
+    flashes[0]!.ok(); await running
   })
 })

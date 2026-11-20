@@ -45,14 +45,18 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     if (lab_ && lab.backends.discovering(lab_)) return { ...(await lab.backends.cancelDiscovery(holder, lab_)), cancelled: true }
     const name = lab_ ? target : lab.boards.resolve(target)
     if (!lab_ && lab.locks.held(name)) lab.locks.authorize(name, who(holder, body))
-    if (lab.kernel.busy.has(name)) {
+    const own = lab.kernel.busy.has(name)
+    const other = own ? null : lab.kernel.occupied(name)
+    // A run a worker being replaced still runs is stopped through its backend when it can be: that worker sees it end.
+    const forward = !!other && other.cancellable && !lab_ && !!lab.backends.route(name).backend.cancel
+    if (own || (other && !forward)) {
       const asked = lab.kernel.cancel(name, holder)
       // A backend that refused to stop says why; the run goes on, and the board stays busy until it ends.
       try { await asked.answered }
       catch (error) { throw new BoardError('hardware', `${name} 没有停下：${(error as Error).message}（它还在做，做完板子才空出来）`) }
       return { message: asked.message, cancelled: true }
     }
-    const elsewhere = lab.kernel.cancelElsewhere(name, holder)
+    const elsewhere = forward ? null : lab.kernel.cancelElsewhere(name, holder)
     if (elsewhere) return { message: elsewhere, cancelled: true }
     if (lab_) throw new BoardError('conflict', `实验室 ${lab_} 没有在做什么，不用取消`)
     const route = lab.backends.route(name)

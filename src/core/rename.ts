@@ -29,7 +29,7 @@ export async function renameBoard(host: RenameHost, actor: string, board: string
   const db = lab.kernel.db
   const current = lab.boards.get(board)
   if (host.devices.get(board)?.empty) throw new BoardError('invalid', `${board} 是空槽位，没有板子可改名`)
-  const busy = lab.kernel.busy.get(board)
+  const busy = lab.kernel.occupied(board)
   if (busy) throw new BoardError('conflict', `${board} 正在${busy.label.replace(/中$/, '')}，等它完成`)
   if (lab.locks.held(board)) lab.locks.authorize(board, caller)
   const route = host.route(board)

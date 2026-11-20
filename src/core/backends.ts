@@ -119,7 +119,7 @@ export class Backends {
   async removeLab(actor: string, id: string, options: { within?: boolean } = {}): Promise<void> {
     const instance = this.get(id)
     if (!instance.kind) throw new BoardError('invalid', `实验室 ${id} 是在 boardd 的配置里写的，不能在这里删`)
-    const busy = this.lab.kernel.busy.get(`lab:${id}`)
+    const busy = this.lab.kernel.occupied(`lab:${id}`)
     if (busy && !options.within) throw new BoardError('conflict', `实验室 ${id} 正在${busy.label.replace(/中$/, '')}（${busy.by}），等它结束再删`)
     const held = this.heldIn(id)
     if (held) throw new BoardError('locked', `${String(held.board)} 正被 ${String(held.holder)} 使用，放锁以后才能删实验室`)
@@ -261,7 +261,7 @@ export class Backends {
     if (!lease || !route.isBoard) return null
     const token = route.target.lease
     const held = this.lab.locks.held(board)
-    const running = held || !token ? null : this.lab.kernel.busy.get(board) ?? null
+    const running = held || !token ? null : this.lab.kernel.occupied(board)
     const before = this.leaseErrors.get(board) ?? null
     let error: string | null = null
     if (held || running) {
@@ -295,7 +295,7 @@ export class Backends {
       return {
         id, kind: backend.kind, addedAs, about: backend.about ?? '', fields, canDiscover: !!backend.discovery, canRebuild: !!backend.discovery?.rebuild, canRediscover: !!backend.discovery?.rebuild && !!backend.discovery.keepsInUse, canRemove: !!backend.inventory?.remove, canListPorts: !!backend.ports, canRelay: !!backend.channels,
         hosts: [...new Set([...this.devices].filter(([name]) => name.startsWith(`${id}-`)).map(([, device]) => device.host).filter((host): host is string => !!host))].sort(),
-        discovery: this.discoveries.get(id) ?? null, busy: this.lab.kernel.busy.get(`lab:${id}`) ?? null, enabled: get('enabled') === '1', url, username: get('username'), hasPassword: !!get('password'),
+        discovery: this.discoveries.get(id) ?? null, busy: this.lab.kernel.occupied(`lab:${id}`) ?? null, enabled: get('enabled') === '1', url, username: get('username'), hasPassword: !!get('password'),
         jump: get('jump'), defaultJump: url && fields.jump ? backend.defaultJump?.(new URL(url)) ?? null : null, devices: get('devices'),
         verifiedAt: get('verified_at'), verifyOk: flag('verify_ok'), verifyMessage: get('verify_message'),
         syncedAt: get('synced_at'), syncOk: flag('sync_ok'), syncMessage: get('sync_message'),
@@ -770,7 +770,7 @@ export class Backends {
     // Keep backend leases alive (a run that outlived its lock keeps one too), and hand boards someone let go of in the
     // backend to whoever queued for them here.
     for (const name of listed) {
-      if (this.lab.locks.held(name) || this.lab.kernel.busy.has(name)) await this.lab.locks.settle(name)
+      if (this.lab.locks.held(name) || this.lab.kernel.occupied(name)) await this.lab.locks.settle(name)
       if (!this.lab.locks.held(name) && this.lab.locks.queue(name).length) this.lab.locks.promote(name)
     }
   }

@@ -26,8 +26,19 @@ const KEPT = 10
 /** A run's progress line is written at most this often (the latest one is written when it ends). */
 const LINE_MS = 2000
 
-/** A run as kept, with what boardd needs to follow it again: the backend's handle and the process that ran it. */
-export interface RunRow extends Run { handle: string | null, cancellable: boolean, boot: string, pid: number }
+/** A boardd running a run writes down that it still does this often (`Kernel` beats while it runs any). */
+export const BEAT_MS = 15_000
+/** A run whose boardd has not said so for this long is taken to have lost it (its process hung, or its pid was reused). */
+export const STALE_MS = 6 * BEAT_MS
+
+/** A run as kept, with what boardd needs to follow it again: the backend's handle, the process that ran it and when it last said it still does. */
+export interface RunRow extends Run { handle: string | null, cancellable: boolean, boot: string, pid: number, beat: string | null }
+
+/** Whether process `pid` is there (EPERM: there, another user's); this process's own pid counts as gone (a boardd before it). */
+export function alive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false
+  try { process.kill(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM' }
+}
 
 export class RunStore {
   private readonly written = new Map<string, number>()
@@ -36,15 +47,37 @@ export class RunStore {
   private iso() { return new Date(this.now()).toISOString() }
 
   start(run: { id: string, boards: string[], kind: string, label: string, by: string, since: string, cancellable: boolean, boot: string, pid: number }) {
-    this.db.prepare('INSERT INTO runs(id, kind, label, holder, since, cancellable, status, boot, pid) VALUES(?,?,?,?,?,?,?,?,?)')
-      .run(run.id, run.kind, run.label, run.by, run.since, run.cancellable ? 1 : 0, 'running', run.boot, run.pid)
+    this.db.prepare('INSERT INTO runs(id, kind, label, holder, since, cancellable, status, boot, pid, beat) VALUES(?,?,?,?,?,?,?,?,?,?)')
+      .run(run.id, run.kind, run.label, run.by, run.since, run.cancellable ? 1 : 0, 'running', run.boot, run.pid, this.iso())
     const board = this.db.prepare('INSERT OR IGNORE INTO run_boards(run, board) VALUES(?,?)')
     for (const name of run.boards) board.run(run.id, name)
   }
 
   /** Take over a run a gone boardd (`from`) left running; false when another process took it first. */
   take(id: string, from: string, boot: string, pid: number): boolean {
-    return Number(this.db.prepare("UPDATE runs SET boot=?, pid=? WHERE id=? AND boot=? AND status='running'").run(boot, pid, id, from).changes) === 1
+    return Number(this.db.prepare("UPDATE runs SET boot=?, pid=?, beat=? WHERE id=? AND boot=? AND status='running'").run(boot, pid, this.iso(), id, from).changes) === 1
+  }
+
+  /** Say that boardd `boot` still runs its runs. */
+  beat(boot: string) { this.db.prepare("UPDATE runs SET beat=? WHERE boot=? AND status='running'").run(this.iso(), boot) }
+
+  /**
+   * Whether the boardd that runs `row` still does: its process is there and it said so lately. A row from a boardd
+   * that never says (an older one) goes by its process alone.
+   */
+  live(row: RunRow, isAlive: (pid: number) => boolean): boolean {
+    if (!isAlive(row.pid)) return false
+    return row.beat === null || this.now() - Date.parse(row.beat) < STALE_MS
+  }
+
+  /**
+   * The boards runs of another live boardd hold (a worker being replaced finishing its own): the same boards are busy
+   * here too, so nothing starts on them, and their backend leases are kept, until those runs end.
+   */
+  elsewhere(boot: string, isAlive: (pid: number) => boolean): Map<string, RunRow> {
+    const held = new Map<string, RunRow>()
+    for (const row of this.leftover(boot)) if (this.live(row, isAlive)) for (const board of row.boards) held.set(board, row)
+    return held
   }
 
   line(id: string, text: string) {
@@ -98,7 +131,7 @@ export class RunStore {
   }
 
   private toRow(row: Record<string, unknown>): RunRow {
-    return { ...toRun(row, this.boardsOf(String(row.id))), handle: row.handle === null ? null : String(row.handle), cancellable: !!row.cancellable, boot: String(row.boot), pid: Number(row.pid) }
+    return { ...toRun(row, this.boardsOf(String(row.id))), handle: row.handle === null ? null : String(row.handle), cancellable: !!row.cancellable, boot: String(row.boot), pid: Number(row.pid), beat: row.beat === null || row.beat === undefined ? null : String(row.beat) }
   }
 }
 

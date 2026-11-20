@@ -8,7 +8,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { BoardEvent, Busy } from '../shared/types.ts'
 import { BoardError, BusyError, CancelledError } from './errors.ts'
 import { addColumn } from './db.ts'
-import { requestedRun, RunStore } from './runs.ts'
+import { alive, BEAT_MS, requestedRun, RunStore } from './runs.ts'
 
 /** What a run is told about itself: its id, and how to report the backend's own handle on it (`Backend.follow`). */
 export interface RunContext { id: string, handle(handle: string): void }
@@ -17,6 +17,8 @@ export interface KernelOptions {
   db: DatabaseSync
   now?: () => number
   sleep?: (ms: number) => Promise<void>
+  /** Whether a process is there (tests stand in for other boardd processes). */
+  alive?: (pid: number) => boolean
 }
 
 /** Settings under one prefix, as a module keeps them. */
@@ -35,10 +37,13 @@ export class Kernel {
   readonly boot = randomUUID()
   /** Every run `doing` does, from its start to its end, kept in the database. */
   readonly runs: RunStore
+  /** Whether a process is there: a run another boardd runs counts while its process does. */
+  readonly alive: (pid: number) => boolean
 
   constructor(options: KernelOptions) {
     this.db = options.db
     this.now = options.now ?? Date.now
+    this.alive = options.alive ?? alive
     this.runs = new RunStore(this.db, this.now)
     this.sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)))
     this.events.setMaxListeners(100)
@@ -48,6 +53,37 @@ export class Kernel {
   readonly busy = new Map<string, Busy>()
   /** The lease each of them runs under (null: it holds its boards until it ends), and how to stop it. */
   private readonly running = new Map<Busy, { lease: string | null, stop: AbortController, targets: string[] }>()
+  private beating: NodeJS.Timeout | null = null
+
+  /**
+   * What is being done to `target` by anyone: a run of this boardd, or one another live boardd runs (a worker being
+   * replaced finishes its own runs while the new one serves). Both keep the board busy here, so nothing else starts on
+   * it and its backend lease is kept until the run ends. Only `busy` is this process's own.
+   */
+  occupied(target: string): Busy | null {
+    const own = this.busy.get(target)
+    if (own) return own
+    const row = this.runs.elsewhere(this.boot, this.alive).get(target)
+    return row ? { id: row.id, kind: row.kind, label: row.label, by: row.by, since: row.since, line: row.line, cancellable: row.cancellable } : null
+  }
+
+  /** Every target someone's run keeps busy, this boardd's and other live ones' (`occupied`). */
+  occupiedAll(): Map<string, Busy> {
+    const all = new Map<string, Busy>()
+    for (const [board, row] of this.runs.elsewhere(this.boot, this.alive)) all.set(board, { id: row.id, kind: row.kind, label: row.label, by: row.by, since: row.since, line: row.line, cancellable: row.cancellable })
+    for (const [board, busy] of this.busy) all.set(board, busy)
+    return all
+  }
+
+  /** While this boardd runs anything it says so in the database every BEAT_MS, so another boardd can tell it from a hung or gone one. */
+  private beatWhileRunning() {
+    if (this.running.size && !this.beating) {
+      this.beating = setInterval(() => { try { this.runs.beat(this.boot) } catch { /* the database closed: the process is going */ } }, BEAT_MS)
+      this.beating.unref()
+    } else if (!this.running.size && this.beating) {
+      clearInterval(this.beating); this.beating = null
+    }
+  }
 
   /**
    * Do `run` to `boards` (or to a lab, as `lab:<id>`), shown as busy on each of them while it runs (with its progress lines, through the `line`
@@ -63,9 +99,9 @@ export class Kernel {
    */
   async doing<T>(boards: string[], kind: string, label: string, by: string, run: (line: (text: string) => void, signal: AbortSignal, context: RunContext) => Promise<T>,
     options: { lease?: string | null, cancellable?: boolean, resume?: { id: string, since: string } } = {}): Promise<T> {
-    const taken = boards.find(board => this.busy.has(board))
+    const taken = boards.find(board => this.occupied(board))
     if (taken) {
-      const now = this.busy.get(taken)!
+      const now = this.occupied(taken)!
       throw new BusyError(`${taken} 正在${now.label.replace(/中$/, '')}（${now.by}，${now.since.slice(11, 19)} 开始），等它完成`)
     }
     // The run's id: the one its client chose for the request (`x-boards-run`, once per request), else a new one. An id
@@ -80,6 +116,7 @@ export class Kernel {
     for (const board of boards) this.busy.set(board, entry)
     const stop = new AbortController()
     this.running.set(entry, { lease: options.lease ?? null, stop, targets: boards })
+    this.beatWhileRunning()
     const changed = () => { if (boards.length === 1) this.changed(boards[0]!); else this.changed(null) }
     changed()
     const cancelled = () => stop.signal.aborted && stop.signal.reason instanceof CancelledError && !stop.signal.reason.refused ? stop.signal.reason : null
@@ -94,6 +131,7 @@ export class Kernel {
       throw thrown
     } finally {
       this.running.delete(entry)
+      this.beatWhileRunning()
       const freed = boards.filter(board => this.busy.get(board) === entry)
       for (const board of freed) this.busy.delete(board)
       changed()
@@ -117,7 +155,12 @@ export class Kernel {
   cancel(target: string, by: string): { message: string, busy: Busy, targets: string[], answered: Promise<void> } {
     const entry = this.busy.get(target)
     const run = entry ? this.running.get(entry) : undefined
-    if (!entry || !run) throw new BoardError('conflict', `${target} 没有在做什么，不用取消`)
+    if (!entry || !run) {
+      const other = this.occupied(target)
+      // A worker being replaced still runs it: only that process can stop it, and it goes on to its end there.
+      if (other) throw new BoardError('conflict', `${target} 正在${other.label.replace(/中$/, '')}，由升级前的 boardd 进程在做，这里停不了；等它结束（几分钟内会交给新进程接着跟）`)
+      throw new BoardError('conflict', `${target} 没有在做什么，不用取消`)
+    }
     const what = entry.label.replace(/中$/, '')
     if (!entry.cancellable) throw new BoardError('invalid', `${target} 正在${what}，这一步不能中途取消，等它结束`)
     const board = target.startsWith('lab:') ? null : target
@@ -152,6 +195,7 @@ export class Kernel {
     for (const [entry, run] of this.running) {
       if (run.lease !== lease) continue
       this.running.delete(entry)
+      this.beatWhileRunning()
       const boards = [...this.busy].filter(([, busy]) => busy === entry).map(([board]) => board)
       for (const board of boards) this.busy.delete(board)
       run.stop.abort(new BoardError('locked', `${boards.join('、') || '板子'}的锁已经释放或被抢走，${entry.label.replace(/中$/, '')}停下了`))
