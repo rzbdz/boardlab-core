@@ -212,7 +212,9 @@ export async function supervise(options: SupervisorOptions): Promise<void> {
   servers.push(unix)
 
   const serve = (message: Ready) => {
-    writeFileSync(servingFile, JSON.stringify({ version: message.version, revision: message.revision, pid: current?.process.pid ?? null, at: new Date().toISOString() }) + '\n')
+    // What serves is told by the log line too; a state directory that cannot be written must not stop the handover.
+    try { writeFileSync(servingFile, JSON.stringify({ version: message.version, revision: message.revision, pid: current?.process.pid ?? null, at: new Date().toISOString() }) + '\n') }
+    catch (error) { console.error(`boardd: could not write ${servingFile}: ${(error as Error).message}`) }
     console.log(`boardd worker ${current?.process.pid ?? '?'} is serving ${message.version} (${message.revision})`)
     flush()
   }

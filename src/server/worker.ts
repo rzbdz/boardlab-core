@@ -2,6 +2,7 @@
  * A boardd worker under a supervisor that owns the port and the socket (protocol 2, see supervisor.ts): it serves the
  * connections the supervisor hands it, reports what it is doing, and when drained finishes what it has before it exits.
  */
+import cluster from 'node:cluster'
 import type { Socket } from 'node:net'
 import type { Handed, Requests, Stats, Took } from './supervisor.ts'
 
@@ -35,6 +36,9 @@ export const DRAIN_CAP_MS = 6 * 3_600_000
 
 export function superviseWorker(boardd: Supervised, options: WorkerOptions) {
   const channel = options.channel ?? process
+  // Node ends a cluster worker whose supervisor went away unless the worker says the disconnect is its own: said, it
+  // drains like one told to, and its running tasks go on to their end.
+  if (channel === process && cluster.worker) cluster.worker.exitedAfterDisconnect = true
   const send = (message: object) => { try { channel.send?.(message) } catch { /* the supervisor went away */ } }
   // The requests go every second, so a crash's log line names what came just before it; memory every half minute.
   const requests = () => { const lines = options.requests.splice(0); if (lines.length) send({ type: 'requests', lines } satisfies Requests) }
