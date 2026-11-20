@@ -11,7 +11,7 @@ import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, re
 import { basename, dirname, join } from 'node:path'
 import type { DatabaseRestore } from '../shared/types.ts'
 
-const SCHEMA_VERSION = 7
+const SCHEMA_VERSION = 8
 
 export interface OpenOptions {
   /** Check the file first and, when it fails, restore it from the newest good copy in this directory (see `recoverDatabase`). */
@@ -69,6 +69,16 @@ export function openDatabase(file: string, options: OpenOptions = {}): DatabaseS
     );
     CREATE TABLE IF NOT EXISTS board_models (
       name TEXT PRIMARY KEY, last_used_at TEXT NOT NULL, uses INTEGER NOT NULL DEFAULT 1
+    );
+    -- Version 8: each run boardd does to boards (Kernel.doing), kept past its end and past a restart of boardd.
+    CREATE TABLE IF NOT EXISTS runs (
+      id TEXT PRIMARY KEY, kind TEXT NOT NULL, label TEXT NOT NULL, holder TEXT NOT NULL, since TEXT NOT NULL,
+      line TEXT, handle TEXT, cancellable INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, message TEXT, ended_at TEXT,
+      boot TEXT NOT NULL, pid INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS run_status ON runs(status);
+    CREATE TABLE IF NOT EXISTS run_boards (
+      run TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, board TEXT NOT NULL, PRIMARY KEY(board, run)
     );
     -- Firmware used to be registered here; it now ships in firmware/.
     DROP TABLE IF EXISTS images;

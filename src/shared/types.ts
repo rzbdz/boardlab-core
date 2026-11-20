@@ -42,6 +42,8 @@ export interface Waiter { id: string, board: string, holder: string, purpose: st
  * until it ends: every page and client sees the same in-between state, and another operation on the board waits.
  */
 export interface Busy {
+  /** The run's id (`Run.id`): what a client that lost its connection follows it by. Absent from an older boardd. */
+  id?: string
   kind: string
   /** What a person reads: `复位中`, `发现中`. */
   label: string
@@ -54,6 +56,28 @@ export interface Busy {
    * be stopped halfway (writing a backend's settings, say) is not.
    */
   cancellable: boolean
+}
+
+/**
+ * How a run ended: `interrupted` when boardd restarted while it ran and could not follow it to its end (its backend may
+ * still be running it).
+ */
+export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
+
+/** One run boardd did to boards (`Busy` while it runs), as its database keeps it. */
+export interface Run {
+  id: string
+  boards: string[]
+  kind: string
+  label: string
+  by: string
+  since: string
+  /** The latest progress line it showed. */
+  line: string | null
+  status: RunStatus
+  /** Why it failed, was cancelled or interrupted; what it said when it succeeded. */
+  message: string | null
+  endedAt: string | null
 }
 
 export interface Chip {
@@ -86,6 +110,8 @@ export interface Board {
   waiters: Waiter[]
   /** What boardd is doing to it right now. */
   busy: Busy | null
+  /** The board's current or last run, with how it ended: kept after it ends and across a restart of boardd. */
+  run?: Run | null
   lastSeenAt: string | null
   /** The backend instance the board is on: `local` (this machine), or a lab's id. */
   backend: string

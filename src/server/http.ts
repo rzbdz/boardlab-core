@@ -12,6 +12,7 @@ import { extname, join } from 'node:path'
 import { Api, EventStream, FileReply, RawReply, TextReply, type Caller, type Emit, type Endpoint } from '../core/api.ts'
 import { BoardError } from '../core/errors.ts'
 import type { BoardLab } from '../core/lab.ts'
+import { RUN_ID, withRunId } from '../core/runs.ts'
 import { HOLDER } from '../core/text.ts'
 import { API_VERSION } from '../shared/types.ts'
 
@@ -91,8 +92,11 @@ export function createApi(lab: BoardLab, options: GatewayOptions = {}): (request
     response.on('close', () => { if (!response.writableFinished) abort.abort() })
     try {
       const body = !raw && request.method !== 'GET' ? await readJson(request) : {}
-      const reply = await found.endpoint.handle({ body, query: url.searchParams, params: found.params, headers: request.headers, caller, signal: abort.signal, upload: raw ? request : null })
-      await answer(response, reply, abort)
+      // The run the client chose an id for (`x-boards-run`), so it can follow the run by that id if the connection drops.
+      await withRunId(runHeader(request), async () => {
+        const reply = await found.endpoint.handle({ body, query: url.searchParams, params: found.params, headers: request.headers, caller, signal: abort.signal, upload: raw ? request : null })
+        await answer(response, reply, abort)
+      })
     } catch (error) {
       if (raw) request.resume()
       if (error instanceof BoardError) send(response, STATUS[error.code], { error: error.message, code: error.code })
@@ -218,10 +222,18 @@ function docsEndpoints(dir: string | null): Endpoint[] {
   }]
 }
 
+/** The run id a client chose (`x-boards-run`), when it is a valid one. */
+function runHeader(request: IncomingMessage): string | null { return runId(request.headers) || null }
+function runId(headers: Record<string, string | string[] | undefined> | undefined): string {
+  const value = headers?.['x-boards-run']
+  const id = Array.isArray(value) ? value[0] : value
+  return id && RUN_ID.test(id) ? id : ''
+}
+
 function cliEndpoint(options: GatewayOptions): Endpoint {
   return {
     method: 'POST', path: '/api/cli', about: '用 boardd 自己的 boardlab 命令行替调用者跑命令（旧客户端不认识的命令）',
-    handle: ({ body, caller }) => {
+    handle: ({ body, caller, headers }) => {
       const args: unknown = body.args
       if (!Array.isArray(args) || args.some(arg => typeof arg !== 'string')) throw new BoardError('invalid', 'args 要是字符串数组')
       if (!options.cli || !options.stateDir) throw new BoardError('invalid', '这个 boardd 不代跑命令')
@@ -233,7 +245,7 @@ function cliEndpoint(options: GatewayOptions): Endpoint {
       return new EventStream((emit, end, signal) => {
         // The same Node flags as boardd itself (on some CPUs it needs --no-sparkplug to run at all).
         const child = spawn(process.execPath, [...process.execArgv, options.cli!, ...(args as string[]), ...(body.json === true ? ['--json'] : [])], {
-          env: { ...process.env, BOARDS_HOLDER: caller.holder, BOARDS_STATE_DIR: options.stateDir, BOARDS_REMOTE: '', BOARDS_PROXIED: '1' },
+          env: { ...process.env, BOARDS_HOLDER: caller.holder, BOARDS_STATE_DIR: options.stateDir, BOARDS_REMOTE: '', BOARDS_PROXIED: '1', BOARDS_RUN: runId(headers) },
           stdio: ['ignore', 'pipe', 'pipe'],
         })
         child.stdout.setEncoding('utf8').on('data', text => emit('out', { stream: 'stdout', text }))

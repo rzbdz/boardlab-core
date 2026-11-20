@@ -272,15 +272,21 @@ export interface PortsCapability {
 export interface FlashPackage { url?: string, path?: string, sha256?: string | null, flasher?: string | null, refresh?: boolean }
 
 /** For a backend that knows named builds (SDKs): booting or flashing a board with one, fetching the build itself. */
+/**
+ * How a long run tells boardd the backend's own name for it (a host's job id), as soon as it has one: a boardd that
+ * restarts while the run goes on follows it again by that handle (`Backend.follow`). Core keeps it as it is given.
+ */
+export interface RunReport { handle(handle: string): void }
+
 export interface BuildsCapability {
-  boot(config: LabConfig, target: BoardTarget, build: { sdk: string, method: 'load' | 'download', variant: string | null, brk?: string | null }, progress: (line: string) => void, signal?: AbortSignal): Promise<string>
+  boot(config: LabConfig, target: BoardTarget, build: { sdk: string, method: 'load' | 'download', variant: string | null, brk?: string | null }, progress: (line: string) => void, signal?: AbortSignal, report?: RunReport): Promise<string>
   /** Where an SDK's boot recipe can stop early (`breaker: NAME` in the recipe), for debugging one stage on its own. */
   breaks?(config: LabConfig, sdk: string): Promise<{ load: string[], download: string[] }>
   /**
    * For a backend that can flash a whole package (an image archive its flasher writes to the board's storage): write
    * `pkg` to the board, reporting progress lines (some with `NN%`). `signal` aborts it, for a backend that can stop.
    */
-  flash?(config: LabConfig, target: BoardTarget, pkg: FlashPackage, progress: (line: string) => void, signal?: AbortSignal): Promise<string>
+  flash?(config: LabConfig, target: BoardTarget, pkg: FlashPackage, progress: (line: string) => void, signal?: AbortSignal, report?: RunReport): Promise<string>
 }
 
 /** For a backend that can tell when things change. */
@@ -326,6 +332,12 @@ export interface Backend {
    * that says so (and what ran last): boardd passes it on as it is, not as a board that would not stop.
    */
   cancel?(config: LabConfig, target: BoardTarget): Promise<string>
+  /**
+   * Follow a run a previous boardd started and reported a handle for (`RunReport`), until it ends: resolve with what it
+   * said when it succeeded, throw when it failed (a `CancelledError` when it was cancelled). `signal` aborts when someone
+   * cancels it. A backend without this leaves such a run marked interrupted.
+   */
+  follow?(config: LabConfig, target: BoardTarget, handle: string, progress: (line: string) => void, signal: AbortSignal): Promise<string>
   news?: NewsCapability
   /** A backend whose own record names the board: renaming it there too. */
   rename?: RenameCapability

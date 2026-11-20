@@ -53,6 +53,7 @@ export class Boards {
     const chips = db.prepare('SELECT * FROM chips ORDER BY board, die').all().map(toChip)
     const leases = new Map(this.lab.locks.holders().map(lease => [lease.board, lease]))
     const waiters = this.lab.locks.waiters()
+    const runs = this.lab.kernel.runs.latest()
     return db.prepare('SELECT * FROM boards ORDER BY slot IS NULL, slot, name').all().map(row => {
       const name = String(row.name)
       const record: BoardRecord = { backend: str(row.lab) ?? this.lab.backends.defaultId, device: str(row.lab_device) }
@@ -62,7 +63,7 @@ export class Boards {
         baseMac: str(row.base_mac), soc: str(row.soc), notes: str(row.notes), source: row.source as Board['source'],
         mode: row.mode as BoardMode, lastSeenAt: str(row.last_seen_at), backend: record.backend,
         chips: chips.filter(chip => chip.board === name).map(chip => ({ ...chip })), lease: leases.get(name) ?? null,
-        waiters: waiters.filter(waiter => waiter.board === name), busy: this.lab.kernel.busy.get(name) ?? null, lab: null,
+        waiters: waiters.filter(waiter => waiter.board === name), busy: this.lab.kernel.busy.get(name) ?? null, run: runs.get(name) ?? null, lab: null,
       }
       for (const view of this.views) view(board, record)
       return board
@@ -198,6 +199,7 @@ export class Boards {
     const db = this.lab.kernel.db
     db.prepare('UPDATE boards SET name=? WHERE name=?').run(to, from)
     db.prepare('UPDATE actions SET board=? WHERE board=?').run(to, from)
+    this.lab.kernel.runs.rename(from, to)
     db.prepare('UPDATE proposals SET board=? WHERE board=?').run(to, from)
     this.lab.locks.rename(from, to)
   }

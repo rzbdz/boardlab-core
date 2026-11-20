@@ -1,6 +1,6 @@
 /** Typed boardd client over its Unix socket, shared by the CLI and the DSH plugin. */
 import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { copyFile, link } from 'node:fs/promises'
 import { request as httpRequest, type ClientRequest } from 'node:http'
@@ -10,7 +10,7 @@ import { Duplex } from 'node:stream'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import type {
-  BoardChannels, BoardDetail, DebugPath, DebugResult, DiscoveryContext, DiscoveryMethod, LabPorts, LabSettings, Lease, LockResult, SendResult, State,
+  BoardChannels, BoardDetail, DebugPath, DebugResult, DiscoveryContext, DiscoveryMethod, LabPorts, LabSettings, Lease, LockResult, Run, SendResult, State,
 } from './types.ts'
 
 export const DEFAULT_PORT = 38127
@@ -157,10 +157,26 @@ export function transportFor(config: RemoteConfig): Transport {
   throw new Error(`远程 boardd 地址要以 ssh://、http:// 或 https:// 开头：${config.url}`)
 }
 
+/** A connection that dropped before boardd answered (a worker that died, a tunnel that broke). */
+function droppedError(error: unknown): boolean {
+  if (error instanceof BoardsApiError) return false
+  const code = (error as NodeJS.ErrnoException).code
+  return code === 'ECONNRESET' || code === 'EPIPE' || /socket hang up|在命令结束前断开了/.test((error as Error).message)
+}
+
+/** How many times in a row following a run may find boardd away (each after the reads' own retries) before it gives up. */
+const FOLLOW_LOST = 10
+
 export class BoardsClient {
   readonly transport: Transport
   /** The waits before a read finding boardd away is tried again; a caller with its own way to wait (a hub) sets fewer. */
   retryMs: readonly number[] = READ_RETRY_MS
+  /** The id the next run this client starts takes (`x-boards-run`); one is made when none is set. */
+  nextRun: string | null = null
+  /** Told when the connection drops while a run this client started goes on: it is followed by its id from then on. */
+  onReconnect: ((id: string) => void) | null = null
+  /** How often a run followed by its id is read. */
+  followMs = 2000
   constructor(target: string | Transport = socketPathFor(defaultStateDir()), readonly holder?: string) {
     this.transport = typeof target === 'string' ? unixTransport(target) : target
   }
@@ -175,9 +191,9 @@ export class BoardsClient {
    * an ssh tunnel coming up, a proxy restarting) is tried again with a short backoff for about half a minute; a write
    * never is, since it may have been done.
    */
-  async call<T>(method: 'GET' | 'POST', path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  async call<T>(method: 'GET' | 'POST', path: string, body?: unknown, signal?: AbortSignal, headers: Record<string, string> = {}): Promise<T> {
     for (let attempt = 0; ; attempt++) {
-      try { return await this.once<T>(method, path, body, signal) }
+      try { return await this.once<T>(method, path, body, signal, headers) }
       catch (error) {
         const code = (error as NodeJS.ErrnoException).code
         const dropped = code === 'ECONNRESET' || code === 'EPIPE' || /socket hang up/.test((error as Error).message)
@@ -196,11 +212,11 @@ export class BoardsClient {
     }
   }
 
-  private once<T>(method: 'GET' | 'POST', path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  private once<T>(method: 'GET' | 'POST', path: string, body?: unknown, signal?: AbortSignal, headers: Record<string, string> = {}): Promise<T> {
     const payload = body === undefined ? undefined : JSON.stringify(body)
     return new Promise((resolve, reject) => {
       // A length rather than chunks: proxies in front of boardd (a site's hub) may read only sized bodies.
-      const req = this.open(method, path, payload ? { 'Content-Type': 'application/json', 'Content-Length': String(Buffer.byteLength(payload)) } : {})
+      const req = this.open(method, path, { ...headers, ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': String(Buffer.byteLength(payload)) } : {}) })
       signal?.addEventListener('abort', () => req.destroy(new Error('已取消')), { once: true })
       req.on('response', response => {
         const chunks: Buffer[] = []
@@ -265,15 +281,71 @@ export class BoardsClient {
   }
 
   /** A command run by boardd's own CLI for this holder (for commands this client does not know). */
-  proxy(args: string[], json: boolean, onOutput: (stream: 'stdout' | 'stderr', text: string) => void) {
-    return this.streamCommand('/api/cli', { args, json }, onOutput)
+  async proxy(args: string[], json: boolean, onOutput: (stream: 'stdout' | 'stderr', text: string) => void) {
+    const id = this.runId()
+    try { return await this.streamCommand('/api/cli', { args, json }, onOutput, { 'x-boards-run': id }) }
+    catch (error) {
+      if (!droppedError(error)) throw error
+      // The command's first run (a flash, a boot) has this id; one that started none is not followed.
+      const output = await this.followRun(id, error)
+      if (output) onOutput('stdout', output.endsWith('\n') ? output : `${output}\n`)
+      return { code: 0, download: null }
+    }
+  }
+
+  /** The id the next run takes: the one set (`nextRun`, once), else a new one. */
+  private runId(): string {
+    const id = this.nextRun ?? randomBytes(12).toString('base64url')
+    this.nextRun = null
+    return id
+  }
+
+  /**
+   * Start a run on boardd (a flash, a boot) under an id this client chose (`x-boards-run`). The request is never sent
+   * again; when its connection drops before the answer (boardd's worker restarted), the run goes on in boardd and is
+   * followed by that id until it ends, with its own outcome.
+   */
+  async startRun(path: string, body: unknown): Promise<{ output: string }> {
+    const id = this.runId()
+    try { return await this.call<{ output: string }>('POST', path, body, undefined, { 'x-boards-run': id }) }
+    catch (error) {
+      if (!droppedError(error)) throw error
+      return { output: await this.followRun(id, error) }
+    }
+  }
+
+  /** A run's state by its id (`GET /api/run`). */
+  run(id: string) { return this.call<Run>('GET', `/api/run?id=${encodeURIComponent(id)}`) }
+
+  /**
+   * Follow run `id` to its end, after the connection that started it dropped (`lost`): its output when it succeeded;
+   * otherwise an error with its outcome (cancelled, failed, or interrupted when boardd could not follow it itself).
+   */
+  async followRun(id: string, lost: unknown): Promise<string> {
+    this.onReconnect?.(id)
+    for (let away = 0; ;) {
+      let run: Run
+      try { run = await this.run(id) }
+      catch (error) {
+        // boardd never started it (the connection dropped before the run began): nothing to follow.
+        if (error instanceof BoardsApiError && error.status === 404) throw lost
+        if (++away > FOLLOW_LOST) throw error
+        continue
+      }
+      away = 0
+      if (run.status === 'succeeded') return run.message ?? ''
+      if (run.status === 'cancelled') throw new BoardsApiError(409, run.message ?? '已取消', 'cancelled')
+      if (run.status === 'failed') throw new BoardsApiError(502, run.message ?? '失败了', 'hardware')
+      if (run.status === 'interrupted') throw new BoardsApiError(503, run.message ?? '被打断了', 'interrupted')
+      await new Promise(resolve => setTimeout(resolve, this.followMs))
+    }
   }
 
   /** POST a JSON body to a module's streaming endpoint; output events go to `onOutput` until its exit. */
-  streamCommand(path: string, payload: unknown, onOutput: (stream: 'stdout' | 'stderr', text: string) => void): Promise<{ code: number, download: string | null }> {
+  streamCommand(path: string, payload: unknown, onOutput: (stream: 'stdout' | 'stderr', text: string) => void, headers: Record<string, string> = {}): Promise<{ code: number, download: string | null }> {
     return new Promise((resolve, reject) => {
       const body = JSON.stringify(payload)
-      const req = this.open('POST', path, { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'Content-Length': String(Buffer.byteLength(body)) })
+      const req = this.open('POST', path, { ...headers, 'Content-Type': 'application/json', Accept: 'text/event-stream', 'Content-Length': String(Buffer.byteLength(body)) })
       req.on('response', response => {
         if ((response.statusCode ?? 500) >= 400) {
           const chunks: Buffer[] = []
@@ -336,8 +408,8 @@ export class BoardsClient {
   input(board: string, input: { die?: string, data: string, token?: string | null, human?: boolean }) { return this.call<{ ok: true }>('POST', '/api/console/input', { board, ...input }) }
   log(board: string, die?: string, lines = 200) { return this.call<{ lines: string[] }>('GET', `/api/log?board=${encodeURIComponent(board)}${die ? `&die=${encodeURIComponent(die)}` : ''}&lines=${lines}`) }
   stage(board: string, firmware: string, die?: string, token?: string | null) { return this.call<{ output: string }>('POST', '/api/stage', { board, firmware, die, token }) }
-  boot(board: string, files: string[], die?: string, token?: string | null) { return this.call<{ output: string }>('POST', '/api/boot', { board, files, die, token }) }
-  bootSdk(board: string, input: { sdk: string, method?: 'load' | 'download', variant?: string, brk?: string }, token?: string | null) { return this.call<{ output: string }>('POST', '/api/boot/sdk', { board, ...input, token }) }
+  boot(board: string, files: string[], die?: string, token?: string | null) { return this.startRun('/api/boot', { board, files, die, token }) }
+  bootSdk(board: string, input: { sdk: string, method?: 'load' | 'download', variant?: string, brk?: string }, token?: string | null) { return this.startRun('/api/boot/sdk', { board, ...input, token }) }
   /** Where an SDK's recipe can stop early (empty when the backend has no break points). */
   breaks(board: string, sdk: string) { return this.call<{ load: string[], download: string[] }>('GET', `/api/boot/breaks?board=${encodeURIComponent(board)}&sdk=${encodeURIComponent(sdk)}`) }
   /** Agents waiting for a person to let go of a board. */
@@ -368,7 +440,7 @@ export class BoardsClient {
   /** Run one of the actions the path reports (`halt`, `regs`, …). */
   debugAction(board: string, action: string, token?: string | null) { return this.call<{ debug: DebugResult }>('POST', '/api/debug', { board, action, token }) }
   /** Flash a package: a `url` the board's backend downloads, or a file sent first (`sendFile`'s `sha256:<hex>`). */
-  flashPackage(board: string, input: { url?: string, sha256?: string, flasher?: string, refresh?: boolean }, token?: string | null) { return this.call<{ output: string }>('POST', '/api/flash/package', { board, ...input, token }) }
+  flashPackage(board: string, input: { url?: string, sha256?: string, flasher?: string, refresh?: boolean }, token?: string | null) { return this.startRun('/api/flash/package', { board, ...input, token }) }
   resolveProposals(ids: string[], decision: 'apply' | 'reject', names?: Record<string, string>) { return this.call<{ ok: true }>('POST', '/api/proposals', { ids, decision, names }) }
   /** After re-cabling: have the lab start `host` over (forget its boards, find them again). */
   labKinds() { return this.call<Array<{ kind: string, title: string, about: string }>>('GET', '/api/labs/kinds') }

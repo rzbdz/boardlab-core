@@ -8,6 +8,10 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { BoardEvent, Busy } from '../shared/types.ts'
 import { BoardError, BusyError, CancelledError } from './errors.ts'
 import { addColumn } from './db.ts'
+import { requestedRun, RunStore } from './runs.ts'
+
+/** What a run is told about itself: its id, and how to report the backend's own handle on it (`Backend.follow`). */
+export interface RunContext { id: string, handle(handle: string): void }
 
 export interface KernelOptions {
   db: DatabaseSync
@@ -29,10 +33,13 @@ export class Kernel {
   readonly events = new EventEmitter()
   /** This process's own id: a client that reconnects and sees another one knows boardd restarted in between. */
   readonly boot = randomUUID()
+  /** Every run `doing` does, from its start to its end, kept in the database. */
+  readonly runs: RunStore
 
   constructor(options: KernelOptions) {
     this.db = options.db
     this.now = options.now ?? Date.now
+    this.runs = new RunStore(this.db, this.now)
     this.sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)))
     this.events.setMaxListeners(100)
   }
@@ -54,14 +61,22 @@ export class Kernel {
    * board's state is known. A run that fails after a cancel fails with that CancelledError; one that finished anyway
    * (its backend was already past the last step) returns what it did.
    */
-  async doing<T>(boards: string[], kind: string, label: string, by: string, run: (line: (text: string) => void, signal: AbortSignal) => Promise<T>,
-    options: { lease?: string | null, cancellable?: boolean } = {}): Promise<T> {
+  async doing<T>(boards: string[], kind: string, label: string, by: string, run: (line: (text: string) => void, signal: AbortSignal, context: RunContext) => Promise<T>,
+    options: { lease?: string | null, cancellable?: boolean, resume?: { id: string, since: string } } = {}): Promise<T> {
     const taken = boards.find(board => this.busy.has(board))
     if (taken) {
       const now = this.busy.get(taken)!
       throw new BusyError(`${taken} 正在${now.label.replace(/中$/, '')}（${now.by}，${now.since.slice(11, 19)} 开始），等它完成`)
     }
-    const entry: Busy = { kind, label, by, since: this.iso(), line: null, cancellable: options.cancellable ?? false }
+    // The run's id: the one its client chose for the request (`x-boards-run`, once per request), else a new one. An id
+    // already used is refused, never joined to the run that had it.
+    const asked = options.resume ? null : requestedRun.getStore()
+    const id = options.resume?.id ?? asked?.id ?? randomUUID()
+    if (asked) asked.id = null
+    if (!options.resume && this.runs.get(id)) throw new BoardError('conflict', `运行编号 ${id} 已经用过了；换一个`)
+    const entry: Busy = { id, kind, label, by, since: options.resume?.since ?? this.iso(), line: null, cancellable: options.cancellable ?? false }
+    // A run followed again (`resumeRuns`) was taken over already; a new one is written down from its start.
+    if (!options.resume) this.runs.start({ id, boards, kind, label, by, since: entry.since, cancellable: entry.cancellable, boot: this.boot, pid: process.pid })
     for (const board of boards) this.busy.set(board, entry)
     const stop = new AbortController()
     this.running.set(entry, { lease: options.lease ?? null, stop, targets: boards })
@@ -69,10 +84,14 @@ export class Kernel {
     changed()
     const cancelled = () => stop.signal.aborted && stop.signal.reason instanceof CancelledError && !stop.signal.reason.refused ? stop.signal.reason : null
     try {
-      return await run(text => { entry.line = text; changed() }, stop.signal)
+      const result = await run(text => { entry.line = text; this.runs.line(id, text); changed() }, stop.signal, { id, handle: handle => this.runs.handle(id, handle) })
+      this.runs.end(id, 'succeeded', said(result), entry.line)
+      return result
     } catch (error) {
       const reason = cancelled()
-      throw reason && !(error instanceof CancelledError) ? reason : error
+      const thrown = reason && !(error instanceof CancelledError) ? reason : error
+      this.runs.end(id, thrown instanceof CancelledError ? 'cancelled' : 'failed', (thrown as Error).message ?? String(thrown), entry.line)
+      throw thrown
     } finally {
       this.running.delete(entry)
       const freed = boards.filter(board => this.busy.get(board) === entry)
@@ -176,4 +195,10 @@ export class Kernel {
       flag: name => { const value = this.setting(key(name)); return value === null ? null : value === '1' },
     }
   }
+}
+
+/** What a run that succeeded said, as its run keeps it: its text, or its `output`, cut to the end. */
+function said(result: unknown): string | null {
+  const text = typeof result === 'string' ? result : typeof (result as { output?: unknown })?.output === 'string' ? (result as { output: string }).output : null
+  return text === null ? null : text.length > 4000 ? `…${text.slice(-4000)}` : text
 }

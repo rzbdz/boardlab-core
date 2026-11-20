@@ -3,6 +3,7 @@ import type { BoardEvent } from '../shared/types.ts'
 import { stops, type CancellableOperation, type ChannelAction } from './backend.ts'
 import { EventStream, FileReply, optional, required, TextReply, type Endpoint } from './api.ts'
 import { BoardError } from './errors.ts'
+import type { RunContext } from './kernel.ts'
 import type { BoardLab } from './lab.ts'
 import { stripAnsi } from './text.ts'
 
@@ -26,11 +27,11 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
   // being written. Either can be cancelled (`POST /api/cancel`) when the board's backend says it stops that operation
   // (`operation`), or always, when boardd runs it step by step itself (`true`). `line` shows a progress line on the
   // board while it runs.
-  const doing = <T>(name: string, kind: string, label: string, holder: string, body: any, run: (signal: AbortSignal, line: (text: string) => void) => Promise<T>,
+  const doing = <T>(name: string, kind: string, label: string, holder: string, body: any, run: (signal: AbortSignal, line: (text: string) => void, context: RunContext) => Promise<T>,
     untilDone = false, operation: CancellableOperation | boolean = false) => {
     const lease = lab.locks.authorize(name, who(holder, body))
     const cancellable = typeof operation === 'boolean' ? operation : stops(lab.backends.route(name).backend, operation)
-    return lab.kernel.doing([name], kind, label, holder, (line, signal) => run(signal, line), { lease: untilDone ? null : lease.id, cancellable })
+    return lab.kernel.doing([name], kind, label, holder, (line, signal, context) => run(signal, line, context), { lease: untilDone ? null : lease.id, cancellable })
   }
   /**
    * Stop what boardd is doing to a board or a lab (`lab:<id>`), whatever it is: a lab's discovery, or a run on the
@@ -74,6 +75,15 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     { method: 'GET', path: '/api/modules', about: '装了哪些模块', handle: () => lab.modules() },
     { method: 'GET', path: '/api/state', about: '全貌：板子、锁、后端、建议，和各模块的部分', handle: ({ caller }) => lab.state(caller.holder) },
     { method: 'GET', path: '/api/board', about: '一块板子的详情和最近的操作', handle: ({ query }) => lab.boards.detail(named(query.get('name'), 'name')) },
+    {
+      method: 'GET', path: '/api/run', about: '一次运行（刷机、启动……）现在怎样了：断线的客户端按编号跟到它结束',
+      handle: ({ query }) => {
+        const run = lab.kernel.runs.get(required(query.get('id'), 'id'))
+        if (!run) throw new BoardError('not-found', `没有这次运行：${query.get('id')}`)
+        const { handle: _handle, boot: _boot, pid: _pid, cancellable: _cancellable, ...shown } = run
+        return shown
+      },
+    },
     { method: 'GET', path: '/api/history', about: '最近的操作和锁', handle: () => lab.history() },
     { method: 'GET', path: '/api/export.toml', about: '手工和扫描登记的板子，TOML', handle: () => new TextReply(lab.boards.exportToml()) },
     {
@@ -185,14 +195,14 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     },
     { method: 'POST', path: '/api/boot/sdk', about: '用 SDK 的构建启动（load）或刷机（download）', handle: async ({ body, caller }) => {
         const name = board(body), method = body.method === 'download' ? 'download' : 'load'
-        return { output: await doing(name, 'boot', method === 'download' ? '刷机中' : '启动中', caller.holder, body, (signal, line) => lab.download.build(name, who(caller.holder, body), { sdk: required(body.sdk, 'sdk'), method, variant: optional(body.variant), brk: optional(body.brk) }, signal, line), true, 'build') }
+        return { output: await doing(name, 'boot', method === 'download' ? '刷机中' : '启动中', caller.holder, body, (signal, line, context) => lab.download.build(name, who(caller.holder, body), { sdk: required(body.sdk, 'sdk'), method, variant: optional(body.variant), brk: optional(body.brk) }, signal, line, context), true, 'build') }
       },
     },
     {
       method: 'POST', path: '/api/flash/package', about: '用刷机包刷机：url（http/https，后端自己下载）或传上来的文件（sha256），flasher 选刷机工具，refresh 让后端不用它缓存的这个链接、重新下载', handle: async ({ body, caller }) => {
         const name = board(body)
         const input = { url: optional(body.url), sha256: optional(body.sha256), flasher: optional(body.flasher), refresh: body.refresh === true }
-        return { output: await doing(name, 'boot', '刷机中', caller.holder, body, (signal, line) => lab.download.flashPackage(name, who(caller.holder, body), input, signal, line), true, 'flash') }
+        return { output: await doing(name, 'boot', '刷机中', caller.holder, body, (signal, line, context) => lab.download.flashPackage(name, who(caller.holder, body), input, signal, line, context), true, 'flash') }
       },
     },
 

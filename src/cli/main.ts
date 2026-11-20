@@ -162,6 +162,9 @@ async function run(argv: string[], COMMANDS: Map<string, Command>, usage: (topic
     console.error(`boardlab：以 ${holder} 的身份操作：锁、队列、历史和反馈会记在人名下。agent 要用自己的身份，例如 --as ${agent} 或 export BOARDS_HOLDER=<你的工具>:<会话>。`)
   }
   const client = new BoardsClient(transport, holder)
+  // Run by boardd for a client: the run takes the id that client chose, so it can follow it by that id.
+  client.nextRun = process.env.BOARDS_RUN || null
+  client.onReconnect = id => console.error(`和 boardd 的连接断了；这次运行在 boardd 里继续，按编号 ${id} 接着跟到它结束…`)
   const remote = !client.transport.label.startsWith('/')
   // A remote boardd's lock tokens are kept with this user's configuration, not in a state directory.
   const tokens = new TokenStore(remote ? join(dirname(remoteConfigPath()), 'tokens.json') : join(stateDir, 'cli-tokens.json'))

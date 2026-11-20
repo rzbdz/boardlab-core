@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { basename, isAbsolute } from 'node:path'
 import type { Firmware } from '../shared/types.ts'
-import type { BootFile, DownloadCapability, FlashPackage, LabConfig, BoardTarget } from './backend.ts'
+import type { BootFile, DownloadCapability, FlashPackage, LabConfig, BoardTarget, RunReport } from './backend.ts'
 import { BoardError, CancelledError, isCancelled } from './errors.ts'
 import { readFirmware, verifiedFirmware } from './firmware.ts'
 import { askedIn } from './relay.ts'
@@ -148,7 +148,7 @@ export class Download {
    * Boot a board with a named build: from RAM (`load`) or by flashing it (`download`). The backend gets the build to the
    * board itself (a board host pulls it from its build server), so nothing passes through here.
    */
-  async build(board: string, caller: Caller, input: { sdk: string, method?: 'load' | 'download', variant?: string | null, brk?: string | null }, signal?: AbortSignal, line?: (text: string) => void): Promise<string> {
+  async build(board: string, caller: Caller, input: { sdk: string, method?: 'load' | 'download', variant?: string | null, brk?: string | null }, signal?: AbortSignal, line?: (text: string) => void, report?: RunReport): Promise<string> {
     const lease = this.lab.locks.authorize(board, caller)
     const route = this.lab.backends.route(board)
     const builds = route.backend.builds
@@ -161,7 +161,7 @@ export class Download {
     if (known.length && !known.includes(input.sdk)) throw new BoardError('invalid', `${board} 不能跑 SDK ${input.sdk}（可以：${known.join('、')}）`)
     const detail = `${input.sdk} ${method === 'download' ? '刷机' : '内存启动'}${input.variant ? ` ${input.variant}` : ''}${input.brk ? ` 停在 ${input.brk}` : ''}`
     try {
-      const output = await builds.boot(route.config, route.target, { sdk: input.sdk, method, variant: input.variant ?? null, brk: input.brk ?? null }, this.follow(board, line), signal)
+      const output = await builds.boot(route.config, route.target, { sdk: input.sdk, method, variant: input.variant ?? null, brk: input.brk ?? null }, this.follow(board, line), signal, report)
       this.lab.kernel.record(lease.holder, board, method === 'download' ? 'flash' : 'boot', detail, true)
       return output
     } catch (error) {
@@ -175,7 +175,7 @@ export class Download {
    * Flash a board with a package: an http(s) `url` the backend downloads itself, or a file sent to boardd (`sha256`,
    * bare or as `sha256:<hex>`). `flasher` names the backend's tool to write it with; `refresh` asks it to download a link again rather than use a copy it cached. `line` gets each progress line.
    */
-  async flashPackage(board: string, caller: Caller, input: { url?: string | null, sha256?: string | null, flasher?: string | null, refresh?: boolean }, signal?: AbortSignal, line?: (text: string) => void): Promise<string> {
+  async flashPackage(board: string, caller: Caller, input: { url?: string | null, sha256?: string | null, flasher?: string | null, refresh?: boolean }, signal?: AbortSignal, line?: (text: string) => void, report?: RunReport): Promise<string> {
     const lease = this.lab.locks.authorize(board, caller)
     const route = this.lab.backends.route(board)
     const builds = route.backend.builds
@@ -194,7 +194,7 @@ export class Download {
     }
     const detail = `刷机包 ${what}${flasher ? `（${flasher}）` : ''}`
     try {
-      const output = await builds.flash(route.config, route.target, pkg, this.follow(board, line), signal)
+      const output = await builds.flash(route.config, route.target, pkg, this.follow(board, line), signal, report)
       this.lab.kernel.record(lease.holder, board, 'flash', detail, true)
       return output
     } catch (error) {
@@ -205,7 +205,7 @@ export class Download {
   }
 
   /** The progress of a backend's build or flash: shown on the board, with what a person is asked to do. */
-  private follow(board: string, line?: (text: string) => void) {
+  follow(board: string, line?: (text: string) => void) {
     return (text: string) => {
       const shown = text.replace(/^\s*\[\s*[\d.]+s\]\s*/, '').slice(0, 200)
       this.progressLines.set(board, shown)
@@ -217,7 +217,8 @@ export class Download {
     }
   }
 
-  private ended(board: string) {
+  /** A backend's build or flash ended: its progress goes, and what the board runs now is unknown. */
+  ended(board: string) {
     this.progressLines.delete(board)
     this.lab.relay.attend(board, null)
     this.unknown(board)

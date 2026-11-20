@@ -229,7 +229,7 @@ const commands: Command[] = [
     usage: [
       'boot <board> --sdk <SDK> [--method load|download] [--variant V] [--break 名字]\t后端能取构建产物的板子用 SDK 的产物内存启动或刷机，板子所在主机自己去构建服务器取',
       'boot <board>[.<die>] <固件名|http(s)链接|host:/板卡主机路径|本机文件>...\t按顺序内存启动，不写板子；URL 和 host: 路径由板卡主机取，本机文件上传是兜底；只改内核：boot <board> fsbl u-boot-opensbi <Image.itb>',
-      '（boot、flash：Ctrl-C 只是不再跟着看，操作在 boardd 里继续，用 boardlab cancel <board> 停下它；--cancel-on-interrupt 让 Ctrl-C 直接取消）',
+      '（boot、flash：Ctrl-C 只是不再跟着看，操作在 boardd 里继续，用 boardlab cancel <board> 停下它；--cancel-on-interrupt 让 Ctrl-C 直接取消；boardd 中途重启时操作不丢，命令行会重新连上并跟到它结束，按它的结果退出）',
     ],
     run: context => boot(context, 'boot'),
   },

@@ -16,6 +16,7 @@ import { debugEndpoints } from './debug-endpoints.ts'
 import { coreEndpoints } from './endpoints.ts'
 import { Files } from './files.ts'
 import { Kernel, type KernelOptions } from './kernel.ts'
+import { resumeRuns } from './resume.ts'
 import { Locks } from './locks.ts'
 import type { Module, ModuleInfo } from './module.ts'
 import { Proposals } from './proposals.ts'
@@ -121,12 +122,15 @@ export class BoardLab {
   // ---------- running ----------
 
   /**
-   * Start what runs while boardd runs: listing the backends' boards every minute (which also keeps their leases and news
+   * Start what runs while boardd runs: taking over the runs a previous boardd left (`resumeRuns`), listing the backends' boards every minute (which also keeps their leases and news
    * streams alive), closing console sessions their viewers left, and every module's services.
    */
   start(options: { syncMs?: number, reapMs?: number } = {}) {
     void this.backends.syncAll()
-    const sync = setInterval(() => void this.backends.syncAll(), options.syncMs ?? 60_000)
+    // Runs a previous boardd left running are followed again or marked interrupted, now and at each sync (a worker
+    // being replaced finishes its own, unless it dies first).
+    resumeRuns(this)
+    const sync = setInterval(() => { void this.backends.syncAll(); resumeRuns(this) }, options.syncMs ?? 60_000)
     const reap = setInterval(() => this.consoles.reap(), options.reapMs ?? 30_000)
     sync.unref()
     reap.unref()
