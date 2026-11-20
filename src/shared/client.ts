@@ -177,6 +177,8 @@ export class BoardsClient {
   onReconnect: ((id: string) => void) | null = null
   /** How often a run followed by its id is read. */
   followMs = 2000
+  /** How long a run followed by its id may go without a new progress line before following it gives up (the run goes on). */
+  followQuietMs = 2 * 3_600_000
   constructor(target: string | Transport = socketPathFor(defaultStateDir()), readonly holder?: string) {
     this.transport = typeof target === 'string' ? unixTransport(target) : target
   }
@@ -323,6 +325,7 @@ export class BoardsClient {
    */
   async followRun(id: string, lost: unknown): Promise<string> {
     this.onReconnect?.(id)
+    let said: string | null | undefined, heard = Date.now()
     for (let away = 0; ;) {
       let run: Run
       try { run = await this.run(id) }
@@ -337,6 +340,10 @@ export class BoardsClient {
       if (run.status === 'cancelled') throw new BoardsApiError(409, run.message ?? '已取消', 'cancelled')
       if (run.status === 'failed') throw new BoardsApiError(502, run.message ?? '失败了', 'hardware')
       if (run.status === 'interrupted') throw new BoardsApiError(503, run.message ?? '被打断了', 'interrupted')
+      if (run.line !== said) { said = run.line; heard = Date.now() }
+      else if (Date.now() - heard > this.followQuietMs) {
+        throw new BoardsApiError(504, `运行 ${id} 已经 ${Math.round(this.followQuietMs / 60_000)} 分钟没有新进展了，不再等它；它在 boardd 里接着跑（boardlab show 看板子现在的样子）`, 'timeout')
+      }
       await new Promise(resolve => setTimeout(resolve, this.followMs))
     }
   }

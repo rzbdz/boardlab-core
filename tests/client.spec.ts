@@ -78,6 +78,24 @@ describe('a run whose connection drops', () => {
     } finally { server.close(); rmSync(dir, { recursive: true, force: true }) }
   })
 
+  it('stops following a run that makes no progress for too long, and says it goes on in boardd', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'boardlab-client-'))
+    const socket = join(dir, 'boardd.sock')
+    let id = ''
+    const server = createServer((request, response) => {
+      if (request.method === 'POST') { id = String(request.headers['x-boards-run']); request.resume(); return void request.socket.destroy() }
+      response.writeHead(200, { 'Content-Type': 'application/json' })
+      response.end(JSON.stringify({ id, status: 'running', line: 'writing 10%', message: null }))
+    })
+    await new Promise<void>(resolve => server.listen(socket, resolve))
+    try {
+      const client = new BoardsClient(socket)
+      client.followMs = 10
+      client.followQuietMs = 80
+      await expect(client.flashPackage('b1', { url: 'https://images.test/pkg.zip' })).rejects.toMatchObject({ code: 'timeout', message: expect.stringContaining('接着跑') })
+    } finally { server.close(); rmSync(dir, { recursive: true, force: true }) }
+  })
+
   it('gives the dropped connection back when boardd never started the run', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'boardlab-client-'))
     const socket = join(dir, 'boardd.sock')
