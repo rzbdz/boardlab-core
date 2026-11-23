@@ -90,3 +90,21 @@ describe('image markets', () => {
     expect(sorted.map(e => e.name)).toEqual(['v4.0.10', 'v4.0.9', 'a.zip', 'b.zip', 'c.zip'])
   })
 })
+
+describe('image markets over HTTP', () => {
+  it('lists the markets and a folder through the gateway, as the CLI and the page ask', async () => {
+    const { serve } = await import('../src/server/http.ts')
+    const { BoardsClient } = await import('../src/shared/client.ts')
+    const boards = lab({ t: Date.parse('2026-01-01T00:00:00Z') })
+    boards.markets.offer({ kind: 'shelf', title: '书架', about: '', create: () => shelf({ '': [folder('beta', 'beta'), folder('alpha', 'alpha')] }, []) })
+    boards.markets.configure('main', { kind: 'shelf', config: {}, source: 'test' })
+    const running = await serve(boards, { port: 0, socketPath: join(dir, 'boardd.sock'), uiDir: null })
+    try {
+      const client = new BoardsClient(join(dir, 'boardd.sock'))
+      expect((await client.markets()).map(m => m.id)).toEqual(['main'])
+      expect((await client.marketFolder('main')).entries.map(e => e.name)).toEqual(['beta', 'alpha'])
+      expect((await client.marketFolder('main', '', { soc: 'alpha' })).entries.map(e => e.name)).toEqual(['alpha'])
+      await expect(client.marketFolder('none')).rejects.toMatchObject({ status: 404 })
+    } finally { await running.close() }
+  })
+})

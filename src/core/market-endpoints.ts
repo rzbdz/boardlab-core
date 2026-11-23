@@ -1,0 +1,17 @@
+/**
+ * Image markets over HTTP: which markets there are, and a folder of one. The same for every market kind (see
+ * `markets.ts`): the page and the CLI browse any of them alike, and a market's own configuration never reaches here.
+ */
+import { required, type Endpoint } from './api.ts'
+import type { BoardLab } from './lab.ts'
+
+export function marketEndpoints(lab: BoardLab): Endpoint[] {
+  return [
+    { method: 'GET', path: '/api/markets', about: '设好的镜像市场：编号、种类、名字、谁设的，用不了时说为什么', handle: () => lab.markets.list() },
+    {
+      method: 'GET', path: '/api/markets/:id/list',
+      about: '一个镜像市场里的一层（path，空是顶层）：文件夹在前，新的在前；soc 只留这个 SoC 的；一分钟内不再问市场，refresh=1 重新读',
+      handle: ({ params, query, signal }) => lab.markets.folder(required(params.id, 'id'), query.get('path') ?? '', { soc: query.get('soc'), refresh: query.get('refresh') === '1', signal }),
+    },
+  ]
+}

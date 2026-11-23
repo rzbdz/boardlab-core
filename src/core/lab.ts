@@ -13,6 +13,7 @@ import { Consoles, type ConsoleTiming } from './consoles.ts'
 import { Download, type BootTiming } from './download.ts'
 import { acknowledgeRestore, restoreRecord } from './db.ts'
 import { debugEndpoints } from './debug-endpoints.ts'
+import { marketEndpoints } from './market-endpoints.ts'
 import { coreEndpoints } from './endpoints.ts'
 import { Files } from './files.ts'
 import { Kernel, type KernelOptions } from './kernel.ts'
@@ -71,7 +72,7 @@ export class BoardLab {
     this.backends = new Backends(this)
     this.consoles = new Consoles(this, options.consoleTiming)
     this.markets = new Markets(this.kernel)
-    this.api.add('core', [...coreEndpoints(this), ...debugEndpoints(this), ...databaseEndpoints(this)])
+    this.api.add('core', [...coreEndpoints(this), ...debugEndpoints(this), ...marketEndpoints(this), ...databaseEndpoints(this)])
     for (const module of inLoadOrder(options.modules ?? [])) this.use(module)
   }
 
