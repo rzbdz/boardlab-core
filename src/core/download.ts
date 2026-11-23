@@ -175,12 +175,19 @@ export class Download {
    * Flash a board with a package: an http(s) `url` the backend downloads itself, or a file sent to boardd (`sha256`,
    * bare or as `sha256:<hex>`). `flasher` names the backend's tool to write it with; `refresh` asks it to download a link again rather than use a copy it cached. `line` gets each progress line.
    */
-  async flashPackage(board: string, caller: Caller, input: { url?: string | null, sha256?: string | null, flasher?: string | null, refresh?: boolean }, signal?: AbortSignal, line?: (text: string) => void, report?: RunReport): Promise<string> {
+  async flashPackage(board: string, caller: Caller, input: { url?: string | null, sha256?: string | null, image?: { market: string, path: string } | null, flasher?: string | null, refresh?: boolean }, signal?: AbortSignal, line?: (text: string) => void, report?: RunReport): Promise<string> {
     const lease = this.lab.locks.authorize(board, caller)
     const route = this.lab.backends.route(board)
     const builds = route.backend.builds
     if (!builds?.flash) throw new BoardError('invalid', `${board} 所在的后端 ${route.id} 不能用刷机包刷机`)
     const kinds = builds.accepts ?? DEFAULT_PACKAGES
+    if (input.image) {
+      // An image of a market: where it is fetched from, and the sha256 it must have when the market knows it.
+      if (input.url || input.sha256) throw new BoardError('invalid', '刷机包给市场里的镜像、链接或传上来的文件，三选一')
+      const found = await this.lab.markets.locate(input.image.market, input.image.path, signal)
+      line?.(`镜像 ${input.image.market}:${input.image.path}`)
+      input = { ...input, image: null, url: found.url, sha256: found.sha256 ?? null }
+    }
     const sha256 = input.sha256 ? input.sha256.replace(/^sha256:/, '') : null
     if (sha256 && !/^[0-9a-f]{64}$/.test(sha256)) throw new BoardError('invalid', `sha256 不对：${input.sha256}`)
     if (!input.url && !sha256) throw new BoardError('invalid', `刷机包要给链接（${kinds.schemes.join('、')}）或传上来的文件`)

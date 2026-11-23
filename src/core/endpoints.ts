@@ -203,9 +203,10 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
       },
     },
     {
-      method: 'POST', path: '/api/flash/package', about: '用刷机包刷机：url（http/https，后端自己下载）或传上来的文件（sha256），flasher 选刷机工具，refresh 让后端不用它缓存的这个链接、重新下载', handle: async ({ body, caller }) => {
+      method: 'POST', path: '/api/flash/package', about: '用刷机包刷机：镜像市场里的镜像（image: {market, path}）、链接（url，后端自己取，板子上的 packages 说它收哪些）或传上来的文件（sha256），flasher 选刷机工具，refresh 让后端不用它缓存的这个链接、重新下载', handle: async ({ body, caller }) => {
         const name = board(body)
-        const input = { url: optional(body.url), sha256: optional(body.sha256), flasher: optional(body.flasher), refresh: body.refresh === true }
+        const image = body.image && typeof body.image === 'object' ? { market: required(body.image.market, 'image.market'), path: required(body.image.path, 'image.path') } : null
+        const input = { url: optional(body.url), sha256: optional(body.sha256), image, flasher: optional(body.flasher), refresh: body.refresh === true }
         return { output: await doing(name, 'boot', '刷机中', caller.holder, body, (signal, line, context) => lab.download.flashPackage(name, who(caller.holder, body), input, signal, line, context), true, 'flash') }
       },
     },

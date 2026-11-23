@@ -736,6 +736,36 @@ describe('remote labs', () => {
     await expect(svc.download.flashPackage('com260', { holder: 'user:alice' }, { url })).rejects.toThrow(/不能用刷机包刷机/)
   })
 
+  it('flashes an image of a market by its place there', async () => {
+    class MarketLab extends FakeLab {
+      flashed: unknown[] = []
+      builds = {
+        boot: async () => '',
+        accepts: { schemes: ['https'], suffixes: ['.zip'] },
+        flash: async (_config: LabConfig, target: BoardTarget, pkg: unknown) => { this.flashed.push({ device: target.device, pkg }); return 'written' },
+      }
+    }
+    const lab = new MarketLab()
+    const { svc } = labService(lab)
+    await enable(svc)
+    const image = (path: string, soc: string) => ({ path, name: path.split('/').at(-1)!, kind: 'image' as const, soc, sha256: sha(path) })
+    svc.markets.offer({
+      kind: 'shelf', title: '书架', about: '', create: () => ({
+        list: async () => [image('test-soc/a.zip', 'test-soc'), image('test-soc/a.iso', 'test-soc'), image('other-soc/b.zip', 'other-soc')],
+        locate: async path => ({ url: `https://images.example/${path}`, name: path.split('/').at(-1)!, sha256: sha(path) }),
+      }),
+    })
+    svc.markets.configure('shelf', { kind: 'shelf', config: {}, source: 'test' })
+    await svc.locks.lock('lab1-sub0-1', 'user:bob', '在用')
+    const { token } = await svc.locks.lock('lab1-sub0-0', 'claude:s1', '刷机')
+
+    // A flash by the image's place: the backend gets the market's link and the sha256 it must hash to.
+    expect(await call(svc, '/api/flash/package', 'claude:s1', { board: 'lab1-sub0-0', token, image: { market: 'shelf', path: 'test-soc/a.zip' } })).toEqual({ output: 'written' })
+    expect(lab.flashed).toEqual([{ device: 'sub0-0', pkg: { url: 'https://images.example/test-soc/a.zip', flasher: null, sha256: sha('test-soc/a.zip') } }])
+    await expect(call(svc, '/api/flash/package', 'claude:s1', { board: 'lab1-sub0-0', token, image: { market: 'shelf', path: 'test-soc/a.zip' }, url: 'https://x.example/p.zip' })).rejects.toThrow(/三选一/)
+    await expect(call(svc, '/api/flash/package', 'claude:s1', { board: 'lab1-sub0-0', token, image: { market: 'shelf', path: 'test-soc/a.iso' } })).rejects.toThrow(/刷不了这种包/)
+  })
+
   it('works a lab board\'s relays and buttons one by one, under its lock', async () => {
     class RelayLab extends FakeLab {
       switched: string[] = []
