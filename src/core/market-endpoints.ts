@@ -13,5 +13,10 @@ export function marketEndpoints(lab: BoardLab): Endpoint[] {
       about: '一个镜像市场里的一层（path，空是顶层）：文件夹在前，新的在前；soc 只留这个 SoC 的；一分钟内不再问市场，refresh=1 重新读',
       handle: ({ params, query, signal }) => lab.markets.folder(required(params.id, 'id'), query.get('path') ?? '', { soc: query.get('soc'), refresh: query.get('refresh') === '1', signal }),
     },
+    {
+      method: 'GET', path: '/api/markets/:id/targets',
+      about: '一个镜像（path）能刷到哪些板子上：后端收这种包、SoC 对得上的；你拿着的在前，再是空闲的，其余说为什么不行',
+      handle: ({ params, query, caller, signal }) => lab.markets.targets(required(params.id, 'id'), required(query.get('path'), 'path'), caller.holder, lab.boards.list(), signal),
+    },
   ]
 }

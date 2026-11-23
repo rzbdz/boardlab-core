@@ -10,7 +10,7 @@ import { Duplex } from 'node:stream'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import type {
-  BoardChannels, BoardDetail, DebugPath, DebugResult, DiscoveryContext, DiscoveryMethod, LabPorts, LabSettings, Lease, LockResult, Market, MarketListing, Run, SendResult, State,
+  BoardChannels, BoardDetail, DebugPath, DebugResult, DiscoveryContext, DiscoveryMethod, LabPorts, LabSettings, Lease, LockResult, Market, MarketListing, MarketTarget, Run, SendResult, State,
 } from './types.ts'
 
 export const DEFAULT_PORT = 38127
@@ -412,6 +412,8 @@ export class BoardsClient {
     const query = new URLSearchParams({ path, ...(options.soc ? { soc: options.soc } : {}), ...(options.refresh ? { refresh: '1' } : {}) })
     return this.call<MarketListing>('GET', `/api/markets/${encodeURIComponent(market)}/list?${query}`)
   }
+  /** The boards an image of a market could be flashed onto, the caller's and free ones first. */
+  marketTargets(market: string, path: string) { return this.call<MarketTarget[]>('GET', `/api/markets/${encodeURIComponent(market)}/targets?path=${encodeURIComponent(path)}`) }
   board(name: string) { return this.call<BoardDetail>('GET', `/api/board?name=${encodeURIComponent(name)}`) }
   lock(board: string, purpose: string, queue: 'none' | 'join' | 'wait' = 'none', signal?: AbortSignal) { return this.call<LockResult>('POST', '/api/lock', { board, purpose, queue }, signal) }
   unqueue(board: string) { return this.call<{ ok: true }>('POST', '/api/unqueue', { board }) }

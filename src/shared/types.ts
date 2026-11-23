@@ -306,6 +306,12 @@ export interface MarketEntry {
 /** A market folder as boardd lists it: newest first, with when it was read (a minute's cache; `refresh` reads again). */
 export interface MarketListing { market: string, path: string, entries: MarketEntry[], readAt: string }
 
+/**
+ * A board an image could be flashed onto: whether it is the caller's already (`mine`), free to lock, or why not. Only
+ * boards whose backend takes the image and whose SoC is the image's (or either is unknown) are listed.
+ */
+export interface MarketTarget { board: string, soc: string | null, mine: boolean, free: boolean, why: string | null }
+
 /** A relay, button or line wired to a board, as its backend's relay controller names it (`<board>/power`). */
 export interface Channel {
   id: string

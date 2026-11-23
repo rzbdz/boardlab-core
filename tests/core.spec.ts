@@ -736,7 +736,7 @@ describe('remote labs', () => {
     await expect(svc.download.flashPackage('com260', { holder: 'user:alice' }, { url })).rejects.toThrow(/不能用刷机包刷机/)
   })
 
-  it('flashes an image of a market by its place there', async () => {
+  it('flashes an image of a market by its place there, onto the boards whose backend takes it and whose SoC it is', async () => {
     class MarketLab extends FakeLab {
       flashed: unknown[] = []
       builds = {
@@ -758,6 +758,16 @@ describe('remote labs', () => {
     svc.markets.configure('shelf', { kind: 'shelf', config: {}, source: 'test' })
     await svc.locks.lock('lab1-sub0-1', 'user:bob', '在用')
     const { token } = await svc.locks.lock('lab1-sub0-0', 'claude:s1', '刷机')
+
+    // Boards that take the image, the caller's first, then free ones, then the rest with why; another SoC's image goes nowhere.
+    expect(await svc.markets.targets('shelf', 'test-soc/a.zip', 'claude:s1', svc.boards.list())).toEqual([
+      { board: 'lab1-sub0-0', soc: 'test-soc', mine: true, free: false, why: null },
+      { board: 'lab1-sub0-1', soc: 'test-soc', mine: false, free: false, why: 'user:bob 在用' },
+    ])
+    await svc.locks.unlock('lab1-sub0-1', { holder: 'user:bob' })
+    expect((await svc.markets.targets('shelf', 'test-soc/a.zip', 'claude:s1', svc.boards.list()))[1]).toEqual({ board: 'lab1-sub0-1', soc: 'test-soc', mine: false, free: true, why: null })
+    expect(await svc.markets.targets('shelf', 'test-soc/a.iso', 'claude:s1', svc.boards.list())).toEqual([])
+    expect(await svc.markets.targets('shelf', 'other-soc/b.zip', 'claude:s1', svc.boards.list())).toEqual([])
 
     // A flash by the image's place: the backend gets the market's link and the sha256 it must hash to.
     expect(await call(svc, '/api/flash/package', 'claude:s1', { board: 'lab1-sub0-0', token, image: { market: 'shelf', path: 'test-soc/a.zip' } })).toEqual({ output: 'written' })

@@ -4,7 +4,8 @@
  * market reads from is never in a module. The core lists a market's folders for the page and the CLI: newest first,
  * filtered to a SoC, cached a minute; what a folder holds, and how an image is fetched, is the driver's.
  */
-import type { Market, MarketEntry, MarketListing } from '../shared/types.ts'
+import type { Board, Market, MarketEntry, MarketListing, MarketTarget } from '../shared/types.ts'
+import { takesPackage } from './backend.ts'
 import { BoardError } from './errors.ts'
 import type { Kernel } from './kernel.ts'
 
@@ -109,6 +110,30 @@ export class Markets {
     const soc = options.soc?.toLowerCase() || null
     const entries = soc ? listing.entries.filter(entry => !entry.soc || entry.soc.toLowerCase() === soc) : listing.entries
     return { market: listing.market, path: listing.path, entries, readAt: listing.readAt }
+  }
+
+  /**
+   * The boards `holder` could flash the image at `path` onto: those whose backend takes it and whose SoC is the
+   * image's (either unknown counts as a match), theirs first, then free ones, then the rest with why not.
+   */
+  async targets(id: string, path: string, holder: string, boards: Board[], signal?: AbortSignal): Promise<MarketTarget[]> {
+    const at = folderPath(path)
+    const image = await this.locate(id, at, signal)
+    const parent = at.includes('/') ? at.slice(0, at.lastIndexOf('/')) : ''
+    const entry = (await this.folder(id, parent, { signal })).entries.find(item => item.path === at)
+    const soc = entry?.soc?.toLowerCase() ?? null
+    const out: MarketTarget[] = []
+    for (const board of boards) {
+      const kinds = board.lab?.packages
+      if (!kinds || !takesPackage(kinds, image.url, image.name)) continue
+      if (soc && board.soc && board.soc.toLowerCase() !== soc) continue
+      const mine = board.lease?.holder === holder
+      const why = mine ? (board.busy ? `正在${board.busy.label}` : null)
+        : board.lease ? `${board.lease.holder} 在用` : board.lab?.heldBy ? `${board.lab.heldBy} 在实验室里占着` : board.busy ? `正在${board.busy.label}` : null
+      out.push({ board: board.name, soc: board.soc, mine, free: !mine && !why, why })
+    }
+    const rank = (target: MarketTarget) => target.mine && !target.why ? 0 : target.free ? 1 : 2
+    return out.sort((a, b) => rank(a) - rank(b) || a.board.localeCompare(b.board))
   }
 
   /** Where an image of a market is fetched from. */
