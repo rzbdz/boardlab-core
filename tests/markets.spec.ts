@@ -85,6 +85,11 @@ describe('image markets', () => {
     expect(sortEntries(['20261122', '20261123', '20261031'].map(name => folder(name))).map(e => e.name)).toEqual(['20261123', '20261122', '20261031'])
   })
 
+  it('keeps the order a market gives the places it was set up with', () => {
+    const placed = (name: string, order: number) => ({ ...folder(name), order })
+    expect(sortEntries([placed('zeta', 0), folder('v2'), placed('alpha', 1), image('x.zip', '2026-01-01T00:00:00Z'), folder('v10')]).map(e => e.name)).toEqual(['zeta', 'alpha', 'v10', 'v2', 'x.zip'])
+  })
+
   it('sorts dated and versioned names newest first and images by when they changed', () => {
     const sorted = sortEntries([image('b.zip', '2026-01-02T00:00:00Z'), folder('v4.0.9'), image('a.zip', '2026-02-01T00:00:00Z'), folder('v4.0.10'), image('c.zip', '')])
     expect(sorted.map(e => e.name)).toEqual(['v4.0.10', 'v4.0.9', 'a.zip', 'b.zip', 'c.zip'])

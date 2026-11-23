@@ -197,7 +197,8 @@ export function compareNames(a: string, b: string): number {
 }
 
 /**
- * Newest first. Folders before images. Folders by name, as versions where they are ones (`v4.0.10` before `v4.0.9`,
+ * Newest first. Folders before images. Entries a market gives an `order` (places it was set up with) first, in that
+ * order. Folders by name, as versions where they are ones (`v4.0.10` before `v4.0.9`,
  * `v4.0` before `v4.0rc4`) and numeric-aware otherwise (`20261123` before `20261122`). Images by when they changed, then
  * by name the same way.
  */
@@ -205,6 +206,9 @@ export function sortEntries(entries: MarketEntry[]): MarketEntry[] {
   const time = (entry: MarketEntry) => entry.modified ? Date.parse(entry.modified) || 0 : 0
   return [...entries].sort((a, b) => {
     if (a.kind !== b.kind) return a.kind === 'folder' ? -1 : 1
+    // A market's own order for the places it was set up with comes before any order by name or time.
+    const placed = (entry: MarketEntry) => typeof entry.order === 'number' ? entry.order : Infinity
+    if (placed(a) !== placed(b)) return placed(a) - placed(b)
     if (a.kind === 'image') { const t = time(b) - time(a); if (t) return t }
     return compareNames(b.name, a.name)
   })

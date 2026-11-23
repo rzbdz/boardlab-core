@@ -303,6 +303,11 @@ export interface MarketEntry {
   modified?: string | null
   /** The market's own words on it (`构建 20261116`), shown beside the name. */
   note?: string | null
+  /**
+   * Where the market wants it in its folder, for entries that are places it was set up with rather than things it
+   * found (a configured directory): lower first, before any entry without one; the rest stay newest first.
+   */
+  order?: number | null
 }
 
 /** A market folder as boardd lists it: newest first, with when it was read (a minute's cache; `refresh` reads again). */
