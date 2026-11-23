@@ -18,6 +18,7 @@ import { Files } from './files.ts'
 import { Kernel, type KernelOptions } from './kernel.ts'
 import { resumeRuns } from './resume.ts'
 import { Locks } from './locks.ts'
+import { Markets } from './markets.ts'
 import type { Module, ModuleInfo } from './module.ts'
 import { Proposals } from './proposals.ts'
 import { Relay } from './relay.ts'
@@ -49,6 +50,7 @@ export class BoardLab {
   readonly files: Files
   readonly backends: Backends
   readonly consoles: Consoles
+  readonly markets: Markets
   /** Every endpoint, the core's and the modules'; a gateway serves them. */
   readonly api = new Api()
   private readonly loaded = new Map<string, { module: Module, api: unknown }>()
@@ -68,6 +70,7 @@ export class BoardLab {
     this.files = new Files(this.kernel, options.filesDir)
     this.backends = new Backends(this)
     this.consoles = new Consoles(this, options.consoleTiming)
+    this.markets = new Markets(this.kernel)
     this.api.add('core', [...coreEndpoints(this), ...debugEndpoints(this), ...databaseEndpoints(this)])
     for (const module of inLoadOrder(options.modules ?? [])) this.use(module)
   }
@@ -107,7 +110,7 @@ export class BoardLab {
     const state: State = {
       boards: this.boards.list(), labs: this.backends.labSettings(), firmware: this.download.firmware(),
       proposals: this.proposals.pending(), modules: this.modules(), you, now: this.kernel.iso(), yields: this.locks.yieldsList(you),
-      restored: restoreRecord(this.kernel.db),
+      restored: restoreRecord(this.kernel.db), markets: this.markets.list(),
     }
     for (const part of this.stateParts) Object.assign(state, part(you))
     return state

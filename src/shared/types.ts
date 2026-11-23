@@ -266,7 +266,43 @@ export interface State {
   yields: YieldRequest[]
   /** A restore of boardd's database nobody has acknowledged yet (`POST /api/database/acknowledge`), or null. */
   restored?: DatabaseRestore | null
+  /** The image markets set up (see `Market`). */
+  markets: Market[]
 }
+
+/**
+ * An image market: somewhere a module reads flashable images from (a repository, directories on a server), set up
+ * with what its driver needs. Its driver says what it is; where it reads from is configuration.
+ */
+export interface Market {
+  id: string
+  /** The driver's kind, and its title and one line on it. */
+  kind: string
+  kindTitle: string
+  about: string
+  /** The name this market goes by on the page. */
+  title: string
+  /** Who set it up (a module's id, `site`), for people to know where to change it. */
+  source: string
+}
+
+/** One entry of a market's folder: a folder to open, or an image. `path` is the market's own, `/`-separated. */
+export interface MarketEntry {
+  path: string
+  name: string
+  kind: 'folder' | 'image'
+  /** The SoC the market files it under, when it knows; null for one it does not (shown for every SoC). */
+  soc: string | null
+  size?: number | null
+  sha256?: string | null
+  /** ISO time it was last changed, when the market knows. */
+  modified?: string | null
+  /** The market's own words on it (`构建 20261116`), shown beside the name. */
+  note?: string | null
+}
+
+/** A market folder as boardd lists it: newest first, with when it was read (a minute's cache; `refresh` reads again). */
+export interface MarketListing { market: string, path: string, entries: MarketEntry[], readAt: string }
 
 /** A relay, button or line wired to a board, as its backend's relay controller names it (`<board>/power`). */
 export interface Channel {
