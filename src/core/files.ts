@@ -5,7 +5,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { chmodSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from 'node:fs'
+import { chmodSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
 import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { basename, join } from 'node:path'
@@ -185,6 +185,85 @@ export class Files {
     return { sha256, size: stat.size, received: stat.size, done: true, stored: true }
   }
 
+  /**
+   * A file a browser sends, which cannot hash gigabytes first: `begin` gives an id for its name and size, `piece` adds
+   * at most `PIECE` bytes at a time from where it stopped, `status` says how much arrived so the browser resumes there,
+   * and `seal` hashes the whole file here (with `sha256sum` when it is large) and keeps it under its sha256. It waits
+   * beside the scp tickets, so the same expiry takes an upload nobody finished.
+   */
+  begin(name: string, size: number): { id: string, piece: number } {
+    if (!this.dir) throw new BoardError('invalid', '这个 boardd 不接收文件')
+    if (!Number.isInteger(size) || size <= 0) throw new BoardError('invalid', `文件大小不对：${size}`)
+    this.expire()
+    const id = randomUUID().replaceAll('-', '')
+    const dir = join(this.dir, '.uploads', id)
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    writeFileSync(join(dir, 'meta.json'), JSON.stringify({ name: this.safeName(name), size }))
+    return { id, piece: PIECE }
+  }
+
+  /** How much of an upload arrived: where the next piece starts. */
+  status(id: string): { id: string, name: string, size: number, received: number } {
+    const { dir, meta } = this.upload(id)
+    return { id, name: meta.name, size: meta.size, received: statSync(join(dir, 'data'), { throwIfNoEntry: false })?.size ?? 0 }
+  }
+
+  /** Add the bytes from `offset` (exactly what arrived so far) on, at most `PIECE` of them and never past the size. */
+  async piece(id: string, offset: number, body: AsyncIterable<Buffer>): Promise<{ received: number, size: number }> {
+    const { dir, meta } = this.upload(id)
+    const data = join(dir, 'data')
+    const have = statSync(data, { throwIfNoEntry: false })?.size ?? 0
+    if (!Number.isInteger(offset) || offset !== have) { for await (const _ of body) {} throw new BoardError('invalid', `续传位置不对：要从第 ${offset} 字节开始传，但这里收到的是 ${have} 字节`) }
+    let size = offset
+    const tap = new Transform({
+      transform(chunk: Buffer, _encoding, done) {
+        size += chunk.length
+        if (size - offset > PIECE) return done(new BoardError('invalid', `一次传太多了：每片最多 ${PIECE / 1024 / 1024} MB`))
+        if (size > meta.size) return done(new BoardError('invalid', `传多了：文件是 ${meta.size} 字节`))
+        done(null, chunk)
+      },
+    })
+    try { await pipeline(body as AsyncIterable<Buffer>, tap, createWriteStream(data, { flags: 'a', mode: 0o600 })) }
+    catch (error) {
+      // A piece that went wrong leaves a partial tail: cut back to where it started, so a retry starts clean.
+      try { truncateSync(data, offset) } catch {}
+      throw error
+    }
+    const now = new Date(this.k.now())
+    try { utimesSync(dir, now, now) } catch {}
+    return { received: size, size: meta.size }
+  }
+
+  /** The whole file is here: hash it, keep it under its sha256 (once; a file already kept is reused), and forget the upload. */
+  async seal(actor: string, id: string, expected?: string | null): Promise<Uploaded & { name: string }> {
+    const { dir, meta } = this.upload(id)
+    const data = join(dir, 'data')
+    const got = statSync(data, { throwIfNoEntry: false })?.size ?? 0
+    if (got !== meta.size) throw new BoardError('invalid', `还没传完：${got} / ${meta.size} 字节`)
+    const sha256 = await sha256File(data)
+    if (expected && expected !== sha256) { rmSync(dir, { recursive: true, force: true }); throw new BoardError('invalid', `传上来的文件和 sha256 对不上（sha256 ${sha256.slice(0, 12)}…）`) }
+    const existing = this.get(sha256)
+    if (existing) { rmSync(dir, { recursive: true, force: true }); return { sha256, size: got, received: got, done: true, stored: false, name: meta.name } }
+    const keep = join(this.dir!, sha256)
+    mkdirSync(keep, { recursive: true, mode: 0o700 })
+    renameSync(data, join(keep, meta.name))
+    rmSync(dir, { recursive: true, force: true })
+    this.k.record(actor, null, 'file', `${meta.name} ${sha256.slice(0, 12)}`, true, `${got} 字节`)
+    return { sha256, size: got, received: got, done: true, stored: true, name: meta.name }
+  }
+
+  /** Give an upload up: what arrived is removed. */
+  abandon(id: string): void { const { dir } = this.upload(id); rmSync(dir, { recursive: true, force: true }) }
+
+  private upload(id: string): { dir: string, meta: { name: string, size: number } } {
+    if (!this.dir) throw new BoardError('invalid', '这个 boardd 不接收文件')
+    if (!/^[0-9a-f]{32}$/.test(id)) throw new BoardError('invalid', `上传编号不对：${id}`)
+    const dir = join(this.dir, '.uploads', id)
+    let meta: { name: string, size: number }
+    try { meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8')) } catch { throw new BoardError('not-found', `没有这个上传（${id}）：可能放太久被清掉了，重新开始传`) }
+    return { dir, meta }
+  }
+
   /** A fresh path for a file a command writes and boardd then keeps (see `put`); remove it when done. */
   scratch(): string {
     if (!this.dir) throw new BoardError('invalid', '这个 boardd 不接收文件')
@@ -198,9 +277,14 @@ export class Files {
 
   private expire() {
     const root = this.dir!
+    const stale = (dir: string) => this.k.now() - statSync(dir).mtimeMs > KEEP_MS && !readdirSync(dir).some(file => this.k.now() - statSync(join(dir, file)).mtimeMs < KEEP_MS)
     for (const old of existsSync(root) ? readdirSync(root) : []) {
       const dir = join(root, old)
-      try { if (this.k.now() - statSync(dir).mtimeMs > KEEP_MS && !readdirSync(dir).some(file => this.k.now() - statSync(join(dir, file)).mtimeMs < KEEP_MS)) rmSync(dir, { recursive: true, force: true }) } catch {}
+      try {
+        // Uploads and copies wait one level down, each in a directory of its own.
+        if (old === '.uploads' || old === '.incoming') { for (const id of readdirSync(dir)) { const at = join(dir, id); if (stale(at)) rmSync(at, { recursive: true, force: true }) } }
+        else if (stale(dir)) rmSync(dir, { recursive: true, force: true })
+      } catch {}
     }
   }
 }

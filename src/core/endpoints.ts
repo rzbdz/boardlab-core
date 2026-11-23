@@ -233,6 +233,29 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     },
 
     // ---------- files ----------
+    // These come before /api/files/:sha256, which would otherwise take `uploads` as a sha256.
+    {
+      method: 'POST', path: '/api/files/uploads', about: '开始一次分片上传（name、size）：给出上传编号和每片最多多少字节；网页不用先算 sha256',
+      handle: ({ body }) => lab.files.begin(typeof body.name === 'string' ? body.name : 'file', Number(body.size)),
+    },
+    {
+      method: 'GET', path: '/api/files/uploads/:id', about: '一次上传收到了多少字节（received）：从那里续传',
+      handle: ({ params }) => lab.files.status(params.id!),
+    },
+    {
+      // Pieces of at most 8 MiB: a large request body crashed Node on some RISC-V builds, and 20 rounds of 3 GiB in
+      // 8 MiB pieces did not.
+      method: 'PUT', path: '/api/files/uploads/:id', about: '上传的一片（offset=已收到的字节数，每片最多 8 MiB）',
+      handle: ({ params, query, upload }) => lab.files.piece(params.id!, Number(query.get('offset') ?? '0'), upload!),
+    },
+    {
+      method: 'POST', path: '/api/files/uploads/:id/seal', about: '传完了：boardd 自己算 sha256（可给 sha256 核对），按 sha256 存下，返回它',
+      handle: ({ params, body, caller }) => lab.files.seal(caller.holder, params.id!, typeof body.sha256 === 'string' ? body.sha256 : null),
+    },
+    {
+      method: 'POST', path: '/api/files/uploads/:id/abandon', about: '不传了：已收到的删掉',
+      handle: ({ params }) => { lab.files.abandon(params.id!) },
+    },
     {
       method: 'GET', path: '/api/files/:sha256', about: 'boardd 有没有这个文件（download=1 取回内容；没收完的给 received，从那里续传）', handle: ({ params, query }) => {
         if (query.get('download') === '1') {
@@ -245,10 +268,10 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
       },
     },
     {
-      // Deliberately disabled: a large request body crashes Node on RISC-V (the K1/K3 boardd builds). Clients copy
-      // with scp to a ticket path instead; see /api/files/ticket.
-      method: 'PUT', path: '/api/files/:sha256', about: '已禁用：网页上传在 RISC-V 上的 Node 有崩溃缺陷；客户端改用 scp（见 /api/files/ticket）',
-      handle: () => { throw new BoardError('forbidden', '网页上传已禁用：请用 boardlab CLI（scp 传输），或给板子所在主机一个 http(s) 链接') },
+      // Not by sha256: a browser would have to hash the whole file first. Uploads go by id (/api/files/uploads), and
+      // CLIs copy with scp to a ticket path (/api/files/ticket).
+      method: 'PUT', path: '/api/files/:sha256', about: '不用了：网页按上传编号分片传（/api/files/uploads），命令行用 scp（/api/files/ticket）',
+      handle: () => { throw new BoardError('forbidden', '按 sha256 上传不用了：网页用 /api/files/uploads 分片传，boardlab CLI 用 scp') },
     },
     {
       method: 'POST', path: '/api/files/ticket', about: '给 scp 一个上传路径：客户端把文件直接复制到那个路径，再调 /api/files/adopt；大文件不经 boardd 的请求体',
