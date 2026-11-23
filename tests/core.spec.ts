@@ -774,6 +774,7 @@ describe('remote labs', () => {
     expect(lab.flashed).toEqual([{ device: 'sub0-0', pkg: { url: 'https://images.example/test-soc/a.zip', flasher: null, sha256: sha('test-soc/a.zip') } }])
     await expect(call(svc, '/api/flash/package', 'claude:s1', { board: 'lab1-sub0-0', token, image: { market: 'shelf', path: 'test-soc/a.zip' }, url: 'https://x.example/p.zip' })).rejects.toThrow(/三选一/)
     await expect(call(svc, '/api/flash/package', 'claude:s1', { board: 'lab1-sub0-0', token, image: { market: 'shelf', path: 'test-soc/a.iso' } })).rejects.toThrow(/刷不了这种包/)
+
   })
 
   it('shows what a package would write, flashes chosen partitions, and resets after when asked', async () => {
@@ -810,7 +811,7 @@ describe('remote labs', () => {
       expect(lab.planned).toEqual([{ device: 'sub0-0', pkg: { url, flasher: null } }])
       expect(svc.boards.get(board).busy).toBeNull()
       await expect(new BoardsClient(join(dir, 'boardd.sock')).flashPlan(board, { url: 'ftp://x.example/p.zip' }, () => {}, token)).rejects.toThrow(/http:\/\/ 或 https:\/\//)
-    } finally { await running.close() }
+    } catch (error) { await running.close(); throw error }
 
     // Chosen partitions go to the backend, and a reset follows a flash that asked for one.
     expect(await svc.download.flashPackage(board, claude, { url, partitions: ['boot'], reset: true })).toBe('written\n已复位 lab1-sub0-0')
@@ -829,9 +830,21 @@ describe('remote labs', () => {
     lab.builds.flash = flash
     claude.token = (await svc.locks.lock(board, 'claude:s1', '刷机')).token
 
+    // The CLI prints a plan as a table, and passes chosen partitions and a reset on.
+    svc.locks.steal(board, 'user:alice', '换我来刷')
+    const printed: string[] = []
+    const log = console.log
+    console.log = (line: string) => printed.push(line)
+    try {
+      await main(['flash', board, url, '--plan', '--state-dir', dir, '--as', 'user:alice'])
+      await main(['flash', board, url, '--partitions', 'boot', '--reset', '--state-dir', dir, '--as', 'user:alice'])
+    } finally { console.log = log; await running.close() }
+    expect(printed.join('\n')).toMatch(/pkg\.zip（可以只刷其中几个分区：--partitions）\n\ndisk · 8 MiB  8 MiB\n  · boot +@0 B +1 MiB +boot\.img（4 KiB）\n    root +@1 MiB +— +（包里没有，不写）\n\n注意：the layout is chosen once the board is seen/)
+    expect(lab.flashed.at(-1)).toEqual({ device: 'sub0-0', pkg: { url, flasher: null, partitions: ['boot'] } })
+    expect(lab.calls.at(-1)).toBe('reset sub0-0')
     // A backend that cannot read a package first says so.
     lab.builds = { ...lab.builds, plan: undefined } as unknown as typeof lab.builds
-    await expect(svc.download.plan(board, claude, { url })).rejects.toThrow(/不能先看刷机包里有什么/)
+    await expect(svc.download.plan(board, { holder: 'user:alice' }, { url })).rejects.toThrow(/不能先看刷机包里有什么/)
   })
 
   it('works a lab board\'s relays and buttons one by one, under its lock', async () => {

@@ -1,6 +1,7 @@
 /** Commands on boards, whatever backend they are on: the list, locks, the relay, consoles, loading and the inventory. */
 import { resolve } from 'node:path'
-import type { Board, State } from '../../shared/types.ts'
+import type { PackageRequest } from '../../shared/client.ts'
+import type { Board, FlashPlan, State } from '../../shared/types.ts'
 import { following, parseDuration, type CliPresentation, type Command, type CommandGroup } from '../command.ts'
 import { pickConsole, streamConsole } from '../console.ts'
 
@@ -236,7 +237,10 @@ const commands: Command[] = [
   {
     name: 'flash',
     usage: [
-      'flash <board> <链接|文件> [--flasher <工具>] [--refresh]\t用刷机包刷机（要拿锁）：http(s) 链接由板子所在主机下载（后端可以按链接缓存一段时间，--refresh 重新下载），本机的文件先传给 boardd；不给 --flasher 时板卡主机按板子、SoC、主机的顺序选第一个能用的刷机工具，下载和复位前就先检查；--flasher 指定一个，主机上没有或用不了就报错并列出可用的',
+      'flash <board> <链接|文件> [--flasher <工具>] [--refresh]\t用刷机包刷机（要拿锁）：链接由板子所在主机下载（后端可以按链接缓存一段时间，--refresh 重新下载；收哪些链接看 show 里的 packages），本机的文件先传给 boardd；不给 --flasher 时板卡主机按板子、SoC、主机的顺序选第一个能用的刷机工具，下载和复位前就先检查；--flasher 指定一个，主机上没有或用不了就报错并列出可用的',
+      'flash <board> --image <市场>:<路径>\t用镜像市场里的镜像刷机（boardlab images 看有哪些）',
+      'flash <board> <包> --plan\t只看这个包会写什么：各介质和分区，哪些能单独刷；不碰板子',
+      'flash <board> <包> [--partitions a,b] [--reset]\t只刷这几个分区（名字照 --plan 列的）；--reset 刷完复位，从刚写的系统启动',
       'flash <board> --sdk <SDK> [--variant V]\t用 SDK 的产物刷机，同 boot --sdk <SDK> --method download',
     ],
     run: context => boot(context, 'flash'),
@@ -299,13 +303,28 @@ async function boot(context: Parameters<Command['run']>[0], command: 'boot' | 'f
 async function booting({ client, args, flag, flags, json, out, remote, target, token }: Parameters<Command['run']>[0], command: 'boot' | 'flash') {
   const { board, die } = target()
   if (command === 'flash' && !flag('sdk')) {
+    const image = flag('image')
     const from = args[1]
-    if (!from || args.length > 2) throw new Error('用法：boardlab flash <board> <链接|文件> [--flasher <工具>]，或 boardlab flash <board> --sdk <SDK>')
-    // A link is downloaded by the board's backend; a file here is sent to boardd first (once per content).
-    const link = /^[a-z][a-z0-9+.-]*:\/\//i.test(from)
-    const sha256 = link ? undefined : await client.sendFile(resolve(from), size => { if (!json) console.error(`已传 ${from}（${size} 字节）`) })
-    if (!json) console.error(`${board}：刷机包 ${from}，要几分钟…`)
-    const result = await client.flashPackage(board, { ...(link ? { url: from, ...(flags.has('refresh') ? { refresh: true } : {}) } : { sha256 }), flasher: flag('flasher') }, token())
+    if ((!from && !image) || (from && image) || args.length > 2) throw new Error('用法：boardlab flash <board> <链接|文件> | --image <市场>:<路径> [--plan] [--partitions a,b] [--reset] [--flasher <工具>]，或 boardlab flash <board> --sdk <SDK>')
+    let pkg: PackageRequest
+    if (image) {
+      const at = image.indexOf(':')
+      if (at < 1 || at === image.length - 1) throw new Error(`--image 要写成 <市场>:<路径>，例如 main:v1.0/image.zip：${image}`)
+      pkg = { image: { market: image.slice(0, at), path: image.slice(at + 1) } }
+    } else {
+      // A link is fetched by the board's backend; a file here is sent to boardd first (once per content).
+      const link = /^[a-z][a-z0-9+.-]*:\/\//i.test(from!)
+      pkg = link ? { url: from!, ...(flags.has('refresh') ? { refresh: true } : {}) } : { sha256: await client.sendFile(resolve(from!), size => { if (!json) console.error(`已传 ${from}（${size} 字节）`) }) }
+    }
+    if (flag('flasher')) pkg.flasher = flag('flasher')!
+    const what = image ?? from!
+    if (flags.has('plan')) {
+      const plan = await client.flashPlan(board, pkg, text => { if (!json) process.stderr.write(text) }, token())
+      return out(plan, () => printPlan(plan))
+    }
+    const partitions = flag('partitions')?.split(',').map(name => name.trim()).filter(Boolean)
+    if (!json) console.error(`${board}：刷机包 ${what}${partitions?.length ? `，只刷 ${partitions.join('、')}` : ''}，要几分钟…`)
+    const result = await client.flashPackage(board, { ...pkg, ...(partitions?.length ? { partitions } : {}), ...(flags.has('reset') ? { reset: true } : {}) }, token())
     return out(result, () => console.log(result.output))
   }
   if (flag('sdk') || command === 'flash') {
@@ -325,6 +344,20 @@ async function booting({ client, args, flag, flags, json, out, remote, target, t
   }))
   const result = await client.boot(board, paths, die, token())
   out(result, () => console.log(result.output))
+}
+
+/** A package's plan as a person reads it: each medium, then its partitions with where they go and what writes them. */
+function printPlan(plan: FlashPlan) {
+  const size = (bytes: number | null) => bytes === null ? '—' : bytes >= 1 << 30 ? `${(bytes / (1 << 30)).toFixed(1)} GiB` : bytes >= 1 << 20 ? `${(bytes / (1 << 20)).toFixed(bytes % (1 << 20) ? 1 : 0)} MiB` : bytes >= 1024 ? `${Math.round(bytes / 1024)} KiB` : `${bytes} B`
+  console.log(`${plan.package}${plan.partial ? '（可以只刷其中几个分区：--partitions）' : '（只能整包刷）'}`)
+  for (const medium of plan.media) {
+    console.log(`\n${medium.label}${medium.size !== null ? `  ${size(medium.size)}` : ''}`)
+    for (const part of medium.partitions) {
+      const range = part.offset === null ? '' : `@${size(part.offset)}`
+      console.log(`  ${part.selectable ? '·' : ' '} ${part.name.padEnd(12)} ${range.padEnd(12)} ${size(part.size).padEnd(10)} ${part.image ? `${part.image}（${size(part.payload)}）` : '（包里没有，不写）'}`)
+    }
+  }
+  for (const note of plan.notes) console.log(`\n注意：${note}`)
 }
 
 export const boardCommands: CommandGroup = { id: 'boards', title: '板子', summary: '锁、复位、串口、启动、日志', commands }
