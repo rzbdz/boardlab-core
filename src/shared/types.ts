@@ -308,6 +308,8 @@ export interface MarketEntry {
    * found (a configured directory): lower first, before any entry without one; the rest stay newest first.
    */
   order?: number | null
+  /** In a listing for a board: why that board's backend cannot take this image, or null when it can. */
+  refused?: string | null
 }
 
 /** A market folder as boardd lists it: newest first, with when it was read (a minute's cache; `refresh` reads again). */

@@ -18,6 +18,11 @@ export interface ImageMarket {
   list(path: string, signal?: AbortSignal): Promise<MarketEntry[]>
   /** Where the image at `path` is fetched from, for a flash. */
   locate(path: string, signal?: AbortSignal): Promise<MarketImage>
+  /**
+   * The link scheme its images are fetched by (`https`, `ssh`), when it is the same for all of them: then a listing for a
+   * board says which images that board's backend cannot take without locating each one.
+   */
+  scheme?: string
 }
 
 /** A kind of market a module offers: what it is, and how to make one from its configuration (checked there). */
@@ -90,7 +95,7 @@ export class Markets {
    * What a folder of a market holds: folders first, then images, each newest first; only entries for `soc` (and those
    * the market files under no SoC) when one is given. A listing younger than a minute is not read again unless `refresh`.
    */
-  async folder(id: string, path: string, options: { soc?: string | null, refresh?: boolean, signal?: AbortSignal } = {}): Promise<MarketListing> {
+  async folder(id: string, path: string, options: { soc?: string | null, refresh?: boolean, signal?: AbortSignal, board?: Board | null } = {}): Promise<MarketListing> {
     const market = this.market(id)
     const at = folderPath(path)
     const key = `${id}\0${at}`
@@ -111,7 +116,10 @@ export class Markets {
       listing = await read
     }
     const soc = options.soc?.toLowerCase() || null
-    const entries = soc ? listing.entries.filter(entry => !entry.soc || entry.soc.toLowerCase() === soc) : listing.entries
+    let entries = soc ? listing.entries.filter(entry => !entry.soc || entry.soc.toLowerCase() === soc) : listing.entries
+    // For a board: which images its backend cannot take, by the market's scheme and each name's ending.
+    const board = options.board
+    if (board) entries = entries.map(entry => entry.kind !== 'image' ? entry : { ...entry, refused: refusal(board, market.scheme ?? null, entry.name) })
     return { market: listing.market, path: listing.path, entries, readAt: listing.readAt }
   }
 
@@ -163,6 +171,14 @@ export class Markets {
   }
 
   private forget(id: string) { for (const key of this.listings.keys()) if (key.startsWith(`${id}\0`)) this.listings.delete(key) }
+}
+
+/** Why `board` cannot take an image by this name fetched by `scheme` (unknown: the name alone decides), or null when it can. */
+function refusal(board: Board, scheme: string | null, name: string): string | null {
+  const kinds = board.lab?.packages
+  if (!kinds) return `${board.name} 不能用刷机包刷机`
+  return takesPackage(kinds, scheme ? `${scheme}://` : null, name) ? null
+    : `${board.name} 的后端刷不了这种包（收 ${kinds.schemes.join('、') || '任何'} 链接${kinds.suffixes.length ? `、${kinds.suffixes.join(' ')} 文件` : ''}）`
 }
 
 /** A market path as the core passes it on: `/`-separated, no leading or trailing `/`, no `.` or `..` steps. */

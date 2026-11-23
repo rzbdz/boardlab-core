@@ -411,8 +411,8 @@ export class BoardsClient {
   state() { return this.call<State>('GET', '/api/state') }
   markets() { return this.call<Array<Market & { error: string | null }>>('GET', '/api/markets') }
   /** A folder of a market (`''` is the top), newest first; `soc` keeps only that SoC's, `refresh` reads it again. */
-  marketFolder(market: string, path = '', options: { soc?: string | null, refresh?: boolean } = {}) {
-    const query = new URLSearchParams({ path, ...(options.soc ? { soc: options.soc } : {}), ...(options.refresh ? { refresh: '1' } : {}) })
+  marketFolder(market: string, path = '', options: { soc?: string | null, refresh?: boolean, board?: string | null } = {}) {
+    const query = new URLSearchParams({ path, ...(options.soc ? { soc: options.soc } : {}), ...(options.refresh ? { refresh: '1' } : {}), ...(options.board ? { board: options.board } : {}) })
     return this.call<MarketListing>('GET', `/api/markets/${encodeURIComponent(market)}/list?${query}`)
   }
   /** The boards an image of a market could be flashed onto, the caller's and free ones first. */

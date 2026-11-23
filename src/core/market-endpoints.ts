@@ -10,8 +10,11 @@ export function marketEndpoints(lab: BoardLab): Endpoint[] {
     { method: 'GET', path: '/api/markets', about: '设好的镜像市场：编号、种类、名字、谁设的，用不了时说为什么', handle: () => lab.markets.list() },
     {
       method: 'GET', path: '/api/markets/:id/list',
-      about: '一个镜像市场里的一层（path，空是顶层）：文件夹在前，新的在前；soc 只留这个 SoC 的；一分钟内不再问市场，refresh=1 重新读',
-      handle: ({ params, query, signal }) => lab.markets.folder(required(params.id, 'id'), query.get('path') ?? '', { soc: query.get('soc'), refresh: query.get('refresh') === '1', signal }),
+      about: '一个镜像市场里的一层（path，空是顶层）：文件夹在前，新的在前；soc 只留这个 SoC 的；board 给出时每个镜像带 refused（这块板子的后端为什么刷不了它，能刷是 null）；一分钟内不再问市场，refresh=1 重新读',
+      handle: ({ params, query, signal }) => {
+        const name = query.get('board')
+        return lab.markets.folder(required(params.id, 'id'), query.get('path') ?? '', { soc: query.get('soc'), refresh: query.get('refresh') === '1', signal, board: name ? lab.boards.get(name) : null })
+      },
     },
     {
       method: 'GET', path: '/api/markets/:id/targets',

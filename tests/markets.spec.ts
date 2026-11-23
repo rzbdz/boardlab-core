@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { openDatabase } from '../src/core/db.ts'
 import { BoardLab } from '../src/core/lab.ts'
 import { sortEntries, type ImageMarket } from '../src/core/markets.ts'
-import type { MarketEntry } from '../src/shared/types.ts'
+import type { Board, MarketEntry } from '../src/shared/types.ts'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'boardlab-markets-')) })
@@ -76,7 +76,6 @@ describe('image markets', () => {
     boards.markets.configure('unread', { kind: '', config: {}, source: 'site', problem: 'markets/unread.yaml：YAML 写错了' })
     expect(boards.markets.list().find(m => m.id === 'unread')!.error).toBe('markets/unread.yaml：YAML 写错了')
     await expect(boards.markets.folder('unread', '')).rejects.toThrow(/用不了：markets\/unread.yaml/)
-
     // A source re-reading its configuration takes down what it no longer has.
     boards.markets.configure('mine', { kind: 'shelf', config: { tree: {} }, source: 'module' })
     boards.markets.retain('site', ['later'])
@@ -98,6 +97,22 @@ describe('image markets', () => {
   it('sorts dated and versioned names newest first and images by when they changed', () => {
     const sorted = sortEntries([image('b.zip', '2026-01-02T00:00:00Z'), folder('v4.0.9'), image('a.zip', '2026-02-01T00:00:00Z'), folder('v4.0.10'), image('c.zip', '')])
     expect(sorted.map(e => e.name)).toEqual(['v4.0.10', 'v4.0.9', 'a.zip', 'b.zip', 'c.zip'])
+  })
+})
+
+describe('image markets for a board', () => {
+  it('marks the images a board cannot take, by the market scheme and each name ending', async () => {
+    const boards = lab({ t: 0 })
+    boards.markets.offer({ kind: 'shelf', title: '书架', about: '', create: () => ({ ...shelf({ '': [image('a.zip', '2026-01-01T00:00:00Z'), image('b.iso', '2026-01-02T00:00:00Z'), folder('dir')] }, []), scheme: 'copy' }) })
+    boards.markets.configure('main', { kind: 'shelf', config: {}, source: 'test' })
+    const board = (packages: { schemes: string[], suffixes: string[] } | null) => ({ name: 'b1', lab: { packages } }) as unknown as Board
+    const refused = async (packages: { schemes: string[], suffixes: string[] } | null) =>
+      Object.fromEntries((await boards.markets.folder('main', '', { board: board(packages) })).entries.map(entry => [entry.name, entry.refused]))
+    expect(await refused({ schemes: ['copy'], suffixes: ['.zip'] })).toEqual({ dir: undefined, 'b.iso': expect.stringContaining('刷不了这种包'), 'a.zip': null })
+    expect(await refused({ schemes: ['https'], suffixes: [] })).toEqual({ dir: undefined, 'b.iso': expect.stringContaining('收 https 链接'), 'a.zip': expect.any(String) })
+    expect((await refused(null))['a.zip']).toContain('不能用刷机包刷机')
+    // Without a board, nothing is marked.
+    expect((await boards.markets.folder('main', '')).entries.every(entry => !('refused' in entry))).toBe(true)
   })
 })
 
