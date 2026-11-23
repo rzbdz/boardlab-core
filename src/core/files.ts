@@ -5,7 +5,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { chmodSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statfsSync, statSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
 import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { basename, join } from 'node:path'
@@ -13,6 +13,8 @@ import { BoardError } from './errors.ts'
 import type { Kernel } from './kernel.ts'
 
 const KEEP_MS = 3 * 86_400_000
+/** How much the store keeps when `files.maxBytes` does not say: the files used longest ago go first past it. */
+const MAX_BYTES = 20 * 2 ** 30
 export const SHA256 = /^[0-9a-f]{64}$/
 /** The most one upload request carries (see `Files.put`): small enough that Node on RISC-V never crashed on it. */
 export const PIECE = 8 * 1024 * 1024
@@ -46,6 +48,10 @@ export async function sha256File(path: string): Promise<string> {
 
 
 export class Files {
+  /** Uploads a request is writing or sealing now. */
+  private readonly writing = new Set<string>()
+  /** Kept files something reads now (a flash, a plan), with how many. */
+  private readonly held = new Map<string, number>()
   constructor(private readonly k: Kernel, private readonly dir: string | undefined) {}
 
   /** A file a remote CLI sent, by its sha256, with the name it was sent under. */
@@ -195,6 +201,10 @@ export class Files {
     if (!this.dir) throw new BoardError('invalid', '这个 boardd 不接收文件')
     if (!Number.isInteger(size) || size <= 0) throw new BoardError('invalid', `文件大小不对：${size}`)
     this.expire()
+    // A file that could never be kept is refused before a byte is sent: bigger than the store, or than the disk has left.
+    const { max, free } = this.usage()
+    if (size > max) throw new BoardError('invalid', `文件太大：${size} 字节，boardd 的文件库最多放 ${max} 字节（设置 files.maxBytes）`)
+    if (free !== null && size > free) throw new BoardError('invalid', `boardd 的磁盘不够：文件 ${size} 字节，只剩 ${free} 字节`)
     const id = randomUUID().replaceAll('-', '')
     const dir = join(this.dir, '.uploads', id)
     mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -211,6 +221,11 @@ export class Files {
   /** Add the bytes from `offset` (exactly what arrived so far) on, at most `PIECE` of them and never past the size. */
   async piece(id: string, offset: number, body: AsyncIterable<Buffer>): Promise<{ received: number, size: number }> {
     const { dir, meta } = this.upload(id)
+    const done = this.busy(id, body)
+    try { return await this.append(dir, meta, offset, body) } finally { done() }
+  }
+
+  private async append(dir: string, meta: { name: string, size: number }, offset: number, body: AsyncIterable<Buffer>): Promise<{ received: number, size: number }> {
     const data = join(dir, 'data')
     const have = statSync(data, { throwIfNoEntry: false })?.size ?? 0
     if (!Number.isInteger(offset) || offset !== have) { for await (const _ of body) {} throw new BoardError('invalid', `续传位置不对：要从第 ${offset} 字节开始传，但这里收到的是 ${have} 字节`) }
@@ -237,6 +252,11 @@ export class Files {
   /** The whole file is here: hash it, keep it under its sha256 (once; a file already kept is reused), and forget the upload. */
   async seal(actor: string, id: string, expected?: string | null): Promise<Uploaded & { name: string }> {
     const { dir, meta } = this.upload(id)
+    const done = this.busy(id)
+    try { return await this.keepUpload(actor, dir, meta, expected) } finally { done() }
+  }
+
+  private async keepUpload(actor: string, dir: string, meta: { name: string, size: number }, expected?: string | null): Promise<Uploaded & { name: string }> {
     const data = join(dir, 'data')
     const got = statSync(data, { throwIfNoEntry: false })?.size ?? 0
     if (got !== meta.size) throw new BoardError('invalid', `还没传完：${got} / ${meta.size} 字节`)
@@ -249,11 +269,37 @@ export class Files {
     renameSync(data, join(keep, meta.name))
     rmSync(dir, { recursive: true, force: true })
     this.k.record(actor, null, 'file', `${meta.name} ${sha256.slice(0, 12)}`, true, `${got} 字节`)
+    this.bound()
     return { sha256, size: got, received: got, done: true, stored: true, name: meta.name }
   }
 
   /** Give an upload up: what arrived is removed. */
   abandon(id: string): void { const { dir } = this.upload(id); rmSync(dir, { recursive: true, force: true }) }
+
+  /**
+   * One request at a time on an upload: a piece sent again while the first is still being written (a proxy that gave
+   * up on it) would append twice or cut the other's bytes. The second is refused; its sender asks where to go on.
+   */
+  private busy(id: string, body?: AsyncIterable<Buffer>): () => void {
+    if (this.writing.has(id)) {
+      if (body) void (async () => { try { for await (const _ of body) {} } catch {} })()
+      throw new BoardError('conflict', '这个上传正有一片在写：等它写完，再问从哪里接着传')
+    }
+    this.writing.add(id)
+    return () => { this.writing.delete(id) }
+  }
+
+  /** Keep `path` (a kept file) from the bound while something reads it; the returned function lets it go. */
+  hold(path: string): () => void {
+    this.held.set(path, (this.held.get(path) ?? 0) + 1)
+    let done = false
+    return () => {
+      if (done) return
+      done = true
+      const left = (this.held.get(path) ?? 1) - 1
+      if (left > 0) this.held.set(path, left); else this.held.delete(path)
+    }
+  }
 
   private upload(id: string): { dir: string, meta: { name: string, size: number } } {
     if (!this.dir) throw new BoardError('invalid', '这个 boardd 不接收文件')
@@ -262,6 +308,55 @@ export class Files {
     let meta: { name: string, size: number }
     try { meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8')) } catch { throw new BoardError('not-found', `没有这个上传（${id}）：可能放太久被清掉了，重新开始传`) }
     return { dir, meta }
+  }
+
+  /**
+   * How much the store holds: kept files, and unfinished uploads and copies. `max` is the bound `bound` keeps it under
+   * (the `files.maxBytes` setting), and `free` what the disk under it has left.
+   */
+  usage(): { used: number, files: number, pending: number, max: number, free: number | null, keepDays: number } {
+    const max = this.maxBytes()
+    if (!this.dir || !existsSync(this.dir)) return { used: 0, files: 0, pending: 0, max, free: null, keepDays: KEEP_MS / 86_400_000 }
+    let used = 0, files = 0, pending = 0
+    for (const entry of this.entries()) { used += entry.size; if (entry.kept) files++; else pending += entry.size }
+    let free: number | null = null
+    try { const disk = statfsSync(this.dir); free = Number(disk.bavail) * Number(disk.bsize) } catch {}
+    return { used, files, pending, max, free, keepDays: KEEP_MS / 86_400_000 }
+  }
+
+  private maxBytes(): number {
+    const set = Number(this.k.setting('files.maxBytes'))
+    return Number.isFinite(set) && set > 0 ? set : MAX_BYTES
+  }
+
+  /** What is in the store, each with its size and when it was last used: kept files, uploads and tickets. */
+  private entries(): Array<{ path: string, size: number, used: number, kept: boolean }> {
+    const root = this.dir!, out: Array<{ path: string, size: number, used: number, kept: boolean }> = []
+    // A boardd that has not kept a file yet has no store yet.
+    if (!existsSync(root)) return out
+    const sizeOf = (dir: string) => { let size = 0, used = statSync(dir).mtimeMs; for (const file of readdirSync(dir)) { const stat = statSync(join(dir, file)); if (stat.isFile()) { size += stat.size; used = Math.max(used, stat.mtimeMs) } } return { size, used } }
+    for (const name of readdirSync(root)) {
+      const at = join(root, name)
+      try {
+        if (SHA256.test(name)) out.push({ path: at, ...sizeOf(at), kept: true })
+        else if (name === '.uploads' || name === '.incoming') for (const id of readdirSync(at)) out.push({ path: join(at, id), ...sizeOf(join(at, id)), kept: false })
+      } catch {}
+    }
+    return out
+  }
+
+  /** Keep the store under its bound: the files used longest ago go first; nothing used in the last hour is removed. */
+  private bound() {
+    const max = this.maxBytes()
+    const entries = this.entries().filter(entry => entry.kept).sort((a, b) => a.used - b.used)
+    let used = this.entries().reduce((sum, entry) => sum + entry.size, 0)
+    for (const entry of entries) {
+      if (used <= max) break
+      if (this.k.now() - entry.used < 3_600_000) continue
+      if ([...this.held.keys()].some(path => path.startsWith(`${entry.path}/`))) continue
+      rmSync(entry.path, { recursive: true, force: true })
+      used -= entry.size
+    }
   }
 
   /** A fresh path for a file a command writes and boardd then keeps (see `put`); remove it when done. */
@@ -286,5 +381,6 @@ export class Files {
         else if (stale(dir)) rmSync(dir, { recursive: true, force: true })
       } catch {}
     }
+    this.bound()
   }
 }

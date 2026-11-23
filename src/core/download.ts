@@ -189,6 +189,8 @@ export class Download {
     if (partitions) pkg.partitions = partitions
     const detail = `刷机包 ${what}${pkg.flasher ? `（${pkg.flasher}）` : ''}${partitions ? `，只刷 ${partitions.join('、')}` : ''}`
     let output: string
+    // A file of the store stays while its flash reads it, however long ago it was sent.
+    const release = pkg.path ? this.lab.files.hold(pkg.path) : () => {}
     try {
       output = await builds.flash!(route.config, route.target, pkg, this.follow(board, line), signal, report)
       this.lab.kernel.record(lease.holder, board, 'flash', detail, true)
@@ -196,7 +198,7 @@ export class Download {
       const failure = failed(error, signal, `${detail} 没有刷成功：`)
       this.lab.kernel.record(lease.holder, board, 'flash', detail, false, failure.message)
       throw failure
-    } finally { this.ended(board) }
+    } finally { release(); this.ended(board) }
     if (!input.reset) return output
     // Written: a reset boots what was written, as the board's own reset does it (its media, through the backend).
     // A reset refused (the lock given back during the flash) or failed leaves the flash written, and says so.
@@ -217,8 +219,10 @@ export class Download {
     if (!builds?.flash) throw new BoardError('invalid', `${board} 所在的后端 ${route.id} 不能用刷机包刷机`)
     if (!builds.plan) throw new BoardError('invalid', `${board} 所在的后端 ${route.id} 不能先看刷机包里有什么`)
     const { pkg } = await this.package(board, builds.accepts ?? DEFAULT_PACKAGES, input, signal, line)
+    const release = pkg.path ? this.lab.files.hold(pkg.path) : () => {}
     try { return await builds.plan(route.config, route.target, pkg, text => line?.(text), signal) }
     catch (error) { throw failed(error, signal, '看不了刷机包里有什么：') }
+    finally { release() }
   }
 
   /** The package an input names, checked against what the board's backend takes, and how the log names it. */

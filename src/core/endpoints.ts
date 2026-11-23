@@ -233,7 +233,11 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     },
 
     // ---------- files ----------
-    // These come before /api/files/:sha256, which would otherwise take `uploads` as a sha256.
+    // These come before /api/files/:sha256, which would otherwise take `usage` and `uploads` as a sha256.
+    {
+      method: 'GET', path: '/api/files/usage', about: 'boardd 的文件仓库占了多少：存下的文件、没传完的、上限（files.maxBytes，超过时最久没用的先删）、磁盘还剩多少、不用的留几天',
+      handle: () => lab.files.usage(),
+    },
     {
       method: 'POST', path: '/api/files/uploads', about: '开始一次分片上传（name、size）：给出上传编号和每片最多多少字节；网页不用先算 sha256',
       handle: ({ body }) => lab.files.begin(typeof body.name === 'string' ? body.name : 'file', Number(body.size)),
