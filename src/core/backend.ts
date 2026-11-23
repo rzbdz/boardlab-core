@@ -4,7 +4,7 @@
  * offers is the same three things, a relay to reset boards, a USB download path and a serial port; the rest is optional
  * and the core offers it only for backends that have it.
  */
-import type { Channel as WireChannel, DiscoveryContext, DiscoveryMethod, DiscoveryValues, LabFields } from '../shared/types.ts'
+import type { Channel as WireChannel, DiscoveryContext, DiscoveryMethod, DiscoveryValues, FlashPlan, LabFields } from '../shared/types.ts'
 import type { ConsoleSession } from './console.ts'
 import type { DebugCapability } from './debug.ts'
 
@@ -268,9 +268,10 @@ export interface PortsCapability {
  * A flash package to write to a board: a `url` the backend fetches itself (in a scheme it says it takes, see
  * `PackageKinds`), or a file on this machine (`path`). `sha256`, when known, is what it must hash to (a backend may
  * use a copy it already has). `flasher` names the backend's tool to write it with; null lets the backend choose.
- * `refresh`: fetch `url` again even when the backend keeps a cached copy of it.
+ * `refresh`: fetch `url` again even when the backend keeps a cached copy of it. `partitions`: write only these of
+ * the package's partitions (names as the backend's `plan` gives them); absent, the whole package.
  */
-export interface FlashPackage { url?: string, path?: string, sha256?: string | null, flasher?: string | null, refresh?: boolean }
+export interface FlashPackage { url?: string, path?: string, sha256?: string | null, flasher?: string | null, refresh?: boolean, partitions?: string[] }
 
 /**
  * Which packages a backend can flash: the URL schemes it fetches (`https`), and the endings of the file names it can
@@ -297,7 +298,14 @@ export interface BuildsCapability {
   flash?(config: LabConfig, target: BoardTarget, pkg: FlashPackage, progress: (line: string) => void, signal?: AbortSignal, report?: RunReport): Promise<string>
   /** The packages `flash` takes; without it, http(s) links and files sent to boardd, of any name. */
   accepts?: PackageKinds
+  /**
+   * What flashing `pkg` would write, without touching the board: its media and their partitions, as the backend reads
+   * the package. It may have to fetch the package first (`progress` says so).
+   */
+  plan?(config: LabConfig, target: BoardTarget, pkg: FlashPackage, progress: (line: string) => void, signal?: AbortSignal): Promise<FlashPlan>
 }
+
+export type { FlashMedium, FlashPartition, FlashPlan } from '../shared/types.ts'
 
 /** What a backend's `flash` takes when it does not say. */
 export const DEFAULT_PACKAGES: PackageKinds = { schemes: ['http', 'https'], suffixes: [] }

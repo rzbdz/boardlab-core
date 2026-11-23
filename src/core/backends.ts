@@ -216,6 +216,7 @@ export class Backends {
         sdks: device?.sdks ?? [], progress: this.lab.download.progress(board.name),
         canFlashPackage: !!instance.backend.builds?.flash && !device?.empty,
         packages: instance.backend.builds?.flash && !device?.empty ? instance.backend.builds.accepts ?? DEFAULT_PACKAGES : null,
+        canPlan: !!instance.backend.builds?.flash && !!instance.backend.builds.plan && !device?.empty,
         // What can debug it, as the backend lists it: the page's debug row and `boardlab debug` read this.
         debug: device?.debug ?? null,
       }

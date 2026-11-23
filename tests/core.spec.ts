@@ -215,8 +215,8 @@ describe('remote labs', () => {
     expect(lab.calls).toEqual(['verify admin ubuntu@lab.test'])
     const listed = svc.boards.list().filter(board => board.lab)
     expect(listed.map(board => [board.name, board.lab, board.source, board.soc, board.slot])).toEqual([
-      ['lab1-sub0-0', { id: 'lab1', device: 'sub0-0', online: true, ip: '10.0.0.10', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false, packages: null, debug: null }, 'lab', 'test-soc', null],
-      ['lab1-sub0-1', { id: 'lab1', device: 'sub0-1', online: true, ip: '10.0.0.11', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false, packages: null, debug: null }, 'lab', 'test-soc', null],
+      ['lab1-sub0-0', { id: 'lab1', device: 'sub0-0', online: true, ip: '10.0.0.10', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false, packages: null, canPlan: false, debug: null }, 'lab', 'test-soc', null],
+      ['lab1-sub0-1', { id: 'lab1', device: 'sub0-1', online: true, ip: '10.0.0.11', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false, packages: null, canPlan: false, debug: null }, 'lab', 'test-soc', null],
     ])
     expect(listed.map(board => board.chips.map(chip => [chip.serialPath, chip.downloadUsbPath, chip.online, chip.alias]))).toEqual([[['/dev/ttyS_0', '1-2.1', true, null]], [['/dev/ttyS_1', '1-2.2', false, null]]])
     // Missing inventory fields do not erase the model or SoC already known.
@@ -774,6 +774,64 @@ describe('remote labs', () => {
     expect(lab.flashed).toEqual([{ device: 'sub0-0', pkg: { url: 'https://images.example/test-soc/a.zip', flasher: null, sha256: sha('test-soc/a.zip') } }])
     await expect(call(svc, '/api/flash/package', 'claude:s1', { board: 'lab1-sub0-0', token, image: { market: 'shelf', path: 'test-soc/a.zip' }, url: 'https://x.example/p.zip' })).rejects.toThrow(/三选一/)
     await expect(call(svc, '/api/flash/package', 'claude:s1', { board: 'lab1-sub0-0', token, image: { market: 'shelf', path: 'test-soc/a.iso' } })).rejects.toThrow(/刷不了这种包/)
+  })
+
+  it('shows what a package would write, flashes chosen partitions, and resets after when asked', async () => {
+    const plan = {
+      package: 'pkg.zip', partial: true, notes: ['the layout is chosen once the board is seen'],
+      media: [{ id: 'table-a', label: 'disk · 8 MiB', size: 8 << 20, partitions: [
+        { name: 'boot', offset: 0, size: 1 << 20, image: 'boot.img', payload: 4096, selectable: true },
+        { name: 'root', offset: 1 << 20, size: null, image: null, payload: null, selectable: false },
+      ] }],
+    }
+    class PlanLab extends FakeLab {
+      flashed: unknown[] = []
+      planned: unknown[] = []
+      builds = {
+        boot: async () => '',
+        flash: async (_config: LabConfig, target: BoardTarget, pkg: unknown) => { this.flashed.push({ device: target.device, pkg }); return 'written' },
+        plan: async (_config: LabConfig, target: BoardTarget, pkg: unknown, progress: (line: string) => void) => { this.planned.push({ device: target.device, pkg }); progress('fetching pkg.zip 50%'); return plan },
+      }
+    }
+    const lab = new PlanLab()
+    const { svc } = labService(lab)
+    await enable(svc)
+    const board = 'lab1-sub0-0', url = 'https://images.example/pkg.zip'
+    await expect(svc.download.plan(board, { holder: 'claude:s1' }, { url })).rejects.toThrow(/请先拿/)
+    const { token } = await svc.locks.lock(board, 'claude:s1', '刷机')
+    const claude = { holder: 'claude:s1', token }
+
+    // The plan streams the backend's progress and ends with what it read; the board is not marked busy.
+    const running = await serve(svc, { port: 0, socketPath: join(dir, 'boardd.sock'), uiDir: null })
+    try {
+      const lines: string[] = []
+      expect(await new BoardsClient(join(dir, 'boardd.sock')).flashPlan(board, { url }, text => lines.push(text), token)).toEqual(plan)
+      expect(lines).toEqual(['fetching pkg.zip 50%\n'])
+      expect(lab.planned).toEqual([{ device: 'sub0-0', pkg: { url, flasher: null } }])
+      expect(svc.boards.get(board).busy).toBeNull()
+      await expect(new BoardsClient(join(dir, 'boardd.sock')).flashPlan(board, { url: 'ftp://x.example/p.zip' }, () => {}, token)).rejects.toThrow(/http:\/\/ 或 https:\/\//)
+    } finally { await running.close() }
+
+    // Chosen partitions go to the backend, and a reset follows a flash that asked for one.
+    expect(await svc.download.flashPackage(board, claude, { url, partitions: ['boot'], reset: true })).toBe('written\n已复位 lab1-sub0-0')
+    expect(lab.flashed).toEqual([{ device: 'sub0-0', pkg: { url, flasher: null, partitions: ['boot'] } }])
+    expect(lab.calls.at(-1)).toBe('reset sub0-0')
+    expect(svc.boards.detail(board).actions.map(a => a.kind).slice(0, 2)).toEqual(['reset', 'flash'])
+    expect(svc.boards.detail(board).actions[1]).toMatchObject({ detail: '刷机包 https://images.example/pkg.zip，只刷 boot' })
+    await expect(svc.download.flashPackage(board, claude, { url, partitions: ['boot; rm'] })).rejects.toThrow(/分区名不合法/)
+    // The backend says it can plan, so the page offers it.
+    expect(svc.boards.get(board).lab?.canPlan).toBe(true)
+    // A lock given back while the flash runs refuses the reset, but the flash is written and said so.
+    const flash = lab.builds.flash
+    lab.builds.flash = async () => { svc.locks.unlock(board, claude); return 'written' }
+    expect(await svc.download.flashPackage(board, claude, { url, reset: true })).toMatch(/^written\n刷好了，但没有复位：/)
+    expect(svc.boards.detail(board).actions[0]).toMatchObject({ kind: 'flash', ok: true })
+    lab.builds.flash = flash
+    claude.token = (await svc.locks.lock(board, 'claude:s1', '刷机')).token
+
+    // A backend that cannot read a package first says so.
+    lab.builds = { ...lab.builds, plan: undefined } as unknown as typeof lab.builds
+    await expect(svc.download.plan(board, claude, { url })).rejects.toThrow(/不能先看刷机包里有什么/)
   })
 
   it('works a lab board\'s relays and buttons one by one, under its lock', async () => {

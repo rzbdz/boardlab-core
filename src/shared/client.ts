@@ -10,10 +10,13 @@ import { Duplex } from 'node:stream'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import type {
-  BoardChannels, BoardDetail, DebugPath, DebugResult, DiscoveryContext, DiscoveryMethod, LabPorts, LabSettings, Lease, LockResult, Market, MarketListing, MarketTarget, Run, SendResult, State,
+  BoardChannels, BoardDetail, DebugPath, DebugResult, DiscoveryContext, DiscoveryMethod, LabPorts, LabSettings, Lease, FlashPlan, LockResult, Market, MarketListing, MarketTarget, Run, SendResult, State,
 } from './types.ts'
 
 export const DEFAULT_PORT = 38127
+
+/** A package as the client names it: a market's image, a link, or a file sent to boardd; one of them. */
+export interface PackageRequest { url?: string, sha256?: string, image?: { market: string, path: string }, flasher?: string, refresh?: boolean }
 
 /** A directory under `base` named `name`, or the one an older version made under `legacy` while there is no new one. */
 function named(base: string, name: string, legacy: string): string {
@@ -461,7 +464,13 @@ export class BoardsClient {
   /** Run one of the actions the path reports (`halt`, `regs`, …). */
   debugAction(board: string, action: string, token?: string | null) { return this.call<{ debug: DebugResult }>('POST', '/api/debug', { board, action, token }) }
   /** Flash a package: a `url` the board's backend downloads, or a file sent first (`sendFile`'s `sha256:<hex>`). */
-  flashPackage(board: string, input: { url?: string, sha256?: string, flasher?: string, refresh?: boolean }, token?: string | null) { return this.startRun('/api/flash/package', { board, ...input, token }) }
+  flashPackage(board: string, input: PackageRequest & { partitions?: string[], reset?: boolean }, token?: string | null) { return this.startRun('/api/flash/package', { board, ...input, token }) }
+  /** What flashing a package would write, without touching the board; `line` gets the backend's progress (a fetch). */
+  async flashPlan(board: string, input: PackageRequest, line: (text: string) => void = () => {}, token?: string | null): Promise<FlashPlan> {
+    const out = await this.streamCommand('/api/flash/plan', { board, ...input, token }, (_stream, text) => line(text)) as unknown as { ok: boolean, plan?: FlashPlan, message?: string, code?: string | null }
+    if (!out.ok || !out.plan) throw new BoardsApiError(400, out.message ?? '看不了刷机包里有什么', out.code ?? null)
+    return out.plan
+  }
   resolveProposals(ids: string[], decision: 'apply' | 'reject', names?: Record<string, string>) { return this.call<{ ok: true }>('POST', '/api/proposals', { ids, decision, names }) }
   /** After re-cabling: have the lab start `host` over (forget its boards, find them again). */
   labKinds() { return this.call<Array<{ kind: string, title: string, about: string }>>('GET', '/api/labs/kinds') }

@@ -158,6 +158,8 @@ export interface BoardInLab {
   canFlashPackage: boolean
   /** Which packages it can flash (link schemes, file name endings; none listed is any), when it can. */
   packages: { schemes: string[], suffixes: string[] } | null
+  /** The lab can say what a package would write before it flashes it (`boardlab flash --plan`). */
+  canPlan?: boolean
   /** The lab can debug it (see `debug`): the provider's name, its title and what it offers. */
   debug?: { provider: string, title?: string, kinds: string[] } | null
 }
@@ -311,6 +313,28 @@ export interface MarketListing { market: string, path: string, entries: MarketEn
  * boards whose backend takes the image and whose SoC is the image's (or either is unknown) are listed.
  */
 export interface MarketTarget { board: string, soc: string | null, mine: boolean, free: boolean, why: string | null }
+
+/** One partition a package writes (or could): where it goes on its medium, and the image it is written from. */
+export interface FlashPartition {
+  name: string
+  /** Bytes from the start of the medium, and the partition's size; null where the table leaves it open (the rest). */
+  offset: number | null
+  size: number | null
+  /** The file in the package it is written from, and that file's size; null for a partition the package does not write. */
+  image: string | null
+  payload: number | null
+  /** It can be chosen on its own (`FlashPackage.partitions`). */
+  selectable: boolean
+}
+
+/** A medium a package lays out (a NOR flash, a disk), in the backend's own words. */
+export interface FlashMedium { id: string, label: string, size: number | null, partitions: FlashPartition[] }
+
+/**
+ * What a package would write, as its board's backend reads it. `partial`: the backend can write only some partitions;
+ * `notes`: what the reader should know (a layout chosen only once the board is seen, say), in the backend's words.
+ */
+export interface FlashPlan { package: string, media: FlashMedium[], partial: boolean, notes: string[] }
 
 /** A relay, button or line wired to a board, as its backend's relay controller names it (`<board>/power`). */
 export interface Channel {

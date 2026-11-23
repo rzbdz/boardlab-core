@@ -3,6 +3,7 @@ import type { BoardEvent } from '../shared/types.ts'
 import { stops, type CancellableOperation, type ChannelAction } from './backend.ts'
 import { EventStream, FileReply, optional, required, TextReply, type Endpoint } from './api.ts'
 import { BoardError } from './errors.ts'
+import type { PackageInput } from './download.ts'
 import type { RunContext } from './kernel.ts'
 import type { BoardLab } from './lab.ts'
 import { stripAnsi } from './text.ts'
@@ -12,6 +13,12 @@ export function recent(lines: string[], bytes: number): string[] {
   let used = 0, at = lines.length
   while (at > 0 && used + lines[at - 1]!.length + 1 <= bytes) { used += lines[at - 1]!.length + 1; at-- }
   return lines.slice(at)
+}
+
+/** A package as a request names it: `image: {market, path}`, `url` or `sha256`, with `flasher` and `refresh`. */
+function packageInput(body: any): PackageInput {
+  const image = body.image && typeof body.image === 'object' ? { market: required(body.image.market, 'image.market'), path: required(body.image.path, 'image.path') } : null
+  return { url: optional(body.url), sha256: optional(body.sha256), image, flasher: optional(body.flasher), refresh: body.refresh === true }
 }
 
 export function coreEndpoints(lab: BoardLab): Endpoint[] {
@@ -203,11 +210,25 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
       },
     },
     {
-      method: 'POST', path: '/api/flash/package', about: '用刷机包刷机：镜像市场里的镜像（image: {market, path}）、链接（url，后端自己取，板子上的 packages 说它收哪些）或传上来的文件（sha256），flasher 选刷机工具，refresh 让后端不用它缓存的这个链接、重新下载', handle: async ({ body, caller }) => {
+      method: 'POST', path: '/api/flash/package', about: '用刷机包刷机：镜像市场里的镜像（image: {market, path}）、链接（url，后端自己取，板子上的 packages 说它收哪些）或传上来的文件（sha256），flasher 选刷机工具，refresh 让后端不用它缓存的这个链接、重新下载；partitions 只刷这些分区（名字照 /api/flash/plan 给的），reset 刷完复位', handle: async ({ body, caller }) => {
         const name = board(body)
-        const image = body.image && typeof body.image === 'object' ? { market: required(body.image.market, 'image.market'), path: required(body.image.path, 'image.path') } : null
-        const input = { url: optional(body.url), sha256: optional(body.sha256), image, flasher: optional(body.flasher), refresh: body.refresh === true }
+        const partitions = Array.isArray(body.partitions) ? body.partitions.map(String) : null
+        const input = { ...packageInput(body), partitions, reset: body.reset === true }
         return { output: await doing(name, 'boot', '刷机中', caller.holder, body, (signal, line, context) => lab.download.flashPackage(name, who(caller.holder, body), input, signal, line, context), true, 'flash') }
+      },
+    },
+
+    {
+      method: 'POST', path: '/api/flash/plan',
+      about: '刷机包会写什么（不碰板子）：各介质和分区（位置、大小、来自包里哪个文件），能不能只刷其中几个；要拿着锁；包要先取来时边取边说（事件流 out，最后 exit {ok, plan}）',
+      handle: ({ body, caller }) => {
+        const name = board(body)
+        const input = packageInput(body)
+        return new EventStream(async (emit, end, signal) => {
+          try { emit('exit', { ok: true, plan: await lab.download.plan(name, who(caller.holder, body), input, signal, text => emit('out', { text: `${text}\n` })) }) }
+          catch (error) { emit('exit', { ok: false, message: (error as Error).message, code: (error as BoardError).code ?? null }) }
+          end()
+        })
       },
     },
 
