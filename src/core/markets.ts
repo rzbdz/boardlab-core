@@ -29,8 +29,11 @@ export interface MarketKind {
   create(config: Record<string, unknown>): ImageMarket
 }
 
-/** How a market is set up: its kind, a title for the page, its driver's configuration, and who set it up. */
-export interface MarketSetup { kind: string, title?: string | null, config: Record<string, unknown>, source: string }
+/**
+ * How a market is set up: its kind, a title for the page, its driver's configuration, and who set it up. `problem`: what
+ * its source found wrong before any driver saw it (a file it could not read): the market is listed with it, unusable.
+ */
+export interface MarketSetup { kind: string, title?: string | null, config: Record<string, unknown>, source: string, problem?: string | null }
 
 /** How long a folder's listing is kept before the market is asked again. */
 const FRESH_MS = 60_000
@@ -152,6 +155,7 @@ export class Markets {
   }
 
   private make(instance: Instance) {
+    if (instance.setup.problem) { instance.market = null; instance.error = instance.setup.problem; return }
     const kind = this.kinds.get(instance.setup.kind)
     if (!kind) { instance.market = null; instance.error = `没有 ${instance.setup.kind} 这种市场的驱动（装上提供它的模块）`; return }
     try { instance.market = kind.create(instance.setup.config); instance.error = null }

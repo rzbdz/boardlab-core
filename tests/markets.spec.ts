@@ -72,6 +72,11 @@ describe('image markets', () => {
     boards.markets.configure('broken', { kind: 'shelf', config: {}, source: 'site' })
     expect(boards.markets.list().find(m => m.id === 'broken')!.error).toContain('tree 要写')
 
+    // A market its source could not read is listed with what the source found.
+    boards.markets.configure('unread', { kind: '', config: {}, source: 'site', problem: 'markets/unread.yaml：YAML 写错了' })
+    expect(boards.markets.list().find(m => m.id === 'unread')!.error).toBe('markets/unread.yaml：YAML 写错了')
+    await expect(boards.markets.folder('unread', '')).rejects.toThrow(/用不了：markets\/unread.yaml/)
+
     // A source re-reading its configuration takes down what it no longer has.
     boards.markets.configure('mine', { kind: 'shelf', config: { tree: {} }, source: 'module' })
     boards.markets.retain('site', ['later'])
