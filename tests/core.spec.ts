@@ -775,6 +775,25 @@ describe('remote labs', () => {
     await expect(call(svc, '/api/flash/package', 'claude:s1', { board: 'lab1-sub0-0', token, image: { market: 'shelf', path: 'test-soc/a.zip' }, url: 'https://x.example/p.zip' })).rejects.toThrow(/三选一/)
     await expect(call(svc, '/api/flash/package', 'claude:s1', { board: 'lab1-sub0-0', token, image: { market: 'shelf', path: 'test-soc/a.iso' } })).rejects.toThrow(/刷不了这种包/)
 
+    // The CLI lists the markets and a folder, says where an image could go, and flashes one by its place.
+    svc.locks.steal('lab1-sub0-0', 'user:alice', '换我来刷')
+    const running = await serve(svc, { port: 0, socketPath: join(dir, 'boardd.sock'), uiDir: null })
+    const lines: string[] = []
+    const quiet = { log: console.log, error: console.error }
+    console.log = (line: string) => lines.push(line); console.error = () => {}
+    const cli = (...args: string[]) => main([...args, '--state-dir', dir, '--as', 'user:alice'])
+    try {
+      await cli('images')
+      await cli('images', 'shelf', '--soc', 'test-soc')
+      await cli('images', 'shelf:test-soc/a.zip', '--targets')
+      await cli('flash', 'lab1-sub0-0', '--image', 'shelf:test-soc/a.zip')
+      await expect(cli('flash', 'lab1-sub0-0', '--image', 'test-soc/a.zip')).rejects.toThrow(/<市场>:<路径>/)
+      await expect(cli('flash', 'lab1-sub0-0', 'https://x.example/p.zip', '--image', 'shelf:test-soc/a.zip')).rejects.toThrow(/用法/)
+    } finally { Object.assign(console, quiet); await running.close() }
+    expect(lines[0]).toMatch(/^shelf +shelf（书架，test 设的）$/)
+    expect(lines.filter(line => line.includes('\n    shelf:')).map(line => line.split('\n')[1]!.trim())).toEqual(['shelf:test-soc/a.zip', 'shelf:test-soc/a.iso'])
+    expect(lines.some(line => /lab1-sub0-0 +test-soc +你拿着/.test(line))).toBe(true)
+    expect(lab.flashed.at(-1)).toEqual({ device: 'sub0-0', pkg: { url: 'https://images.example/test-soc/a.zip', flasher: null, sha256: sha('test-soc/a.zip') } })
   })
 
   it('shows what a package would write, flashes chosen partitions, and resets after when asked', async () => {

@@ -12,6 +12,7 @@ import type { CatalogEntry } from '../server/catalog.ts'
 import { splitTarget, TokenStore, write, type Command, type CommandContext, type CommandGroup } from './command.ts'
 import { boardCommands, presentBoards } from './commands/boards.ts'
 import { debugCommands } from './commands/debug.ts'
+import { imageCommands } from './commands/images.ts'
 import { labCommands } from './commands/labs.ts'
 import { presentRelease, setupCommands, type ReleaseIdentity } from './commands/setup.ts'
 import type { CliPresentation } from './command.ts'
@@ -97,7 +98,7 @@ interface Args { positional: string[], flags: Map<string, string | true> }
 export function parseArgs(argv: string[]): Args {
   const positional: string[] = []
   const flags = new Map<string, string | true>()
-  const booleans = new Set(['json', 'wait', 'yes', 'raw', 'all', 'confirm', 'token-stdin', 'password-stdin', 'help', 'human', 'agents', 'interactive', 'global', 'no-ui', 'clear', 'supervisor', 'worker', 'cancel-on-interrupt', 'refresh', 'plan', 'reset'])
+  const booleans = new Set(['json', 'wait', 'yes', 'raw', 'all', 'confirm', 'token-stdin', 'password-stdin', 'help', 'human', 'agents', 'interactive', 'global', 'no-ui', 'clear', 'supervisor', 'worker', 'cancel-on-interrupt', 'refresh', 'plan', 'reset', 'targets'])
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!
     if (arg === '-i') { flags.set('interactive', true); continue }
@@ -129,7 +130,7 @@ export interface Cli {
 export function createCli(distribution: Distribution): Cli {
   presentBoards(distribution.presentation ?? {})
   if (distribution.identity) presentRelease(distribution.identity)
-  const groups = [boardCommands, debugCommands, labCommands, ...distribution.groups, setupCommands]
+  const groups = [boardCommands, debugCommands, imageCommands, labCommands, ...distribution.groups, setupCommands]
   const commands = new Map<string, Command>(groups.flatMap(group => group.commands.map(command => [command.name, command] as const)))
   const usage = (topic?: string) => usageOf(groups, topic)
   return { usage, main: argv => run(argv, commands, usage, distribution) }
