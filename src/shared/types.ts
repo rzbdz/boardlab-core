@@ -156,6 +156,8 @@ export interface BoardInLab {
   progress: string | null
   /** The lab can flash the board with a package from a link or a file sent to boardd (`boardlab flash <board> <url|file>`). */
   canFlashPackage: boolean
+  /** Which packages it can flash (link schemes, file name endings; none listed is any), when it can. */
+  packages: { schemes: string[], suffixes: string[] } | null
   /** The lab can debug it (see `debug`): the provider's name, its title and what it offers. */
   debug?: { provider: string, title?: string, kinds: string[] } | null
 }

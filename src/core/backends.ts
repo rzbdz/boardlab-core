@@ -5,7 +5,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { Board, DiscoveryContext, DiscoveryMethod, DiscoveryValues, LabPorts, LabSettings, Proposal } from '../shared/types.ts'
-import { DEVICE_PATTERN, deviceFilter, JUMP, type Backend, type BoardTarget, type LabConfig, type LabDevice, type LabFinding, type LabNews, type LabSlots } from './backend.ts'
+import { DEFAULT_PACKAGES, DEVICE_PATTERN, deviceFilter, JUMP, type Backend, type BoardTarget, type LabConfig, type LabDevice, type LabFinding, type LabNews, type LabSlots } from './backend.ts'
 import { transaction } from './db.ts'
 import { checkDiscoveryContext, checkedValues, chosenMethod, HOST } from './discovery.ts'
 import { askedIn } from './relay.ts'
@@ -215,6 +215,7 @@ export class Backends {
         canConfirm: !!instance.backend.relay.confirm,
         sdks: device?.sdks ?? [], progress: this.lab.download.progress(board.name),
         canFlashPackage: !!instance.backend.builds?.flash && !device?.empty,
+        packages: instance.backend.builds?.flash && !device?.empty ? instance.backend.builds.accepts ?? DEFAULT_PACKAGES : null,
         // What can debug it, as the backend lists it: the page's debug row and `boardlab debug` read this.
         debug: device?.debug ?? null,
       }

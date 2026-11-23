@@ -265,11 +265,19 @@ export interface PortsCapability {
 }
 
 /**
- * A flash package to write to a board: an http(s) `url` the backend downloads itself, or a file on this machine (`path`,
- * with its `sha256`). `flasher` names the backend's tool to write it with; null lets the backend choose.
+ * A flash package to write to a board: a `url` the backend fetches itself (in a scheme it says it takes, see
+ * `PackageKinds`), or a file on this machine (`path`). `sha256`, when known, is what it must hash to (a backend may
+ * use a copy it already has). `flasher` names the backend's tool to write it with; null lets the backend choose.
+ * `refresh`: fetch `url` again even when the backend keeps a cached copy of it.
  */
-/** `refresh`: download `url` again even when the backend keeps a cached copy of it. */
 export interface FlashPackage { url?: string, path?: string, sha256?: string | null, flasher?: string | null, refresh?: boolean }
+
+/**
+ * Which packages a backend can flash: the URL schemes it fetches (`https`), and the endings of the file names it can
+ * write (`.zip`); none listed means any. The core only compares these strings, so a market's image is offered to a
+ * board whose backend takes it, and nothing in between knows what a scheme or an archive is.
+ */
+export interface PackageKinds { schemes: string[], suffixes: string[] }
 
 /** For a backend that knows named builds (SDKs): booting or flashing a board with one, fetching the build itself. */
 /**
@@ -287,6 +295,21 @@ export interface BuildsCapability {
    * `pkg` to the board, reporting progress lines (some with `NN%`). `signal` aborts it, for a backend that can stop.
    */
   flash?(config: LabConfig, target: BoardTarget, pkg: FlashPackage, progress: (line: string) => void, signal?: AbortSignal, report?: RunReport): Promise<string>
+  /** The packages `flash` takes; without it, http(s) links and files sent to boardd, of any name. */
+  accepts?: PackageKinds
+}
+
+/** What a backend's `flash` takes when it does not say. */
+export const DEFAULT_PACKAGES: PackageKinds = { schemes: ['http', 'https'], suffixes: [] }
+
+/** Whether a package by this URL (or, with no scheme, a file of this name) is one `kinds` take. */
+export function takesPackage(kinds: PackageKinds, url: string | null, name: string): boolean {
+  if (url !== null) {
+    const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1]?.toLowerCase()
+    if (!scheme || !kinds.schemes.includes(scheme)) return false
+  }
+  const lower = name.toLowerCase()
+  return !kinds.suffixes.length || kinds.suffixes.some(suffix => lower.endsWith(suffix.toLowerCase()))
 }
 
 /** For a backend that can tell when things change. */

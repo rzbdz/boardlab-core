@@ -215,8 +215,8 @@ describe('remote labs', () => {
     expect(lab.calls).toEqual(['verify admin ubuntu@lab.test'])
     const listed = svc.boards.list().filter(board => board.lab)
     expect(listed.map(board => [board.name, board.lab, board.source, board.soc, board.slot])).toEqual([
-      ['lab1-sub0-0', { id: 'lab1', device: 'sub0-0', online: true, ip: '10.0.0.10', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false, debug: null }, 'lab', 'test-soc', null],
-      ['lab1-sub0-1', { id: 'lab1', device: 'sub0-1', online: true, ip: '10.0.0.11', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false, debug: null }, 'lab', 'test-soc', null],
+      ['lab1-sub0-0', { id: 'lab1', device: 'sub0-0', online: true, ip: '10.0.0.10', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false, packages: null, debug: null }, 'lab', 'test-soc', null],
+      ['lab1-sub0-1', { id: 'lab1', device: 'sub0-1', online: true, ip: '10.0.0.11', heldBy: null, leaseError: null, attention: null, attentionRequest: null, canConfirm: false, empty: false, slotGone: false, canRefresh: false, mediaBoot: null, sdks: [], progress: null, canFlashPackage: false, packages: null, debug: null }, 'lab', 'test-soc', null],
     ])
     expect(listed.map(board => board.chips.map(chip => [chip.serialPath, chip.downloadUsbPath, chip.online, chip.alias]))).toEqual([[['/dev/ttyS_0', '1-2.1', true, null]], [['/dev/ttyS_1', '1-2.2', false, null]]])
     // Missing inventory fields do not erase the model or SoC already known.
@@ -676,7 +676,7 @@ describe('remote labs', () => {
     const { token } = await svc.locks.lock(board, 'claude:s1', '刷机')
     const claude = { holder: 'claude:s1', token }
     for (const [input, refused] of [
-      [{}, /二选一/], [{ url, sha256: sha('x') }, /二选一/], [{ url: 'ftp://images.example/pkg.zip' }, /http:\/\/ 或 https:\/\//],
+      [{}, /链接（http、https）或传上来的文件/], [{ url, sha256: 'x' }, /sha256 不对/], [{ url: 'ftp://images.example/pkg.zip' }, /http:\/\/ 或 https:\/\//],
       [{ url: 'not a link' }, /链接不对/], [{ url: 'http://me:pw@images.example/pkg.zip' }, /账号密码/], [{ url, flasher: 'x; reboot' }, /刷机工具名不合法/],
       [{ sha256: sha('never sent') }, /先传上来/],
     ] as const) await expect(svc.download.flashPackage(board, claude, input)).rejects.toThrow(refused)
@@ -720,6 +720,17 @@ describe('remote labs', () => {
     expect(lab.flashed.slice(2).map(item => (item as { pkg: unknown }).pkg)).toEqual([
       { path: svc.files.get(sha('another package'))!.path, sha256: sha('another package'), flasher: 'tool-b' }, { url, flasher: null },
     ])
+    // A backend saying which packages it takes: its own schemes (a user name allowed), a sha256 with the link, its own endings.
+    expect(svc.boards.get(board).lab?.packages).toEqual({ schemes: ['http', 'https'], suffixes: [] })
+    lab.builds = { ...lab.builds, accepts: { schemes: ['https', 'copy'], suffixes: ['.zip', '.tar.gz'] } } as typeof lab.builds
+    expect(svc.boards.get(board).lab?.packages).toEqual({ schemes: ['https', 'copy'], suffixes: ['.zip', '.tar.gz'] })
+    const alice = { holder: 'user:alice' }
+    const copy = 'copy://builder@build-1/out/pkg.tar.gz'
+    expect(await svc.download.flashPackage(board, alice, { url: copy, sha256: sha('x') })).toBe('job flash-4 succeeded')
+    expect((lab.flashed.at(-1) as { pkg: unknown }).pkg).toEqual({ url: copy, flasher: null, sha256: sha('x') })
+    await expect(svc.download.flashPackage(board, alice, { url: 'http://images.example/pkg.zip' })).rejects.toThrow(/https:\/\/ 或 copy:\/\//)
+    await expect(svc.download.flashPackage(board, alice, { url: 'https://images.example/pkg.iso' })).rejects.toThrow(/刷不了这种包.*\.zip、\.tar\.gz/)
+    await expect(svc.download.flashPackage(board, alice, { url: 'copy://builder:pw@build-1/out/pkg.zip' })).rejects.toThrow(/账号密码/)
     // A backend that cannot flash packages says so.
     await svc.locks.lock('com260', 'user:alice', '刷机')
     await expect(svc.download.flashPackage('com260', { holder: 'user:alice' }, { url })).rejects.toThrow(/不能用刷机包刷机/)

@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { basename, isAbsolute } from 'node:path'
 import type { Firmware } from '../shared/types.ts'
-import type { BootFile, DownloadCapability, FlashPackage, LabConfig, BoardTarget, RunReport } from './backend.ts'
+import { DEFAULT_PACKAGES, takesPackage, type BootFile, type DownloadCapability, type FlashPackage, type LabConfig, type BoardTarget, type PackageKinds, type RunReport } from './backend.ts'
 import { BoardError, CancelledError, isCancelled } from './errors.ts'
 import { readFirmware, verifiedFirmware } from './firmware.ts'
 import { askedIn } from './relay.ts'
@@ -89,7 +89,7 @@ export class Download {
           if (!isAbsolute(hostPath)) throw new BoardError('invalid', `板卡主机路径要写成 host:/绝对路径：${path}`)
           return { path: hostPath, sha256: '', source: 'backend' }
         }
-        const url = packageUrl(path)
+        const url = packageUrl(path, DEFAULT_PACKAGES)
         return { path: url.href, sha256: '', source: 'backend' }
       }
       if (!isAbsolute(path)) throw new BoardError('invalid', `启动文件要用绝对路径或 boardd 自带固件的名字：${path}`)
@@ -180,16 +180,22 @@ export class Download {
     const route = this.lab.backends.route(board)
     const builds = route.backend.builds
     if (!builds?.flash) throw new BoardError('invalid', `${board} 所在的后端 ${route.id} 不能用刷机包刷机`)
-    if (!input.url === !input.sha256) throw new BoardError('invalid', '刷机包要给 http(s) 链接或传上来的文件，二选一')
+    const kinds = builds.accepts ?? DEFAULT_PACKAGES
+    const sha256 = input.sha256 ? input.sha256.replace(/^sha256:/, '') : null
+    if (sha256 && !/^[0-9a-f]{64}$/.test(sha256)) throw new BoardError('invalid', `sha256 不对：${input.sha256}`)
+    if (!input.url && !sha256) throw new BoardError('invalid', `刷机包要给链接（${kinds.schemes.join('、')}）或传上来的文件`)
     if (input.flasher && !NAME.test(input.flasher)) throw new BoardError('invalid', `刷机工具名不合法：${input.flasher}`)
     const flasher = input.flasher || null
     let pkg: FlashPackage, what: string
     if (input.url) {
-      const url = packageUrl(input.url)
+      const url = packageUrl(input.url, kinds)
       // The log names the package without its query, which may carry a signed URL's token.
-      pkg = { url: url.href, flasher, ...(input.refresh ? { refresh: true } : {}) }; what = `${url.origin}${url.pathname}`
+      what = url.protocol === 'http:' || url.protocol === 'https:' ? `${url.origin}${url.pathname}` : `${url.protocol}//${url.host}${url.pathname}`
+      if (!takesPackage(kinds, url.href, url.pathname)) throw new BoardError('invalid', `${board} 所在的后端刷不了这种包：${what}（它刷 ${kinds.suffixes.join('、')}）`)
+      pkg = { url: url.href, flasher, ...(sha256 ? { sha256 } : {}), ...(input.refresh ? { refresh: true } : {}) }
     } else {
-      const file = this.lab.files.resolve(input.sha256!.replace(/^sha256:/, ''))
+      const file = this.lab.files.resolve(sha256!)
+      if (!takesPackage(kinds, null, file.path)) throw new BoardError('invalid', `${board} 所在的后端刷不了这种包：${basename(file.path)}（它刷 ${kinds.suffixes.join('、')}）`)
       pkg = { path: file.path, sha256: file.sha256, flasher }; what = `${basename(file.path)} ${file.sha256.slice(0, 12)}`
     }
     const detail = `刷机包 ${what}${flasher ? `（${flasher}）` : ''}`
@@ -239,11 +245,15 @@ function failed(error: unknown, signal: AbortSignal | undefined, prefix = ''): B
   return new BoardError('hardware', `${prefix}${(error as Error).message}`)
 }
 
-/** A package's address: http or https, with no login in it (a backend's host downloads it; logs show it). */
-function packageUrl(text: string): URL {
+/**
+ * A package's address: in a scheme the backend fetches (`kinds`), with no password in it (a backend's host fetches it;
+ * logs show it). A user name stays, for schemes that log in as one (an ssh copy's `user@host`).
+ */
+function packageUrl(text: string, kinds: PackageKinds): URL {
   let url: URL
   try { url = new URL(text.trim()) } catch { throw new BoardError('invalid', `刷机包链接不对：${text}`) }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new BoardError('invalid', `刷机包链接要以 http:// 或 https:// 开头：${text}`)
-  if (url.username || url.password) throw new BoardError('invalid', '刷机包链接里不能带账号密码')
+  const scheme = url.protocol.replace(/:$/, '')
+  if (!kinds.schemes.includes(scheme)) throw new BoardError('invalid', `刷机包链接要以 ${kinds.schemes.map(s => `${s}://`).join(' 或 ')} 开头：${text}`)
+  if (url.password || ((scheme === 'http' || scheme === 'https') && url.username)) throw new BoardError('invalid', '刷机包链接里不能带账号密码')
   return url
 }
