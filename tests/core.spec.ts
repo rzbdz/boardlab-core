@@ -1560,6 +1560,18 @@ describe('boardd API', () => {
     expect(await svc.consoles.logs('com260', undefined, { at: 'end', before: 2 })).toMatchObject({ lines: lines.slice(2), numbers: [2, 3], moreBefore: true, moreAfter: false })
     expect(await svc.consoles.logs('com260', undefined, { at: 'line:99' })).toMatchObject({ lines: [lines[3]], snapped: true })
     expect(await svc.consoles.logs('com260', undefined, { at: 'bzz:1' })).toMatchObject({ snapped: true })
+    // The CLI over the socket: a search with line numbers, where the matches are, and the lines around one.
+    const cliServer = await serve(svc, { port: 0, socketPath: join(dir, 'boardd.sock'), uiDir: null })
+    const printed: string[] = [], said: string[] = []
+    const log = console.log, error = console.error
+    console.log = (text: string) => printed.push(text); console.error = (text: string) => said.push(text)
+    try {
+      await main(['logs', 'com260', '--grep', 'error', '--numbers', '--state-dir', dir, '--as', 'user:alice'])
+      await main(['logs', 'com260', '--grep', '0:00', '--hits', '--state-dir', dir, '--as', 'user:alice'])
+      await main(['logs', 'com260', '--line', '1', '--before', '0', '--after', '1', '--state-dir', dir, '--as', 'user:alice'])
+    } finally { console.log = log; console.error = error; await cliServer.close() }
+    expect(printed).toEqual(['2  [2026-11-10 09:00:00] ERROR mmc0', '0\n2\n3', '…', '1  continuation of the line above', '2  [2026-11-10 09:00:00] ERROR mmc0', '…'])
+    expect(said.filter(text => !text.includes('的身份操作'))).toEqual(['3 行匹配，日志一共 4 行'])
     expect(await svc.consoles.logs('com260', undefined, { limit: 1 })).toMatchObject({ lines: ['[2026-11-10 10:00:00] login:'], truncated: true })
     await expect(svc.consoles.logs('com260', undefined, { grep: '(', regex: true })).rejects.toThrow(/不是合法的正则/)
     // A lab board whose backend keeps logs: the query goes to the backend.

@@ -218,6 +218,39 @@ const commands: Command[] = [
     async run({ client, flag, out, target }) { const result = await client.log(target().board, target().die, Number(flag('lines') ?? 200)); out(result, () => console.log(result.lines.join('\n'))) },
   },
   {
+    name: 'logs',
+    usage: [
+      'logs <board>[.<die>] [--grep 文字] [--regex] [--since 时间] [--until 时间] [--limit 2000] [--first] [--numbers]\t搜串口日志：每行前面是它的行号（--numbers）',
+      'logs <board>[.<die>] --grep 文字 --hits\t只看匹配在第几行，和一共多少行',
+      'logs <board>[.<die>] --line N [--before 20] [--after 20]\t看第 N 行前后；--at 位置（start、end 或上次给的）也行',
+    ],
+    async run({ client, flag, flags, out, target }) {
+      const { board, die } = target()
+      const line = flag('line'), at = flag('at') ?? (line !== undefined ? `line:${line}` : undefined)
+      if (line !== undefined && !/^\d+$/.test(line)) throw new Error(`--line 要写行号：${line}`)
+      const result = await client.logs(board, {
+        die, grep: flag('grep'), regex: flags.has('regex'), since: flag('since'), until: flag('until'), first: flags.has('first'),
+        limit: flag('limit') ? Number(flag('limit')) : undefined, hits: flags.has('hits'), maxHits: flag('max-hits') ? Number(flag('max-hits')) : undefined,
+        at, before: at ? Number(flag('before') ?? 20) : undefined, after: at ? Number(flag('after') ?? 20) : undefined,
+      })
+      out(result, () => {
+        const total = result.total ?? null
+        if (result.hits) {
+          console.log(result.hits.join('\n'))
+          console.error(`${result.matched} 行匹配${result.hitsTruncated ? `（只列了前 ${result.hits.length} 个）` : ''}${total !== null ? `，日志一共 ${total} 行` : ''}`)
+          return
+        }
+        const numbered = !!at || flags.has('numbers')
+        const width = String((result.numbers?.at(-1) ?? 0)).length
+        if (at && result.moreBefore) console.log('…')
+        result.lines.forEach((text, index) => console.log(numbered && result.numbers ? `${String(result.numbers[index]).padStart(width)}  ${text}` : text))
+        if (at && result.moreAfter) console.log('…')
+        if (at && result.snapped) console.error('要的那一行已经不在了，给的是离它最近的')
+        if (!at && result.truncated) console.error(`${result.matched} 行匹配，只给了 ${result.lines.length} 行（--limit、--first）`)
+      })
+    },
+  },
+  {
     name: 'stage', usage: ['stage <board>[.<die>] <固件名>\t往内存加载 boardd 自带的固件，例如 minor-board-info'],
     async run({ client, args, out, target, token }) {
       if (!args[1]) throw new Error('缺少固件名，例如 minor-board-info')
