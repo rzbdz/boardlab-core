@@ -159,21 +159,24 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     },
     { method: 'GET', path: '/api/consoles', about: '开着的串口会话', handle: () => lab.consoles.reap() },
     {
-      method: 'GET', path: '/api/logs', about: '串口日志：一段时间里的行（since、until：YYYY-MM-DD HH:MM:SS），可搜索（grep，regex=1；hits=1 只给每个匹配的行号），download=1 作为文件下载；at（位置、line:<行号>、start、end）加 before、after 读那里的一段。每行带行号（numbers）和位置（positions），total 是日志一共多少行',
+      method: 'GET', path: '/api/logs', about: '串口日志：一段时间里的行（since、until：YYYY-MM-DD HH:MM:SS），可搜索（grep，regex=1；hits=1 只给每个匹配的行号），download=1 作为文件下载；at（位置、line:<行号>、start、end）加 before、after 读那里的一段。每行带行号（numbers）和位置（positions），total 是日志一共多少行；marks=1 同时找每次启动的标记行（见 /api/boot-marks），fromLine 只搜这一行以后',
       handle: async ({ query }) => {
         const board = named(query.get('board'))
+        const marks = query.get('marks') === '1' ? await lab.consoles.bootMarks(board, query.get('die') ?? undefined) : undefined
         const stamp = (key: string) => { const value = query.get(key); if (value && !/^\d{4}-\d\d-\d\d( \d\d:\d\d(:\d\d)?)?$/.test(value)) throw new BoardError('invalid', `${key} 要写成 YYYY-MM-DD HH:MM:SS`); return value }
         const result = await lab.consoles.logs(board, query.get('die') ?? undefined, {
           since: stamp('since'), until: stamp('until'), grep: query.get('grep') || null, regex: query.get('regex') === '1',
           limit: Number(query.get('limit') ?? (query.get('download') === '1' ? 200000 : 2000)), first: query.get('first') === '1',
           hits: query.get('hits') === '1', maxHits: query.get('maxHits') ? Number(query.get('maxHits')) : undefined,
           at: query.get('at') || null, before: Number(query.get('before') ?? 0), after: Number(query.get('after') ?? 0),
+          marks, fromLine: query.get('fromLine') ? Number(query.get('fromLine')) : undefined,
         })
         if (query.get('download') !== '1') return result
         const span = [query.get('since'), query.get('until')].map(value => value?.replace(/[^0-9]/g, '').slice(0, 12) ?? '').filter(Boolean).join('-')
         return new TextReply(result.lines.join('\n') + '\n', 'text/plain; charset=utf-8', `${board}${span ? `-${span}` : ''}.log`)
       },
     },
+    { method: 'GET', path: '/api/boot-marks', about: '这块板子的串口上，哪些行是一次启动的开头：核心自带的（U-Boot SPL、OpenSBI、EDK2、U-Boot、Linux），加上它的后端添的', handle: ({ query }) => lab.consoles.bootMarks(named(query.get('board')), query.get('die') ?? undefined) },
     { method: 'GET', path: '/api/log', about: '串口最近的输出', handle: async ({ query }) => ({ lines: (await lab.consoles.log(named(query.get('board')), query.get('die') ?? undefined, Number(query.get('lines') ?? 200))).map(stripAnsi) }) },
     { method: 'POST', path: '/api/console/input', about: '往串口打字（人可以不拿锁：human）', handle: async ({ body, caller }) => { await lab.consoles.input(board(body), who(caller.holder, body), { die: body.die, data: String(body.data ?? ''), human: body.human === true }) } },
     { method: 'POST', path: '/api/send', about: '往串口发一行，可以等某个输出', handle: ({ body, caller }) => lab.consoles.send(board(body), who(caller.holder, body), { die: body.die, text: String(body.text ?? ''), newline: body.newline, wait: body.wait, timeoutMs: body.timeoutMs }) },

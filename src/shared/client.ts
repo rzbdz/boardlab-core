@@ -10,7 +10,7 @@ import { Duplex } from 'node:stream'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import type {
-  BoardChannels, BoardDetail, DebugPath, DebugResult, DiscoveryContext, DiscoveryMethod, LabPorts, LabSettings, Lease, FlashPlan, LockResult, LogResult, Market, MarketListing, MarketTarget, Run, SendResult, State,
+  BoardChannels, BoardDetail, DebugPath, DebugResult, DiscoveryContext, DiscoveryMethod, LabPorts, LabSettings, BootMark, Lease, FlashPlan, LockResult, LogResult, Market, MarketListing, MarketTarget, Run, SendResult, State,
 } from './types.ts'
 
 export const DEFAULT_PORT = 38127
@@ -434,11 +434,13 @@ export class BoardsClient {
    * A console's log: a search (`grep`, `since`/`until`; `hits` for where every match is), or with `at` the lines around
    * a place in it. Each line comes with its number and position; `total` is how many lines the log keeps.
    */
-  logs(board: string, query: { die?: string, since?: string, until?: string, grep?: string, regex?: boolean, limit?: number, first?: boolean, hits?: boolean, maxHits?: number, at?: string, before?: number, after?: number } = {}) {
+  logs(board: string, query: { die?: string, since?: string, until?: string, grep?: string, regex?: boolean, limit?: number, first?: boolean, hits?: boolean, maxHits?: number, at?: string, before?: number, after?: number, marks?: boolean, fromLine?: number } = {}) {
     const params = new URLSearchParams({ board })
     for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== null && value !== '' && value !== false) params.set(key, value === true ? '1' : String(value))
     return this.call<LogResult>('GET', `/api/logs?${params}`)
   }
+  /** The lines that open a boot on a board's console. */
+  bootMarks(board: string, die?: string) { return this.call<BootMark[]>('GET', `/api/boot-marks?board=${encodeURIComponent(board)}${die ? `&die=${encodeURIComponent(die)}` : ''}`) }
   log(board: string, die?: string, lines = 200) { return this.call<{ lines: string[] }>('GET', `/api/log?board=${encodeURIComponent(board)}${die ? `&die=${encodeURIComponent(die)}` : ''}&lines=${lines}`) }
   stage(board: string, firmware: string, die?: string, token?: string | null) { return this.call<{ output: string }>('POST', '/api/stage', { board, firmware, die, token }) }
   boot(board: string, files: string[], die?: string, token?: string | null) { return this.startRun('/api/boot', { board, files, die, token }) }

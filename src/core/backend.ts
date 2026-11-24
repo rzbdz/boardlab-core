@@ -4,7 +4,7 @@
  * offers is the same three things, a relay to reset boards, a USB download path and a serial port; the rest is optional
  * and the core offers it only for backends that have it.
  */
-import type { Channel as WireChannel, DiscoveryContext, DiscoveryMethod, DiscoveryValues, FlashPlan, LabFields, LogRange } from '../shared/types.ts'
+import type { BootMark, Channel as WireChannel, DiscoveryContext, DiscoveryMethod, DiscoveryValues, FlashPlan, LabFields, LogRange } from '../shared/types.ts'
 import type { ConsoleSession } from './console.ts'
 import type { DebugCapability } from './debug.ts'
 
@@ -150,6 +150,11 @@ export interface SerialCapability {
   gated?: boolean
   /** Its console's log over a time range, searched (see LogQuery); for a backend that keeps logs it can read back. */
   logs?(config: LabConfig, target: BoardTarget, query: LogQuery): Promise<LogRange>
+  /**
+   * The lines its boards print as a boot starts, beyond the core's (a vendor's ROM banner, its own kernel's): looked
+   * for with them. One with a core mark's id takes its place.
+   */
+  bootMarks?(config: LabConfig, target: BoardTarget): BootMark[] | Promise<BootMark[]>
 }
 
 /**
@@ -165,6 +170,10 @@ export interface LogQuery {
   since?: string | null, until?: string | null, grep?: string | null, regex?: boolean, limit?: number, first?: boolean
   hits?: boolean, maxHits?: number
   at?: string | null, before?: number, after?: number
+  /** Find these boot lines too (`LogRange.marks`), at most `maxMarks`; without `grep`, only them. */
+  marks?: BootMark[], maxMarks?: number
+  /** Search only from this line number on: a page following a growing log asks only for what is new. */
+  fromLine?: number
 }
 export type { LogRange }
 

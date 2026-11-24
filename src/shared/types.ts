@@ -390,7 +390,29 @@ export interface LogRange {
   total?: number, base?: number
   hits?: number[], hitsTruncated?: boolean
   at?: string | null, moreBefore?: boolean, moreAfter?: boolean, snapped?: boolean
+  /** The boot lines a search asked for (`LogQuery.marks`), in line order. */
+  marks?: BootLine[], marksTruncated?: boolean
 }
+/** One kind of line that opens a boot stage. `stage` orders them within one boot: a lower stage starts a boot. */
+export interface BootMark {
+  id: string
+  /** What a person reads: `U-Boot SPL`, `Linux`. */
+  title: string
+  pattern: string
+  /** `i`: case-blind. */
+  flags?: '' | 'i'
+  /** Where in a boot this stage comes: 0 for the SoC's boot ROM, higher for each later stage. */
+  stage: number
+  /**
+   * Which kind of stage, for a page to tint it by: the SoC's boot ROM (`rom`, a backend reports its SoC's), the first
+   * loader (`spl`), resident firmware (`firmware`: OpenSBI, EDK2), the boot loader (`loader`) and the kernel.
+   */
+  tone: 'rom' | 'spl' | 'firmware' | 'loader' | 'kernel'
+}
+
+/** A boot line found in a log: its line number, which mark, and the line (cut short). */
+export interface BootLine { line: number, id: string, text: string }
+
 /** A log as boardd answers: a `LogRange`, and whether it came from the backend's log or the console's buffer. */
 export interface LogResult extends LogRange { source: 'backend' | 'buffer' }
 

@@ -1546,7 +1546,7 @@ describe('the bare distribution', () => {
 describe('boardd API', () => {
   it('reads a console\'s log over a time range, searched, from the backend or the console\'s buffer, and offers it as a file', async () => {
     // The board here: no logs of its own, so its console's buffer.
-    const lines = ['[2026-11-10 08:00:00] U-Boot 2022.10', 'continuation of the line above', '[2026-11-10 09:00:00] ERROR mmc0', '[2026-11-10 10:00:00] login:']
+    const lines = ['[2026-11-10 08:00:00] U-Boot 2022.10 (Nov 10 2026 - 08:00:00 +0800)', 'continuation of the line above', '[2026-11-10 09:00:00] ERROR mmc0', '[2026-11-10 10:00:00] login:']
     const here = new Here()
     here.serial.open = async (_config, target) => ({ ...fakeSession(target.board, here.sent), history: lines })
     const { svc } = coreLab({ here })
@@ -1560,6 +1560,12 @@ describe('boardd API', () => {
     expect(await svc.consoles.logs('com260', undefined, { at: 'end', before: 2 })).toMatchObject({ lines: lines.slice(2), numbers: [2, 3], moreBefore: true, moreAfter: false })
     expect(await svc.consoles.logs('com260', undefined, { at: 'line:99' })).toMatchObject({ lines: [lines[3]], snapped: true })
     expect(await svc.consoles.logs('com260', undefined, { at: 'bzz:1' })).toMatchObject({ snapped: true })
+    // The board's boot marks: the core's, and a backend's own, refused when one is not a mark.
+    expect((await svc.consoles.bootMarks('com260')).map(mark => mark.id)).toEqual(['spl', 'edk2', 'opensbi', 'uboot', 'linux'])
+    here.serial.bootMarks = () => [{ id: 'rom', title: 'Boot ROM', pattern: 'ROM v\\d', stage: 0, tone: 'rom' }, { id: 'bad', title: '', pattern: '(', stage: 0, tone: 'rom' }]
+    expect((await svc.consoles.bootMarks('com260')).map(mark => mark.id)).toEqual(['spl', 'edk2', 'opensbi', 'uboot', 'linux', 'rom'])
+    await expect(svc.consoles.logs('com260', undefined, { marks: [{ id: 'x', title: '', pattern: '(', stage: 0, tone: 'rom' }] })).rejects.toThrow(/不是合法的正则/)
+    await expect(svc.consoles.logs('com260', undefined, { fromLine: -1 })).rejects.toThrow(/fromLine/)
     // The CLI over the socket: a search with line numbers, where the matches are, and the lines around one.
     const cliServer = await serve(svc, { port: 0, socketPath: join(dir, 'boardd.sock'), uiDir: null })
     const printed: string[] = [], said: string[] = []

@@ -9,6 +9,7 @@ import type { ConsoleSession } from './console.ts'
 import { BoardError } from './errors.ts'
 import type { BoardLab } from './lab.ts'
 import type { Caller } from './locks.ts'
+import { BOOT_MARKS, badMark, bootMarks, findBootLines, type BootMark } from './boot-marks.ts'
 import { LineRing } from './ring.ts'
 import { isHuman, stripAnsi } from './text.ts'
 
@@ -187,9 +188,14 @@ export class Consoles {
     const limit = Math.max(1, Math.min(query.limit ?? 20000, 200000))
     if (query.regex && query.grep) { try { new RegExp(query.grep) } catch (error) { throw new BoardError('invalid', `不是合法的正则：${(error as Error).message}`) } }
     const window = { before: span(query.before), after: span(query.after) }
+    if (query.marks) for (const mark of query.marks) { const bad = badMark(mark); if (bad) throw new BoardError('invalid', bad) }
+    if (query.fromLine !== undefined && !(Number.isInteger(query.fromLine) && query.fromLine >= 0)) throw new BoardError('invalid', `fromLine 要写行号：${query.fromLine}`)
     const maxHits = Math.max(1, Math.min(query.maxHits ?? MAX_HITS, MAX_HITS))
     if (query.at != null && !/^[\x21-\x7e]{1,80}$/.test(query.at)) throw new BoardError('invalid', `at 不对：${query.at}`)
-    const asked: LogQuery = { ...query, limit, ...(query.at != null ? window : {}), ...(query.hits ? { maxHits } : {}) }
+    const asked: LogQuery = {
+      ...query, limit, ...(query.at != null ? window : {}), ...(query.hits ? { maxHits } : {}),
+      ...(query.marks ? { marks: query.marks.map(({ id, pattern, flags }) => ({ id, pattern, flags: flags ?? '' }) as BootMark), maxMarks: Math.max(1, Math.min(query.maxMarks ?? 100_000, 100_000)) } : {}),
+    }
     if (route.backend.serial.logs) {
       try { return { ...(await route.backend.serial.logs(route.config, route.target, asked)), source: 'backend' } }
       catch (error) { throw new BoardError('hardware', (error as Error).message) }
@@ -203,6 +209,16 @@ export class Consoles {
     const read = readLog(lines, held.base, watch.epoch, asked)
     session.close()
     return { ...read, source: 'buffer' }
+  }
+
+  /** The lines that open a boot on this chip's console: the core's, and those its backend adds. */
+  async bootMarks(board: string, die?: string): Promise<BootMark[]> {
+    const chip = this.lab.boards.chip(board, die)
+    const route = this.lab.backends.route(board, chip.die)
+    let own: BootMark[] = []
+    try { own = (await route.backend.serial.bootMarks?.(route.config, route.target)) ?? [] } catch { own = [] }
+    // A backend's mark that is not one is left out, not passed on to every page.
+    return bootMarks(BOOT_MARKS, own.filter(mark => !badMark(mark)))
   }
 
   async log(board: string, die?: string, lines = 200): Promise<string[]> {
@@ -321,9 +337,14 @@ export function readLog(lines: LogLines | string[], base: number, epoch: string,
   const total = lines.length
   const name = (index: number) => `b${epoch}:${base + index}`
   if (query.at == null) {
-    const { indexes, ...found } = filterLog(lines, query)
-    if (found.hits) found.hits = found.hits.map(index => base + index)
-    return { ...found, total, base, positions: indexes.map(name), numbers: indexes.map(index => base + index) }
+    // From a line on: the lines before it are not searched (a page following the log asks only for what is new).
+    const skip = Math.max(0, Math.min(total, (query.fromLine ?? base) - base))
+    const rest: LogLines = skip ? { length: total - skip, at: index => log.at(skip + index) } : log
+    const boots = query.marks ? findBootLines(rest, base + skip, query.marks, query.maxMarks) : null
+    if (boots && !query.grep) return { lines: [], matched: 0, truncated: false, total, base, positions: [], numbers: [], ...boots }
+    const { indexes, ...found } = filterLog(rest, query)
+    if (found.hits) found.hits = found.hits.map(index => base + skip + index)
+    return { ...found, total, base, positions: indexes.map(index => name(skip + index)), numbers: indexes.map(index => base + skip + index), ...boots }
   }
   // Where `at` is: a number, a position of this buffer, or either end. A line gone (or a position from another
   // buffer) is the nearest one kept.
