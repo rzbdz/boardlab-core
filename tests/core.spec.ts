@@ -1575,8 +1575,9 @@ describe('boardd API', () => {
       await main(['logs', 'com260', '--grep', 'error', '--numbers', '--state-dir', dir, '--as', 'user:alice'])
       await main(['logs', 'com260', '--grep', '0:00', '--hits', '--state-dir', dir, '--as', 'user:alice'])
       await main(['logs', 'com260', '--line', '1', '--before', '0', '--after', '1', '--state-dir', dir, '--as', 'user:alice'])
+      await main(['boots', 'com260', '--state-dir', dir, '--as', 'user:alice'])
     } finally { console.log = log; console.error = error; await cliServer.close() }
-    expect(printed).toEqual(['2  [2026-11-10 09:00:00] ERROR mmc0', '0\n2\n3', '…', '1  continuation of the line above', '2  [2026-11-10 09:00:00] ERROR mmc0', '…'])
+    expect(printed).toEqual(['2  [2026-11-10 09:00:00] ERROR mmc0', '0\n2\n3', '…', '1  continuation of the line above', '2  [2026-11-10 09:00:00] ERROR mmc0', '…', '0  U-Boot      [2026-11-10 08:00:00] U-Boot 2022.10 (Nov 10 2026 - 08:00:00 +0800)'])
     expect(said.filter(text => !text.includes('的身份操作'))).toEqual(['3 行匹配，日志一共 4 行'])
     expect(await svc.consoles.logs('com260', undefined, { limit: 1 })).toMatchObject({ lines: ['[2026-11-10 10:00:00] login:'], truncated: true })
     await expect(svc.consoles.logs('com260', undefined, { grep: '(', regex: true })).rejects.toThrow(/不是合法的正则/)

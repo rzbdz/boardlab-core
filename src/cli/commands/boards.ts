@@ -251,6 +251,20 @@ const commands: Command[] = [
     },
   },
   {
+    name: 'boots', usage: ['boots <board>[.<die>] [--since 时间] [--until 时间]\t串口日志里每次启动的各个阶段（U-Boot SPL、OpenSBI、U-Boot、Linux…）在第几行；logs --line N 看那里'],
+    async run({ client, flag, out, target }) {
+      const { board, die } = target()
+      const [marks, result] = await Promise.all([client.bootMarks(board, die), client.logs(board, { die, marks: true, since: flag('since'), until: flag('until') })])
+      out(result.marks ?? [], () => {
+        const title = new Map(marks.map(mark => [mark.id, mark.title]))
+        const width = String(result.marks?.at(-1)?.line ?? 0).length
+        for (const found of result.marks ?? []) console.log(`${String(found.line).padStart(width)}  ${(title.get(found.id) ?? found.id).padEnd(11)} ${found.text}`)
+        if (!result.marks?.length) console.error('日志里没有认得的启动行')
+        else if (result.marksTruncated) console.error(`太多了，只列了前 ${result.marks.length} 个`)
+      })
+    },
+  },
+  {
     name: 'stage', usage: ['stage <board>[.<die>] <固件名>\t往内存加载 boardd 自带的固件，例如 minor-board-info'],
     async run({ client, args, out, target, token }) {
       if (!args[1]) throw new Error('缺少固件名，例如 minor-board-info')
