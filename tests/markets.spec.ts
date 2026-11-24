@@ -169,6 +169,38 @@ describe('searching a market, read side by side', () => {
   })
 })
 
+describe('a market that searches itself', () => {
+  it('asks its driver, keeps the SoC and the folders above each kept image, and reads no folder', async () => {
+    const asked: string[] = []
+    const boards = lab({ t: 0 })
+    const hits = [
+      folder('soc-a'), folder('soc-a/old'), image('soc-a/old/hit.zip', '2026-01-01T00:00:00Z', 'soc-a'),
+      folder('soc-b'), image('soc-b/hit.iso', '2026-01-01T00:00:00Z', 'soc-b'), image('soc-b/other.zip', '2026-01-01T00:00:00Z', 'soc-b'),
+    ]
+    boards.markets.offer({ kind: 'indexed', title: '书架', about: '', create: () => ({
+      list: async (at: string) => { asked.push(at); return [] },
+      locate: async () => ({ url: 'https://x/y', name: 'y' }),
+      search: async (text: string) => { asked.push(`search:${text}`); return hits.filter(entry => entry.kind === 'folder' || entry.name.includes(text)) },
+    }) })
+    boards.markets.configure('main', { kind: 'indexed', config: {}, source: 'test' })
+    const found = await boards.markets.search('main', 'HIT', { soc: 'soc-a' })
+    expect(asked).toEqual(['search:hit'])
+    // Only soc-a's hit, with its folders; soc-b's folders are gone with its filtered-out image, and the answer keeps
+    // the tree's order (a folder, then what is in it), not folders first.
+    expect(found).toMatchObject({ market: 'main', text: 'hit', folders: 3, partial: false })
+    expect(found.entries.map(e => e.path)).toEqual(['soc-a', 'soc-a/old', 'soc-a/old/hit.zip'])
+    // Without a SoC, both hits are there, still in tree order.
+    expect((await boards.markets.search('main', 'hit', { refresh: true })).entries.map(e => e.path)).toEqual(['soc-a', 'soc-a/old', 'soc-a/old/hit.zip', 'soc-b', 'soc-b/hit.iso'])
+    // It asked the driver once for each search (two), and read no folder of the tree.
+    expect(asked.filter(item => item.startsWith('search:'))).toHaveLength(2)
+    // A driver that fails says so through the core's error.
+    const broken = lab({ t: 0 })
+    broken.markets.offer({ kind: 'indexed', title: '书架', about: '', create: () => ({ list: async () => [], locate: async () => ({ url: 'x', name: 'x' }), search: async () => { throw new Error('index down') } }) })
+    broken.markets.configure('main', { kind: 'indexed', config: {}, source: 'test' })
+    await expect(broken.markets.search('main', 'x')).rejects.toMatchObject({ code: 'hardware', message: expect.stringContaining('index down') })
+  })
+})
+
 describe('image markets for a board', () => {
   it('marks the images a board cannot take, by the market scheme and each name ending', async () => {
     const boards = lab({ t: 0 })

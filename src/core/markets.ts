@@ -23,6 +23,12 @@ export interface ImageMarket {
    * board says which images that board's backend cannot take without locating each one.
    */
   scheme?: string
+  /**
+   * Find images by name, when the place a market reads from can search it faster than it can be listed (an index of
+   * its files, say): the images whose name has `text`, in their place in the tree — the folders they are in, and the
+   * folders above those — so the answer reads as the tree does. Without it, a search reads every folder.
+   */
+  search?(text: string, signal?: AbortSignal): Promise<MarketEntry[]>
 }
 
 /** A kind of market a module offers: what it is, and how to make one from its configuration (checked there). */
@@ -121,6 +127,19 @@ export class Markets {
     const key = `${id}\0${words}\0${options.soc?.toLowerCase() ?? ''}\0${options.board?.name ?? ''}`
     const had = this.searches.get(key)
     if (had && !options.refresh && this.k.now() - had.at <= FRESH_MS) return had.found
+    if (market.search) {
+      let entries: MarketEntry[]
+      // In the order the driver gives: a search answer reads in the tree's order (a folder, then what is in it),
+      // which sorting by kind would break.
+      try { entries = await market.search(words, options.signal) }
+      catch (error) {
+        if (error instanceof BoardError) throw error
+        throw new BoardError('hardware', `市场 ${id} 搜索失败：${(error as Error).message}`)
+      }
+      const found = this.shapeFolders(id, words, market, entries, options)
+      if (this.instances.get(id)?.market === market) this.searches.set(key, { found, at: this.k.now() })
+      return found
+    }
     const deadline = this.k.now() + SEARCH_MS
     let folders = 0, partial = false
     // One folder at a time: the folders below `at` that lead to a matching image, each followed by what is in it, in
@@ -157,6 +176,28 @@ export class Markets {
     const found = { market: id, text: words, entries, folders, partial, readAt: this.k.iso() }
     if (this.instances.get(id)?.market === market) this.searches.set(key, { found, at: this.k.now() })
     return found
+  }
+
+  /**
+   * A driver's search answer as the core gives it: its images kept by the SoC and refused for a board as a listing's
+   * are, and a folder kept only while a kept image is still below it — a folder's own SoC is its prefix's, not what was
+   * found in it, so folders are never dropped for their SoC alone. The answer reads in the tree's order, as given.
+   */
+  private shapeFolders(id: string, text: string, market: ImageMarket, entries: MarketEntry[], options: { soc?: string | null, board?: Board | null }): MarketSearch {
+    const soc = options.soc?.toLowerCase() || null
+    const board = options.board
+    const images = entries.filter(entry => entry.kind === 'image')
+    const folders = entries.filter(entry => entry.kind === 'folder').length
+    // The leaves kept, and every folder above them.
+    const keptImages: MarketEntry[] = [], above = new Set<string>()
+    for (const entry of images) {
+      if (soc && entry.soc && entry.soc.toLowerCase() !== soc) continue
+      keptImages.push(board ? { ...entry, refused: refusal(board, market.scheme ?? null, entry.name) } : entry)
+      const parts = entry.path.split('/').slice(0, -1)
+      for (let i = 1; i <= parts.length; i++) above.add(parts.slice(0, i).join('/'))
+    }
+    const kept = entries.filter(entry => entry.kind === 'image' ? keptImages.includes(entry) || keptImages.some(image => image.path === entry.path) : above.has(entry.path))
+    return { market: id, text, entries: kept, folders, partial: false, readAt: this.k.iso() }
   }
 
   /** Run these, `SEARCH_AT_ONCE` at a time; the first failure rejects the rest of the batch. */
