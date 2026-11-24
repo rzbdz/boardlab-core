@@ -316,11 +316,12 @@ export interface MarketEntry {
 export interface MarketListing { market: string, path: string, entries: MarketEntry[], readAt: string }
 
 /**
- * A market searched whole: the images whose name has `text`, wherever they are in it, and nothing else — a folder
- * leads to them by its path. `folders` is how many were read; `partial` says the whole tree was not (too many folders,
- * or the search was stopped), so an image may be missing.
+ * A market searched: the images whose name has `text`, wherever they are in it, and nothing else — a folder leads to
+ * them by its path. `by` says how it was searched: `folders` read the tree, `index` asked the market's own index; for
+ * `folders`, `folders` is how many were read, and for `index`, how many images were found. `partial` says the search
+ * stopped short, so an image may be missing.
  */
-export interface MarketSearch { market: string, text: string, entries: MarketEntry[], folders: number, partial: boolean, readAt: string }
+export interface MarketSearch { market: string, text: string, entries: MarketEntry[], folders: number, by: 'folders' | 'index', partial: boolean, readAt: string }
 
 /**
  * A board an image could be flashed onto: whether it is the caller's already (`mine`), free to lock, or why not. Only

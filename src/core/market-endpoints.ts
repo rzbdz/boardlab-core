@@ -18,7 +18,7 @@ export function marketEndpoints(lab: BoardLab): Endpoint[] {
     },
     {
       method: 'GET', path: '/api/markets/:id/search',
-      about: '在镜像市场里找（q）：读整个树，只留名字里有 q 的镜像和通往它们的文件夹，按树的位置排好（页面整棵展开）；soc 只留这个 SoC 的，board 同 /list；folders 读了多少个文件夹，partial=1 表示没读完（文件夹太多或超时）',
+      about: '在镜像市场里找（q）：读整个树，只留名字里有 q 的镜像和通往它们的文件夹，按树的位置排好（页面整棵展开）；soc 只留这个 SoC 的，board 同 /list；by 说怎么找的（folders 读了整个树，index 问的市场索引），folders 对前者是读了多少个文件夹、对后者是找到多少个镜像；partial=1 表示没找完，可能有遗漏',
       handle: ({ params, query, signal }) => {
         const name = query.get('board')
         return lab.markets.search(required(params.id, 'id'), required(query.get('q'), 'q'), { soc: query.get('soc'), refresh: query.get('refresh') === '1', signal, board: name ? lab.boards.get(name) : null })

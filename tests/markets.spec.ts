@@ -122,7 +122,7 @@ describe('searching a market', () => {
     const found = await boards.markets.search('main', ' BIANBU ')
     // Both bianbu images, the folders between them and the top; nothing else — no scratch.zip, no doc folder with no match.
     expect(found.entries.map(e => e.path)).toEqual(['k3', 'k3/version', 'k3/version/v4.0', 'k3/version/v4.0/bianbu-k3.zip', 'k1', 'k1/bianbu-k1.zip'])
-    expect(found).toMatchObject({ market: 'main', text: 'bianbu', folders: 8, partial: false })
+    expect(found).toMatchObject({ market: 'main', text: 'bianbu', by: 'folders', folders: 8, partial: false })
     // Search is not a folder listing: a folder does not match by its name.
     expect((await boards.markets.search('main', 'version')).entries.map(e => e.path)).toEqual([])
     // A SoC keeps only its images.
@@ -131,6 +131,84 @@ describe('searching a market', () => {
     boards.markets.configure('gone', { kind: 'shelf', config: { tree: { '': [folder('x'), folder('y')], 'y': [image('y/hit.zip', '2026-01-01T00:00:00Z')] } }, source: 'test' })
     expect(await boards.markets.search('gone', 'hit')).toMatchObject({ partial: true, entries: [{ path: 'y' }, { path: 'y/hit.zip' }] })
     await expect(boards.markets.search('main', '  ')).rejects.toMatchObject({ code: 'invalid' })
+  })
+})
+
+describe('a search that stops short', () => {
+  it('reads the rest of the market when one folder cannot be read, and says it was not whole', async () => {
+    const boards = lab({ t: 0 })
+    // The first of six folders at the top is gone since it was listed: the matches in the others are still found.
+    const tree: Record<string, MarketEntry[]> = { '': Array.from({ length: 6 }, (_, i) => folder(`f${i}`)), 'f4': [image('f4/hit.zip', '2026-01-01T00:00:00Z')] }
+    boards.markets.offer({ kind: 'shelf', title: '书架', about: '', create: () => shelf(tree, []) })
+    boards.markets.configure('main', { kind: 'shelf', config: {}, source: 'test' })
+    const found = await boards.markets.search('main', 'HIT')
+    expect(found).toMatchObject({ partial: true, entries: [{ path: 'f4' }, { path: 'f4/hit.zip' }] })
+  })
+
+  it('keeps the driver saying it did not search everything', async () => {
+    const boards = lab({ t: 0 })
+    boards.markets.offer({ kind: 'indexed', title: '书架', about: '', create: config => ({
+      list: async () => [],
+      locate: async () => ({ url: 'x', name: 'x' }),
+      search: async () => config.short === true
+        ? { entries: [folder('a'), image('a/hit.zip', '')], partial: true }
+        : [folder('a'), image('a/hit.zip', '')],
+    }) })
+    boards.markets.configure('whole', { kind: 'indexed', config: {}, source: 'test' })
+    expect(await boards.markets.search('whole', 'hit')).toMatchObject({ by: 'index', partial: false, entries: [{ path: 'a' }, { path: 'a/hit.zip' }] })
+    boards.markets.configure('short', { kind: 'indexed', config: { short: true }, source: 'test' })
+    expect(await boards.markets.search('short', 'hit')).toMatchObject({ by: 'index', partial: true, entries: [{ path: 'a' }, { path: 'a/hit.zip' }] })
+  })
+})
+
+describe('a search stopped while it runs', () => {
+  const tree = (): Record<string, MarketEntry[]> => ({
+    '': [folder('k3'), folder('k1')],
+    'k3': [image('k3/hit-k3.zip', '2026-01-01T00:00:00Z')],
+    'k1': [image('k1/hit-k1.zip', '2026-01-01T00:00:00Z')],
+  })
+  /** A market whose folders take a moment, so a search can be stopped while it is reading them. */
+  function slow(count: { reads: number }) {
+    const folders = tree()
+    return {
+      list: async (at: string) => { count.reads++; await new Promise(r => setTimeout(r, 20)); return folders[at] ?? [] },
+      locate: async () => ({ url: 'https://x/y', name: 'y' }),
+    }
+  }
+
+  it('is not kept for the next ask: the same words read the market again', async () => {
+    const count = { reads: 0 }
+    const boards = lab({ t: 0 })
+    boards.markets.offer({ kind: 'shelf', title: '书架', about: '', create: () => slow(count) })
+    boards.markets.configure('main', { kind: 'shelf', config: {}, source: 'test' })
+    const stop = new AbortController()
+    const going = boards.markets.search('main', 'hit', { signal: stop.signal })
+    await new Promise(r => setTimeout(r, 5))
+    stop.abort()
+    const stopped = await going
+    expect(stopped.partial).toBe(true)
+    // Nobody's answer is not the next asker's: the market is read again, and that answer is whole.
+    const reads = count.reads
+    const whole = await boards.markets.search('main', 'hit')
+    expect(whole).toMatchObject({ partial: false })
+    expect(whole.entries.map(e => e.path)).toEqual(['k3', 'k3/hit-k3.zip', 'k1', 'k1/hit-k1.zip'])
+    expect(count.reads).toBeGreaterThan(reads)
+  })
+
+  it('does not fail the search that is still waiting on the same folder', async () => {
+    const count = { reads: 0 }
+    const boards = lab({ t: 0 })
+    boards.markets.offer({ kind: 'shelf', title: '书架', about: '', create: () => slow(count) })
+    boards.markets.configure('main', { kind: 'shelf', config: {}, source: 'test' })
+    const stop = new AbortController()
+    const stopping = boards.markets.search('main', 'kt', { signal: stop.signal })
+    const other = boards.markets.search('main', 'HIT')
+    await new Promise(r => setTimeout(r, 5))
+    stop.abort()
+    await stopping
+    // The other search read the same folders at the same time; it still answers whole.
+    expect(await other).toMatchObject({ partial: false })
+    expect((await other).entries.map(e => e.path)).toEqual(['k3', 'k3/hit-k3.zip', 'k1', 'k1/hit-k1.zip'])
   })
 })
 
@@ -153,7 +231,7 @@ describe('searching a market, read side by side', () => {
     boards.markets.configure('main', { kind: 'shelf', config: {}, source: 'test' })
     const found = await boards.markets.search('main', 'FOUND')
     expect(found.entries.map(e => e.path)).toEqual(['f7', 'f7/found.zip'])
-    expect(found).toMatchObject({ folders: 24, partial: false })
+    expect(found).toMatchObject({ by: 'folders', folders: 24, partial: false })
     // The twelve folders were read together, not one after another.
     expect(most).toBeGreaterThan(1)
     // The same words again: the answer kept a minute, nothing asked again.
@@ -187,7 +265,7 @@ describe('a market that searches itself', () => {
     expect(asked).toEqual(['search:hit'])
     // Only soc-a's hit, with its folders; soc-b's folders are gone with its filtered-out image, and the answer keeps
     // the tree's order (a folder, then what is in it), not folders first.
-    expect(found).toMatchObject({ market: 'main', text: 'hit', folders: 3, partial: false })
+    expect(found).toMatchObject({ market: 'main', text: 'hit', by: 'index', folders: 1, partial: false })
     expect(found.entries.map(e => e.path)).toEqual(['soc-a', 'soc-a/old', 'soc-a/old/hit.zip'])
     // Without a SoC, both hits are there, still in tree order.
     expect((await boards.markets.search('main', 'hit', { refresh: true })).entries.map(e => e.path)).toEqual(['soc-a', 'soc-a/old', 'soc-a/old/hit.zip', 'soc-b', 'soc-b/hit.iso'])

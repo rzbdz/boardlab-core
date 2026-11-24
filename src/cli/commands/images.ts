@@ -51,7 +51,7 @@ const commands: Command[] = [
       if (find !== undefined) {
         const found = await client.marketSearch(market, find, { soc: flag('soc') ?? null, refresh: flags.has('refresh') })
         return out(found, () => {
-          console.log(`${market} 里找「${found.text}」：读了 ${found.folders} 个文件夹${found.partial ? '（没读完：文件夹太多或太久）' : ''}`)
+          console.log(`${market} 里找「${found.text}」：${found.by === 'index' ? `市场的索引里找到 ${found.folders} 个镜像` : `读了 ${found.folders} 个文件夹`}${found.partial ? '（没找完：市场太大、太慢，或有目录读不了，可能有遗漏）' : ''}`)
           if (!found.entries.length) console.log('  没有名字里有这几个字的镜像')
           for (const entry of found.entries) console.log(row(market, entry))
         })

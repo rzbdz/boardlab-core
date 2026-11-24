@@ -12,6 +12,9 @@ import type { Kernel } from './kernel.ts'
 /** An image a market holds, as a board's backend fetches it: `url` in a scheme that backend declares it can take. */
 export interface MarketImage { url: string, name: string, sha256?: string | null, size?: number | null }
 
+/** What a driver's search found: its entries, and whether it had to stop short (then an image may be missing). */
+export interface MarketFound { entries: MarketEntry[], partial?: boolean }
+
 /** One market, made by its driver from its configuration. */
 export interface ImageMarket {
   /** What a folder holds (`''` is the top). Entries' paths are the market's own; the core sorts and filters them. */
@@ -26,9 +29,11 @@ export interface ImageMarket {
   /**
    * Find images by name, when the place a market reads from can search it faster than it can be listed (an index of
    * its files, say): the images whose name has `text`, in their place in the tree — the folders they are in, and the
-   * folders above those — so the answer reads as the tree does. Without it, a search reads every folder.
+   * folders above those — so the answer reads as the tree does. A driver whose search can stop short says so with
+   * `partial`, and the answer says an image may be missing; the bare entries mean it searched everything.
+   * Without it, a search reads every folder.
    */
-  search?(text: string, signal?: AbortSignal): Promise<MarketEntry[]>
+  search?(text: string, signal?: AbortSignal): Promise<MarketEntry[] | MarketFound>
 }
 
 /** A kind of market a module offers: what it is, and how to make one from its configuration (checked there). */
@@ -128,15 +133,16 @@ export class Markets {
     const had = this.searches.get(key)
     if (had && !options.refresh && this.k.now() - had.at <= FRESH_MS) return had.found
     if (market.search) {
-      let entries: MarketEntry[]
+      let answer: MarketEntry[] | MarketFound
       // In the order the driver gives: a search answer reads in the tree's order (a folder, then what is in it),
       // which sorting by kind would break.
-      try { entries = await market.search(words, options.signal) }
+      try { answer = await market.search(words, options.signal) }
       catch (error) {
         if (error instanceof BoardError) throw error
         throw new BoardError('hardware', `市场 ${id} 搜索失败：${(error as Error).message}`)
       }
-      const found = this.shapeFolders(id, words, market, entries, options)
+      const entries = Array.isArray(answer) ? answer : answer.entries
+      const found = this.shapeFolders(id, words, market, entries, options, { by: 'index', partial: !Array.isArray(answer) && !!answer.partial, read: 0 })
       if (this.instances.get(id)?.market === market) this.searches.set(key, { found, at: this.k.now() })
       return found
     }
@@ -152,8 +158,9 @@ export class Markets {
       try { listing = await this.read(id, market, at, options) }
       catch (error) {
         if (!at) throw error
-        // A folder that cannot be read now (gone since it was listed, say) is skipped: the rest is still found.
-        partial = true; state.stopped = true
+        // A folder that cannot be read now (gone since it was listed, say) is skipped, and so is what was under it:
+        // the rest of the market is still read (the answer says it was not whole).
+        partial = true
         return []
       }
       const own: MarketEntry[] = [], below: Array<{ entry: MarketEntry, kept: MarketEntry[] }> = []
@@ -173,8 +180,11 @@ export class Markets {
     let entries: MarketEntry[] = []
     if (options.signal) options.signal.addEventListener('abort', () => { state.stopped = true }, { once: true })
     try { entries = await walk('') } catch (error) { throw error instanceof BoardError ? error : new BoardError('hardware', `市场 ${id} 搜索失败：${(error as Error).message}`) }
-    const found = { market: id, text: words, entries, folders, partial, readAt: this.k.iso() }
-    if (this.instances.get(id)?.market === market) this.searches.set(key, { found, at: this.k.now() })
+    // The walk's answer says how many folders it read; what it found is shaped as a driver's answer is.
+    const found = this.shapeFolders(id, words, market, entries, options, { by: 'folders', partial, read: folders })
+    // A search stopped because its page went away is nobody's answer: it is not kept for the next person with the same
+    // words, who would be told it was not whole.
+    if (this.instances.get(id)?.market === market && !options.signal?.aborted) this.searches.set(key, { found, at: this.k.now() })
     return found
   }
 
@@ -183,21 +193,22 @@ export class Markets {
    * are, and a folder kept only while a kept image is still below it — a folder's own SoC is its prefix's, not what was
    * found in it, so folders are never dropped for their SoC alone. The answer reads in the tree's order, as given.
    */
-  private shapeFolders(id: string, text: string, market: ImageMarket, entries: MarketEntry[], options: { soc?: string | null, board?: Board | null }): MarketSearch {
+  private shapeFolders(id: string, text: string, market: ImageMarket, entries: MarketEntry[], options: { soc?: string | null, board?: Board | null }, found: { by: MarketSearch['by'], partial: boolean, read: number }): MarketSearch {
     const soc = options.soc?.toLowerCase() || null
     const board = options.board
-    const images = entries.filter(entry => entry.kind === 'image')
-    const folders = entries.filter(entry => entry.kind === 'folder').length
-    // The leaves kept, and every folder above them.
-    const keptImages: MarketEntry[] = [], above = new Set<string>()
-    for (const entry of images) {
+    // The leaves kept, by path, and every folder above them.
+    const kept = new Map<string, MarketEntry>(), above = new Set<string>()
+    for (const entry of entries) {
+      if (entry.kind !== 'image') continue
       if (soc && entry.soc && entry.soc.toLowerCase() !== soc) continue
-      keptImages.push(board ? { ...entry, refused: refusal(board, market.scheme ?? null, entry.name) } : entry)
+      kept.set(entry.path, board ? { ...entry, refused: refusal(board, market.scheme ?? null, entry.name) } : entry)
       const parts = entry.path.split('/').slice(0, -1)
       for (let i = 1; i <= parts.length; i++) above.add(parts.slice(0, i).join('/'))
     }
-    const kept = entries.filter(entry => entry.kind === 'image' ? keptImages.includes(entry) || keptImages.some(image => image.path === entry.path) : above.has(entry.path))
-    return { market: id, text, entries: kept, folders, partial: false, readAt: this.k.iso() }
+    // In the order given, a folder only where a kept image is below it.
+    const shaped = entries.flatMap(entry => entry.kind === 'image' ? (kept.has(entry.path) ? [kept.get(entry.path)!] : []) : above.has(entry.path) ? [entry] : [])
+    // How much was searched: the folders read of the tree, or the images the market's index gave.
+    return { market: id, text, entries: shaped, folders: found.by === 'folders' ? found.read : kept.size, partial: found.partial, by: found.by, readAt: this.k.iso() }
   }
 
   /** Run these, `SEARCH_AT_ONCE` at a time; the first failure rejects the rest of the batch. */
@@ -207,12 +218,17 @@ export class Markets {
     await Promise.all(Array.from({ length: Math.min(SEARCH_AT_ONCE, tasks.length) }, worker))
   }
 
-  /** A folder as it was read (sorted, with when): the minute's cache, shared by asks while it is being read. */
+  /**
+   * A folder as it was read (sorted, with when): the minute's cache, shared by asks while it is being read. A read is
+   * shared with an ask that can be stopped only by the ask itself: two searches waiting on one read must not let one
+   * of them being stopped fail the other's.
+   */
   private async read(id: string, market: ImageMarket, at: string, options: { refresh?: boolean, signal?: AbortSignal }): Promise<MarketListing & { at: number }> {
     const key = `${id}\0${at}`
     let listing = this.listings.get(key)
     if (!listing || options.refresh || this.k.now() - listing.at > FRESH_MS) {
-      let read = this.reading.get(key)
+      const shared = !options.signal
+      let read = shared ? this.reading.get(key) : undefined
       if (!read) {
         read = (async () => {
           let entries: MarketEntry[]
@@ -221,8 +237,8 @@ export class Markets {
           const fresh = { market: id, path: at, entries: sortEntries(entries), readAt: this.k.iso(), at: this.k.now() }
           if (this.instances.get(id)?.market === market) this.listings.set(key, fresh)
           return fresh
-        })().finally(() => this.reading.delete(key))
-        this.reading.set(key, read)
+        })().finally(() => { if (shared) this.reading.delete(key) })
+        if (shared) this.reading.set(key, read)
       }
       listing = await read
     }
