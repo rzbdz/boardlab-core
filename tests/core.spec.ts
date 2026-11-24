@@ -1546,11 +1546,20 @@ describe('the bare distribution', () => {
 describe('boardd API', () => {
   it('reads a console\'s log over a time range, searched, from the backend or the console\'s buffer, and offers it as a file', async () => {
     // The board here: no logs of its own, so its console's buffer.
-    const svc = service()
     const lines = ['[2026-11-10 08:00:00] U-Boot 2022.10', 'continuation of the line above', '[2026-11-10 09:00:00] ERROR mmc0', '[2026-11-10 10:00:00] login:']
-    ;(svc.consoles as unknown as { log: () => Promise<string[]> }).log = async () => lines
-    expect(await svc.consoles.logs('com260', undefined, { since: '2026-11-10 08:00:00', until: '2026-11-10 09:00:00' })).toEqual({ lines: lines.slice(0, 3), matched: 3, truncated: false, source: 'buffer' })
-    expect(await svc.consoles.logs('com260', undefined, { grep: 'error' })).toMatchObject({ lines: ['[2026-11-10 09:00:00] ERROR mmc0'], matched: 1 })
+    const here = new Here()
+    here.serial.open = async (_config, target) => ({ ...fakeSession(target.board, here.sent), history: lines })
+    const { svc } = coreLab({ here })
+    expect(await svc.consoles.logs('com260', undefined, { since: '2026-11-10 08:00:00', until: '2026-11-10 09:00:00' })).toMatchObject({ lines: lines.slice(0, 3), matched: 3, truncated: false, source: 'buffer', numbers: [0, 1, 2], total: 4 })
+    expect(await svc.consoles.logs('com260', undefined, { grep: 'error' })).toMatchObject({ lines: ['[2026-11-10 09:00:00] ERROR mmc0'], matched: 1, numbers: [2] })
+    // Where every match is, and the lines around one, by its number or its position.
+    expect(await svc.consoles.logs('com260', undefined, { grep: '0:00', hits: true })).toMatchObject({ lines: [], matched: 3, hits: [0, 2, 3], total: 4 })
+    const around = await svc.consoles.logs('com260', undefined, { at: 'line:2', before: 1, after: 5 })
+    expect(around).toMatchObject({ lines: lines.slice(1), numbers: [1, 2, 3], moreBefore: true, moreAfter: false, snapped: false })
+    expect(await svc.consoles.logs('com260', undefined, { at: around.positions![0], after: 1 })).toMatchObject({ lines: lines.slice(1, 3), at: around.positions![0] })
+    expect(await svc.consoles.logs('com260', undefined, { at: 'end', before: 2 })).toMatchObject({ lines: lines.slice(2), numbers: [2, 3], moreBefore: true, moreAfter: false })
+    expect(await svc.consoles.logs('com260', undefined, { at: 'line:99' })).toMatchObject({ lines: [lines[3]], snapped: true })
+    expect(await svc.consoles.logs('com260', undefined, { at: 'bzz:1' })).toMatchObject({ snapped: true })
     expect(await svc.consoles.logs('com260', undefined, { limit: 1 })).toMatchObject({ lines: ['[2026-11-10 10:00:00] login:'], truncated: true })
     await expect(svc.consoles.logs('com260', undefined, { grep: '(', regex: true })).rejects.toThrow(/不是合法的正则/)
     // A lab board whose backend keeps logs: the query goes to the backend.

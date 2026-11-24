@@ -4,7 +4,7 @@
  * offers is the same three things, a relay to reset boards, a USB download path and a serial port; the rest is optional
  * and the core offers it only for backends that have it.
  */
-import type { Channel as WireChannel, DiscoveryContext, DiscoveryMethod, DiscoveryValues, FlashPlan, LabFields } from '../shared/types.ts'
+import type { Channel as WireChannel, DiscoveryContext, DiscoveryMethod, DiscoveryValues, FlashPlan, LabFields, LogRange } from '../shared/types.ts'
 import type { ConsoleSession } from './console.ts'
 import type { DebugCapability } from './debug.ts'
 
@@ -153,12 +153,20 @@ export interface SerialCapability {
 }
 
 /**
- * What part of a console's log: lines stamped from `since` to `until` (`YYYY-MM-DD HH:MM:SS`, either may be absent),
- * keeping those matching `grep` (text, case-blind; a regex with `regex`), at most `limit`, the last ones unless
- * `first`.
+ * What part of a console's log. A search: lines stamped from `since` to `until` (`YYYY-MM-DD HH:MM:SS`, either may be
+ * absent), keeping those matching `grep` (text, case-blind; a regex with `regex`), at most `limit`, the last ones unless
+ * `first`; with `hits`, only where every match is (`LogRange.hits`, at most `maxHits`), not the lines.
+ *
+ * With `at`, a window of the log instead, unsearched: `before` lines up to the line at `at`, that line, and `after`
+ * lines past it. `at` is a position an earlier answer gave, `line:<n>` for the line numbered n, or `start` / `end` of
+ * what the log keeps.
  */
-export interface LogQuery { since?: string | null, until?: string | null, grep?: string | null, regex?: boolean, limit?: number, first?: boolean }
-export interface LogRange { lines: string[], matched: number, truncated: boolean }
+export interface LogQuery {
+  since?: string | null, until?: string | null, grep?: string | null, regex?: boolean, limit?: number, first?: boolean
+  hits?: boolean, maxHits?: number
+  at?: string | null, before?: number, after?: number
+}
+export type { LogRange }
 
 /** The USB download path. Loading runs from RAM and never flashes. */
 export interface DownloadCapability {

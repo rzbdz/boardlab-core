@@ -159,13 +159,15 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     },
     { method: 'GET', path: '/api/consoles', about: '开着的串口会话', handle: () => lab.consoles.reap() },
     {
-      method: 'GET', path: '/api/logs', about: '串口日志：一段时间里的行（since、until：YYYY-MM-DD HH:MM:SS），可搜索（grep，regex=1），download=1 作为文件下载',
+      method: 'GET', path: '/api/logs', about: '串口日志：一段时间里的行（since、until：YYYY-MM-DD HH:MM:SS），可搜索（grep，regex=1；hits=1 只给每个匹配的行号），download=1 作为文件下载；at（位置、line:<行号>、start、end）加 before、after 读那里的一段。每行带行号（numbers）和位置（positions），total 是日志一共多少行',
       handle: async ({ query }) => {
         const board = named(query.get('board'))
         const stamp = (key: string) => { const value = query.get(key); if (value && !/^\d{4}-\d\d-\d\d( \d\d:\d\d(:\d\d)?)?$/.test(value)) throw new BoardError('invalid', `${key} 要写成 YYYY-MM-DD HH:MM:SS`); return value }
         const result = await lab.consoles.logs(board, query.get('die') ?? undefined, {
           since: stamp('since'), until: stamp('until'), grep: query.get('grep') || null, regex: query.get('regex') === '1',
           limit: Number(query.get('limit') ?? (query.get('download') === '1' ? 200000 : 2000)), first: query.get('first') === '1',
+          hits: query.get('hits') === '1', maxHits: query.get('maxHits') ? Number(query.get('maxHits')) : undefined,
+          at: query.get('at') || null, before: Number(query.get('before') ?? 0), after: Number(query.get('after') ?? 0),
         })
         if (query.get('download') !== '1') return result
         const span = [query.get('since'), query.get('until')].map(value => value?.replace(/[^0-9]/g, '').slice(0, 12) ?? '').filter(Boolean).join('-')

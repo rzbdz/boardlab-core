@@ -377,6 +377,23 @@ export interface DebugResult { message: string, data?: Array<{ label: string, va
 export interface LockResult { lease: Lease | null, token: string | null, gateToken: string | null, queued: { position: number } | null }
 export interface SendResult { output: string, matched: boolean }
 
+/**
+ * Lines of a log, each with its number and its position (both parallel to `lines`). Lines are numbered in order from
+ * `base` (0 when absent): the log keeps `total` of them, `base` to `base + total - 1`, so a page can be as long as the
+ * log and read only the lines in view. A position is the backend's own name for a line, kept as long as the line is
+ * (a number may move when the oldest lines go). A search gives the numbers of its matches in `hits`; a window says
+ * whether the log goes on before and after it, and `snapped` when what `at` named was gone and the nearest line was taken.
+ */
+export interface LogRange {
+  lines: string[], matched: number, truncated: boolean
+  positions?: string[], numbers?: number[]
+  total?: number, base?: number
+  hits?: number[], hitsTruncated?: boolean
+  at?: string | null, moreBefore?: boolean, moreAfter?: boolean, snapped?: boolean
+}
+/** A log as boardd answers: a `LogRange`, and whether it came from the backend's log or the console's buffer. */
+export interface LogResult extends LogRange { source: 'backend' | 'buffer' }
+
 /** Events pushed on /api/events. Console bytes use /api/console. */
 export type CoreEvent =
   | { type: 'changed', board: string | null }

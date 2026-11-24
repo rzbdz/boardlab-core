@@ -9,6 +9,7 @@ import type { ConsoleSession } from './console.ts'
 import { BoardError } from './errors.ts'
 import type { BoardLab } from './lab.ts'
 import type { Caller } from './locks.ts'
+import { LineRing } from './ring.ts'
 import { isHuman, stripAnsi } from './text.ts'
 
 export interface ConsoleTiming {
@@ -36,7 +37,10 @@ interface Failure { error: string, code: BoardError['code'], count: number, unti
 interface Watch {
   key: string
   session: Promise<ConsoleSession>
-  lines: string[]
+  /** Its recent lines, numbered from the first this watch saw, so a number stays a line's own. */
+  lines: LineRing
+  /** This watch's own name in its lines' positions: a position from a watch gone since names no line here. */
+  epoch: string
   partial: string
   outputs: Set<(data: Buffer) => void>
   closes: Set<(reason: string) => void>
@@ -47,6 +51,7 @@ interface Watch {
 
 export class Consoles {
   private readonly watches = new Map<string, Watch>()
+  private epochs = 0
   private readonly failures = new Map<string, Failure>()
   private readonly shutdowns = new Set<(reason: string) => void>()
   private readonly typing = new Map<string, { session: Promise<ConsoleSession>, timer: ReturnType<typeof setTimeout> | null }>()
@@ -92,17 +97,17 @@ export class Consoles {
       if (failure && now < failure.until) throw new BoardError(failure.code, failure.error)
       const route = this.lab.backends.route(board, chip.die)
       const opening = route.backend.serial.open(route.config, route.target, { history: true })
-      const created: Watch = { key, session: opening, lines: [], partial: '', outputs: new Set(), closes: new Set(), viewers: 0, idle: null, lastSeen: now }
+      const created: Watch = { key, session: opening, lines: new LineRing(this.timing.watchLines), epoch: (++this.epochs).toString(36), partial: '', outputs: new Set(), closes: new Set(), viewers: 0, idle: null, lastSeen: now }
       watch = created
       this.watches.set(key, created)
       opening.then(session => {
         const opened = this.lab.kernel.now()
-        created.lines = session.history.slice(-this.timing.watchLines)
+        created.lines = new LineRing(this.timing.watchLines, session.history)
         session.onOutput(data => {
           const text = created.partial + data.toString('utf8')
           const parts = text.split('\n')
           created.partial = parts.pop() ?? ''
-          if (parts.length) created.lines = [...created.lines, ...parts.map(line => line.replace(/\r$/, ''))].slice(-this.timing.watchLines)
+          for (const line of parts) created.lines.push(line.replace(/\r$/, ''))
           created.outputs.forEach(fn => fn(data))
         })
         session.onClose(reason => {
@@ -131,7 +136,7 @@ export class Consoles {
     let left = false
     return {
       hello: session.hello,
-      history: [...shared.lines, ...(shared.partial ? [shared.partial] : [])],
+      history: [...shared.lines.slice(), ...(shared.partial ? [shared.partial] : [])],
       send: () => { throw new BoardError('invalid', '看串口的连接不能输入；输入要拿锁走 /api/console/input') },
       onOutput: fn => { outputs.add(fn); return () => outputs.delete(fn) },
       onClose: fn => { closes.add(fn) },
@@ -181,12 +186,23 @@ export class Consoles {
     const route = this.lab.backends.route(board, chip.die)
     const limit = Math.max(1, Math.min(query.limit ?? 20000, 200000))
     if (query.regex && query.grep) { try { new RegExp(query.grep) } catch (error) { throw new BoardError('invalid', `不是合法的正则：${(error as Error).message}`) } }
+    const window = { before: span(query.before), after: span(query.after) }
+    const maxHits = Math.max(1, Math.min(query.maxHits ?? MAX_HITS, MAX_HITS))
+    if (query.at != null && !/^[\x21-\x7e]{1,80}$/.test(query.at)) throw new BoardError('invalid', `at 不对：${query.at}`)
+    const asked: LogQuery = { ...query, limit, ...(query.at != null ? window : {}), ...(query.hits ? { maxHits } : {}) }
     if (route.backend.serial.logs) {
-      try { return { ...(await route.backend.serial.logs(route.config, route.target, { ...query, limit })), source: 'backend' } }
+      try { return { ...(await route.backend.serial.logs(route.config, route.target, asked)), source: 'backend' } }
       catch (error) { throw new BoardError('hardware', (error as Error).message) }
     }
-    const lines = (await this.log(board, die, 100000)).map(stripAnsi)
-    return { ...filterLog(lines, { ...query, limit }), source: 'buffer' }
+    // No log of its own: the console's buffer, numbered from the first line this watch saw.
+    const session = await this.open(board, die)
+    const watch = this.watches.get(`${board}\0${chip.die}`)!
+    // Read in place: a line is taken (and its colours stripped) only when the answer needs it.
+    const held = watch.lines, partial = watch.partial
+    const lines: LogLines = { length: held.length + (partial ? 1 : 0), at: index => stripAnsi(index < held.length ? held.get(held.base + index)! : partial) }
+    const read = readLog(lines, held.base, watch.epoch, asked)
+    session.close()
+    return { ...read, source: 'buffer' }
   }
 
   async log(board: string, die?: string, lines = 200): Promise<string[]> {
@@ -287,21 +303,76 @@ export class Consoles {
 }
 
 const STAMP = /^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\]/
+/** At most this many lines on either side of a window, and this many match numbers from one search. */
+export const MAX_SPAN = 5000
+export const MAX_HITS = 1_000_000
+const span = (value: number | undefined) => Math.max(0, Math.min(Math.floor(Number(value) || 0), MAX_SPAN))
 
-/** Lines stamped within the range (unstamped ones go with the line before), matching the search, capped. */
-export function filterLog(lines: string[], query: LogQuery): LogRange {
+/**
+ * Read `lines` (numbered from `base`, named in positions by `epoch`) as a query asks: a window around `at`, or a search
+ * (see `filterLog`), each line with its number and position.
+ */
+/** Lines read by index without copying them: an array, or a console's ring. */
+export interface LogLines { length: number, at(index: number): string }
+
+export function readLog(lines: LogLines | string[], base: number, epoch: string, query: LogQuery): LogRange {
+  if (Array.isArray(lines)) { const list = lines; lines = { length: list.length, at: index => list[index]! } }
+  const log = lines
+  const total = lines.length
+  const name = (index: number) => `b${epoch}:${base + index}`
+  if (query.at == null) {
+    const { indexes, ...found } = filterLog(lines, query)
+    if (found.hits) found.hits = found.hits.map(index => base + index)
+    return { ...found, total, base, positions: indexes.map(name), numbers: indexes.map(index => base + index) }
+  }
+  // Where `at` is: a number, a position of this buffer, or either end. A line gone (or a position from another
+  // buffer) is the nearest one kept.
+  let index: number | null, snapped = false
+  const at = query.at
+  const own = new RegExp(`^b${epoch}:(\\d+)$`).exec(at)
+  const numbered = /^line:(\d+)$/.exec(at) ?? own
+  if (at === 'start') index = null
+  else if (at === 'end') index = null
+  else if (numbered) index = Number(numbered[1]) - base
+  else { index = total - 1; snapped = true }
+  if (index !== null && (index < 0 || index >= total)) { snapped = true; index = Math.max(0, Math.min(index, total - 1)) }
+  const before = query.before ?? 0, after = query.after ?? 0
+  let from: number, to: number
+  if (at === 'start') { from = 0; to = Math.min(total, after) }
+  else if (at === 'end') { from = Math.max(0, total - before); to = total }
+  else if (total === 0) { from = 0; to = 0 }
+  else { from = Math.max(0, index! - before); to = Math.min(total, index! + after + 1) }
+  const indexes = Array.from({ length: to - from }, (_, i) => from + i)
+  return {
+    lines: Array.from({ length: to - from }, (_, i) => log.at(from + i)), matched: to - from, truncated: false, total, base,
+    positions: indexes.map(name), numbers: indexes.map(i => base + i),
+    at: index === null || total === 0 ? null : name(index), moreBefore: from > 0, moreAfter: to < total, snapped,
+  }
+}
+
+/**
+ * Lines stamped within the range (unstamped ones go with the line before), matching the search, capped; with `hits`,
+ * the indexes of every match (at most `maxHits`) instead of the lines. `indexes` says where each line kept is in `lines`.
+ */
+export function filterLog(lines: LogLines | string[], query: LogQuery): LogRange & { indexes: number[] } {
+  if (Array.isArray(lines)) { const list = lines; lines = { length: list.length, at: index => list[index]! } }
+  const log = lines
   const lo = (query.since ?? '').slice(0, 19), hi = (query.until ?? '9999').slice(0, 19)
   const needle = query.grep && !query.regex ? query.grep.toLowerCase() : null
   const rx = query.grep && query.regex ? new RegExp(query.grep) : null
-  const limit = query.limit ?? 20000
-  let inside = !lo, matched = 0
-  const out: string[] = []
-  for (const line of lines) {
+  const limit = query.limit ?? 20000, maxHits = query.maxHits ?? MAX_HITS
+  let inside = !lo
+  const found: number[] = []
+  let matched = 0
+  for (let index = 0; index < lines.length; index++) {
+    const line = log.at(index)
     const stamp = STAMP.exec(line)?.[1]
     if (stamp) inside = lo <= stamp && stamp <= hi
     if (!inside || (needle && !line.toLowerCase().includes(needle)) || (rx && !rx.test(line))) continue
     matched++
-    if (!query.first || out.length < limit) { out.push(line); if (!query.first && out.length > limit) out.shift() }
+    if (query.hits ? found.length < maxHits : true) found.push(index)
   }
-  return { lines: out, matched, truncated: matched > out.length }
+  if (query.hits) return { lines: [], matched, truncated: false, hits: found, hitsTruncated: matched > found.length, indexes: [] }
+  const indexes = found.length <= limit ? found : query.first ? found.slice(0, limit) : found.slice(-limit)
+  return { lines: indexes.map(index => log.at(index)), matched, truncated: matched > indexes.length, indexes }
 }
