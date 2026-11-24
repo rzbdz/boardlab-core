@@ -100,6 +100,75 @@ describe('image markets', () => {
   })
 })
 
+describe('searching a market', () => {
+  it('reads the whole tree and keeps only matching images and the folders leading to them, in their place', async () => {
+    const asked: string[] = []
+    const boards = lab({ t: 0 })
+    boards.markets.offer({ kind: 'shelf', title: '书架', about: '', create: config => shelf(config.tree as Record<string, MarketEntry[]>, asked) })
+    boards.markets.configure('main', {
+      kind: 'shelf', config: {
+        tree: {
+          '': [folder('k3'), folder('k1'), folder('docs'), image('readme.zip', '2026-01-01T00:00:00Z')],
+          'k3': [folder('k3/version', 'k3'), folder('k3/temp', 'k3'), image('k3/notes.zip', '2026-01-01T00:00:00Z', 'k3')],
+          'k3/version': [folder('k3/version/v4.0', 'k3'), image('k3/version/kernel-only.img', '2026-01-01T00:00:00Z', 'k3')],
+          'k3/version/v4.0': [image('k3/version/v4.0/bianbu-k3.zip', '2026-01-02T00:00:00Z', 'k3')],
+          'k3/temp': [image('k3/temp/scratch.zip', '2026-01-01T00:00:00Z', 'k3')],
+          'k1': [image('k1/bianbu-k1.zip', '2026-01-01T00:00:00Z', 'k1')],
+          'docs': [folder('docs/deep')],
+          'docs/deep': [image('docs/deep/kernel-notes.zip', '2026-01-01T00:00:00Z')],
+        },
+      }, source: 'test',
+    })
+    const found = await boards.markets.search('main', ' BIANBU ')
+    // Both bianbu images, the folders between them and the top; nothing else — no scratch.zip, no doc folder with no match.
+    expect(found.entries.map(e => e.path)).toEqual(['k3', 'k3/version', 'k3/version/v4.0', 'k3/version/v4.0/bianbu-k3.zip', 'k1', 'k1/bianbu-k1.zip'])
+    expect(found).toMatchObject({ market: 'main', text: 'bianbu', folders: 8, partial: false })
+    // Search is not a folder listing: a folder does not match by its name.
+    expect((await boards.markets.search('main', 'version')).entries.map(e => e.path)).toEqual([])
+    // A SoC keeps only its images.
+    expect((await boards.markets.search('main', 'bianbu', { soc: 'k1' })).entries.filter(e => e.kind === 'image').map(e => e.path)).toEqual(['k1/bianbu-k1.zip'])
+    // A folder gone since it was listed does not stop the search: the rest is found, and it says it was not whole.
+    boards.markets.configure('gone', { kind: 'shelf', config: { tree: { '': [folder('x'), folder('y')], 'y': [image('y/hit.zip', '2026-01-01T00:00:00Z')] } }, source: 'test' })
+    expect(await boards.markets.search('gone', 'hit')).toMatchObject({ partial: true, entries: [{ path: 'y' }, { path: 'y/hit.zip' }] })
+    await expect(boards.markets.search('main', '  ')).rejects.toMatchObject({ code: 'invalid' })
+  })
+})
+
+describe('searching a market, read side by side', () => {
+  it('reads the folders below a level together, answers in tree order, and keeps the answer a minute', async () => {
+    const asked: string[] = []
+    let live = 0, most = 0
+    const clock = { t: 0 }
+    const boards = lab(clock)
+    const now_add = (ms: number) => { clock.t += ms }
+    const tree: Record<string, MarketEntry[]> = {
+      '': Array.from({ length: 12 }, (_, i) => folder(`f${i}`)),
+      ...Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`f${i}`, i === 7 ? [image('f7/found.zip', '2026-01-01T00:00:00Z')] : [folder(`f${i}/sub`)]]))
+      , ...Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`f${i}/sub`, []]))
+    }
+    boards.markets.offer({ kind: 'shelf', title: '书架', about: '', create: () => ({
+      list: async (at: string) => { asked.push(at); live++; most = Math.max(most, live); await new Promise(r => setTimeout(r, 15)); live--; return tree[at] ?? [] },
+      locate: async () => ({ url: 'https://x/y', name: 'y' }),
+    }) })
+    boards.markets.configure('main', { kind: 'shelf', config: {}, source: 'test' })
+    const found = await boards.markets.search('main', 'FOUND')
+    expect(found.entries.map(e => e.path)).toEqual(['f7', 'f7/found.zip'])
+    expect(found).toMatchObject({ folders: 24, partial: false })
+    // The twelve folders were read together, not one after another.
+    expect(most).toBeGreaterThan(1)
+    // The same words again: the answer kept a minute, nothing asked again.
+    const before = asked.length
+    expect(await boards.markets.search('main', 'found')).toEqual(found)
+    expect(asked.length).toBe(before)
+    // Other words are their own search (the folders it read a moment ago are the minute's cache, so they are not
+    // asked for again); once that cache runs out, a search reads the market again.
+    expect(await boards.markets.search('main', 'nothing')).toMatchObject({ text: 'nothing', entries: [] })
+    now_add(61_000)
+    await boards.markets.search('main', 'nothing')
+    expect(asked.length).toBeGreaterThan(before)
+  })
+})
+
 describe('image markets for a board', () => {
   it('marks the images a board cannot take, by the market scheme and each name ending', async () => {
     const boards = lab({ t: 0 })
@@ -121,7 +190,7 @@ describe('image markets over HTTP', () => {
     const { serve } = await import('../src/server/http.ts')
     const { BoardsClient } = await import('../src/shared/client.ts')
     const boards = lab({ t: Date.parse('2026-01-01T00:00:00Z') })
-    boards.markets.offer({ kind: 'shelf', title: '书架', about: '', create: () => shelf({ '': [folder('beta', 'beta'), folder('alpha', 'alpha')] }, []) })
+    boards.markets.offer({ kind: 'shelf', title: '书架', about: '', create: config => shelf((config.tree as Record<string, MarketEntry[]>) ?? { '': [folder('beta', 'beta'), folder('alpha', 'alpha')] }, []) })
     boards.markets.configure('main', { kind: 'shelf', config: {}, source: 'test' })
     const running = await serve(boards, { port: 0, socketPath: join(dir, 'boardd.sock'), uiDir: null })
     try {
@@ -129,6 +198,10 @@ describe('image markets over HTTP', () => {
       expect((await client.markets()).map(m => m.id)).toEqual(['main'])
       expect((await client.marketFolder('main')).entries.map(e => e.name)).toEqual(['beta', 'alpha'])
       expect((await client.marketFolder('main', '', { soc: 'alpha' })).entries.map(e => e.name)).toEqual(['alpha'])
+      // A search over the gateway: a folder is only listed when an image below it matches.
+      boards.markets.configure('deep', { kind: 'shelf', config: { tree: { '': [folder('pics')], 'pics': [image('pics/alpha-five.zip', '2026-01-01T00:00:00Z'), image('pics/beta.zip', '2026-01-01T00:00:00Z')] } }, source: 'test' })
+      expect((await client.marketSearch('deep', ' ALP ')).entries.map(e => e.path)).toEqual(['pics', 'pics/alpha-five.zip'])
+      expect((await client.marketSearch('deep', 'nothing-at-all')).entries).toEqual([])
       await expect(client.marketFolder('none')).rejects.toMatchObject({ status: 404 })
     } finally { await running.close() }
   })

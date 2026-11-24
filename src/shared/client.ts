@@ -10,7 +10,7 @@ import { Duplex } from 'node:stream'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import type {
-  BoardChannels, BoardDetail, DebugPath, DebugResult, DiscoveryContext, DiscoveryMethod, LabPorts, LabSettings, BootMark, Lease, FlashPlan, LockResult, LogResult, Market, MarketListing, MarketTarget, Run, SendResult, State,
+  BoardChannels, BoardDetail, DebugPath, DebugResult, DiscoveryContext, DiscoveryMethod, LabPorts, LabSettings, BootMark, Lease, FlashPlan, LockResult, LogResult, Market, MarketListing, MarketSearch, MarketTarget, Run, SendResult, State,
 } from './types.ts'
 
 export const DEFAULT_PORT = 38127
@@ -410,6 +410,14 @@ export class BoardsClient {
 
   state() { return this.call<State>('GET', '/api/state') }
   markets() { return this.call<Array<Market & { error: string | null }>>('GET', '/api/markets') }
+  /** A market searched whole: the images whose name has `q`, and the folders leading to them. */
+  marketSearch(market: string, q: string, options: { soc?: string | null, board?: string | null, refresh?: boolean } = {}) {
+    const query = new URLSearchParams({ q })
+    if (options.soc) query.set('soc', options.soc)
+    if (options.board) query.set('board', options.board)
+    if (options.refresh) query.set('refresh', '1')
+    return this.call<MarketSearch>('GET', `/api/markets/${encodeURIComponent(market)}/search?${query}`)
+  }
   /** A folder of a market (`''` is the top), newest first; `soc` keeps only that SoC's, `refresh` reads it again. */
   marketFolder(market: string, path = '', options: { soc?: string | null, refresh?: boolean, board?: string | null } = {}) {
     const query = new URLSearchParams({ path, ...(options.soc ? { soc: options.soc } : {}), ...(options.refresh ? { refresh: '1' } : {}), ...(options.board ? { board: options.board } : {}) })

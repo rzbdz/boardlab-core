@@ -22,6 +22,7 @@ const commands: Command[] = [
     usage: [
       'images\t设好的镜像市场',
       'images <市场>[:<路径>] [--soc <SoC>] [--refresh]\t市场里的一层：文件夹在前，新的在前；--soc 只看这个 SoC 的；一分钟内列过的不再问市场，--refresh 重新读',
+      'images <市场> --find <文字> [--soc <SoC>]\t把整个市场读一遍，只列名字里有这几个字的镜像和通往它们的文件夹；文件夹多或太慢时只说没读完',
       'images <市场>:<镜像> --targets\t这个镜像能刷到哪些板子上：你拿着的、空闲的，其余说为什么不行',
     ],
     async run({ client, args, flags, flag, json, out }) {
@@ -44,6 +45,15 @@ const commands: Command[] = [
         return out(targets, () => {
           if (!targets.length) return console.log(`没有板子能刷 ${place}（后端不收这种包，或 SoC 对不上）`)
           for (const target of targets) console.log(`  ${target.board.padEnd(24)} ${(target.soc ?? '').padEnd(8)} ${target.mine ? '你拿着' : target.free ? '空闲' : ''}${target.why ? target.why : ''}`)
+        })
+      }
+      const find = flag('find')
+      if (find !== undefined) {
+        const found = await client.marketSearch(market, find, { soc: flag('soc') ?? null, refresh: flags.has('refresh') })
+        return out(found, () => {
+          console.log(`${market} 里找「${found.text}」：读了 ${found.folders} 个文件夹${found.partial ? '（没读完：文件夹太多或太久）' : ''}`)
+          if (!found.entries.length) console.log('  没有名字里有这几个字的镜像')
+          for (const entry of found.entries) console.log(row(market, entry))
         })
       }
       const listing = await client.marketFolder(market, path, { soc: flag('soc') ?? null, refresh: flags.has('refresh') })

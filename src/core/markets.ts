@@ -4,7 +4,7 @@
  * market reads from is never in a module. The core lists a market's folders for the page and the CLI: newest first,
  * filtered to a SoC, cached a minute; what a folder holds, and how an image is fetched, is the driver's.
  */
-import type { Board, Market, MarketEntry, MarketListing, MarketTarget } from '../shared/types.ts'
+import type { Board, Market, MarketEntry, MarketListing, MarketSearch, MarketTarget } from '../shared/types.ts'
 import { takesPackage } from './backend.ts'
 import { BoardError } from './errors.ts'
 import type { Kernel } from './kernel.ts'
@@ -42,6 +42,11 @@ export interface MarketSetup { kind: string, title?: string | null, config: Reco
 
 /** How long a folder's listing is kept before the market is asked again. */
 const FRESH_MS = 60_000
+/** How many folders a search reads, and how long it may take: past either it says the tree was not read whole. */
+const SEARCH_FOLDERS = 5000
+const SEARCH_MS = 30_000
+/** How many folders a search reads at once: a market over the network is mostly waiting for each answer. */
+const SEARCH_AT_ONCE = 6
 const MARKET_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 
 interface Instance { id: string, setup: MarketSetup, market: ImageMarket | null, error: string | null }
@@ -50,6 +55,8 @@ export class Markets {
   private readonly kinds = new Map<string, MarketKind>()
   private readonly instances = new Map<string, Instance>()
   private readonly listings = new Map<string, MarketListing & { at: number }>()
+  /** Searches already answered, kept a minute like a folder (the same words, SoC and board), so typing on is cheap. */
+  private readonly searches = new Map<string, { found: MarketSearch, at: number }>()
   /** Folders being read now: a second ask waits for the same read. */
   private readonly reading = new Map<string, Promise<MarketListing & { at: number }>>()
 
@@ -97,7 +104,70 @@ export class Markets {
    */
   async folder(id: string, path: string, options: { soc?: string | null, refresh?: boolean, signal?: AbortSignal, board?: Board | null } = {}): Promise<MarketListing> {
     const market = this.market(id)
-    const at = folderPath(path)
+    const listing = await this.read(id, market, folderPath(path), options)
+    return this.shape(market, listing, options)
+  }
+
+  /**
+   * A market searched: every folder of it read (up to `SEARCH_FOLDERS` and `SEARCH_MS`, whichever ends first — then
+   * `partial` says the whole tree was not read), and only the images whose name has `text` and the folders leading to
+   * them. A folder with no matching image below it is not in the answer, and neither is a folder whose name matches:
+   * what is listed is what can be flashed, already in its place in the tree. The page shows the result expanded.
+   */
+  async search(id: string, text: string, options: { soc?: string | null, board?: Board | null, refresh?: boolean, signal?: AbortSignal } = {}): Promise<MarketSearch> {
+    const market = this.market(id)
+    const words = text.trim().toLowerCase()
+    if (!words) throw new BoardError('invalid', '搜索要写几个字')
+    const key = `${id}\0${words}\0${options.soc?.toLowerCase() ?? ''}\0${options.board?.name ?? ''}`
+    const had = this.searches.get(key)
+    if (had && !options.refresh && this.k.now() - had.at <= FRESH_MS) return had.found
+    const deadline = this.k.now() + SEARCH_MS
+    let folders = 0, partial = false
+    // One folder at a time: the folders below `at` that lead to a matching image, each followed by what is in it, in
+    // the tree's own order. Siblings are read side by side (up to SEARCH_AT_ONCE), a market over the network being
+    // mostly waiting; `state` is told of the progress and of a stop.
+    const walk = async (at: string): Promise<MarketEntry[]> => {
+      if (folders >= SEARCH_FOLDERS || this.k.now() >= deadline || state.stopped) { partial = true; return [] }
+      folders++
+      let listing: MarketListing
+      try { listing = await this.read(id, market, at, options) }
+      catch (error) {
+        if (!at) throw error
+        // A folder that cannot be read now (gone since it was listed, say) is skipped: the rest is still found.
+        partial = true; state.stopped = true
+        return []
+      }
+      const own: MarketEntry[] = [], below: Array<{ entry: MarketEntry, kept: MarketEntry[] }> = []
+      for (const entry of listing.entries) {
+        if (entry.kind === 'folder') { below.push({ entry, kept: [] }); continue }
+        if (!entry.name.toLowerCase().includes(words)) continue
+        const [shaped] = this.shape(market, { ...listing, entries: [entry] }, options).entries
+        if (shaped) own.push(shaped)
+      }
+      // The folder's images first, then each folder with what is in it, each after the one before it.
+      const results: MarketEntry[][] = [own]
+      await this.parallel(below.map(item => () => walk(item.entry.path).then(kept => { item.kept = kept }, error => { if (!at) throw error; partial = true })))
+      for (const item of below) if (item.kept.length) results.push([item.entry, ...item.kept])
+      return results.flat()
+    }
+    const state = { stopped: false }
+    let entries: MarketEntry[] = []
+    if (options.signal) options.signal.addEventListener('abort', () => { state.stopped = true }, { once: true })
+    try { entries = await walk('') } catch (error) { throw error instanceof BoardError ? error : new BoardError('hardware', `市场 ${id} 搜索失败：${(error as Error).message}`) }
+    const found = { market: id, text: words, entries, folders, partial, readAt: this.k.iso() }
+    if (this.instances.get(id)?.market === market) this.searches.set(key, { found, at: this.k.now() })
+    return found
+  }
+
+  /** Run these, `SEARCH_AT_ONCE` at a time; the first failure rejects the rest of the batch. */
+  private async parallel(tasks: Array<() => Promise<void>>): Promise<void> {
+    let next = 0
+    const worker = async () => { while (next < tasks.length) { const task = tasks[next++]!; await task() } }
+    await Promise.all(Array.from({ length: Math.min(SEARCH_AT_ONCE, tasks.length) }, worker))
+  }
+
+  /** A folder as it was read (sorted, with when): the minute's cache, shared by asks while it is being read. */
+  private async read(id: string, market: ImageMarket, at: string, options: { refresh?: boolean, signal?: AbortSignal }): Promise<MarketListing & { at: number }> {
     const key = `${id}\0${at}`
     let listing = this.listings.get(key)
     if (!listing || options.refresh || this.k.now() - listing.at > FRESH_MS) {
@@ -115,9 +185,13 @@ export class Markets {
       }
       listing = await read
     }
+    return listing
+  }
+
+  /** A listing as an answer: the SoC's entries (and those filed under none), each image refused for a board. */
+  private shape(market: ImageMarket, listing: MarketListing, options: { soc?: string | null, board?: Board | null }): MarketListing {
     const soc = options.soc?.toLowerCase() || null
     let entries = soc ? listing.entries.filter(entry => !entry.soc || entry.soc.toLowerCase() === soc) : listing.entries
-    // For a board: which images its backend cannot take, by the market's scheme and each name's ending.
     const board = options.board
     if (board) entries = entries.map(entry => entry.kind !== 'image' ? entry : { ...entry, refused: refusal(board, market.scheme ?? null, entry.name) })
     return { market: listing.market, path: listing.path, entries, readAt: listing.readAt }
@@ -170,7 +244,10 @@ export class Markets {
     catch (error) { instance.market = null; instance.error = `设置不对：${(error as Error).message}` }
   }
 
-  private forget(id: string) { for (const key of this.listings.keys()) if (key.startsWith(`${id}\0`)) this.listings.delete(key) }
+  private forget(id: string) {
+    for (const key of this.listings.keys()) if (key.startsWith(`${id}\0`)) this.listings.delete(key)
+    for (const key of this.searches.keys()) if (key.startsWith(`${id}\0`)) this.searches.delete(key)
+  }
 }
 
 /** Why `board` cannot take an image by this name fetched by `scheme` (unknown: the name alone decides), or null when it can. */
