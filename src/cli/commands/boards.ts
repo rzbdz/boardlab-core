@@ -152,7 +152,7 @@ const commands: Command[] = [
     async run({ client, args, flag, out, target }) { const result = await client.confirm(target().board, args.slice(1).join(' '), flag('request')); out(result, () => console.log(result.message)) },
   },
   {
-    name: 'rename', usage: ['rename <board|槽位> <新名字>\t给板子改名：实验室里的名字、串口名、锁、队列和历史一起改（拿着锁或空闲时；实验室板子会自动带上实验室前缀）'],
+    name: 'rename', usage: ['rename <board|槽位> <新名字>\t给板子改名：实验室里的名字、串口名、锁、队列和历史一起改（拿着锁或空闲时；叫什么就是什么，不自动加实验室前缀）'],
     async run({ client, args, out, target, token, keepToken }) {
       const { board } = target()
       const name = args.slice(1).join(' ').trim()
