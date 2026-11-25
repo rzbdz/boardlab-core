@@ -1297,7 +1297,7 @@ describe('renaming a board', () => {
     expect(svc.history().actions[0]).toMatchObject({ kind: 'rename', ok: false })
   })
 
-  it('renames a lab board under the lab\'s prefix, its DUT keeping the lab\'s own name, and says what the lab did', async () => {
+  it('renames a lab board to the name a person gives it, without adding the lab\'s prefix, and tells the lab its device name', async () => {
     class RenamingLab extends FakeLab {
       renamed: Array<{ device: string, to: string }> = []
       rename: RenameCapability = {
@@ -1313,16 +1313,18 @@ describe('renaming a board', () => {
     await enable(svc)
     const held = await svc.locks.lock('lab1-sub0-0', 'claude:s1', '调试')
     const result = await svc.backends.rename('claude:s1', 'lab1-sub0-0', 'k3alpha', { holder: 'claude:s1', token: held.token })
-    expect(result).toEqual({ board: 'lab1-k3alpha', message: 'sub0-0 → k3alpha（实验室里也改了）' })
+    // The name a person gives is the board's name: no lab prefix is put in front of it.
+    expect(result).toEqual({ board: 'k3alpha', message: 'sub0-0 → k3alpha（实验室里也改了）' })
     // The lab is told the device's own name, without boardd's prefix.
     expect(lab.renamed).toEqual([{ device: 'sub0-0', to: 'k3alpha' }])
-    const board = svc.boards.get('lab1-k3alpha')
+    const board = svc.boards.get('k3alpha')
     expect(board.lab?.device).toBe('k3alpha')
     expect(board.lease?.holder).toBe('claude:s1')
     expect(() => svc.boards.get('lab1-sub0-0')).toThrow(/没有这块板/)
-    // Written with the prefix it is kept as it is.
-    const again = await svc.backends.rename('claude:s1', 'lab1-k3alpha', 'lab1-other', { holder: 'claude:s1', token: held.token })
+    // Written with the prefix it keeps it, and the lab is still told only the device name.
+    const again = await svc.backends.rename('claude:s1', 'k3alpha', 'lab1-other', { holder: 'claude:s1', token: held.token })
     expect(again.board).toBe('lab1-other')
+    expect(lab.renamed.at(-1)).toEqual({ device: 'k3alpha', to: 'other' })
     // An empty slot has nothing to rename.
     lab.listed.push({ name: 'sub0-9', model: null, online: true, serialPort: null, serialConnected: false, downloadUsbPath: null, ip: null, slot: 's9', empty: true })
     await svc.backends.sync('lab1')

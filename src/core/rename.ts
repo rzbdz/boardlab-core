@@ -37,7 +37,10 @@ export async function renameBoard(host: RenameHost, actor: string, board: string
   const prefix = instance ? `${instance}-` : ''
   const wanted = to.trim()
   if (!wanted) throw new BoardError('invalid', '新名字不能为空')
-  let name = prefix && !wanted.startsWith(prefix) ? `${prefix}${wanted}` : wanted
+  // A person names the board, not the lab: the name they give is the board's name as it stands, with no lab prefix
+  // added behind their back (a lab's `s3` board called `k3-alpha` is `k3-alpha`, not `CoM260-GPIO-k3-alpha`). A name
+  // typed with the prefix keeps it; the backend is still told its own device name, the board's name without it.
+  let name = wanted
   let device = prefix && name.startsWith(prefix) ? name.slice(prefix.length) : name
   const oldDevice = prefix && board.startsWith(prefix) ? board.slice(prefix.length) : board
   if (!BOARD_NAME.test(name) || !BOARD_NAME.test(device)) throw new BoardError('invalid', `板名不合法：${wanted}`)
@@ -75,8 +78,9 @@ export async function renameBoard(host: RenameHost, actor: string, board: string
       throw new BoardError('hardware', `改名失败：${why}`)
     }
   }
-  // A backend may settle on a name of its own (sanitized, or the one it had): the board follows it.
-  name = prefix ? `${prefix}${device}` : device
+  // A backend may settle on a name of its own (sanitized, or the one it had): the board follows it, and only a device
+  // name the person wrote with the lab's prefix keeps it.
+  name = prefix && wanted.startsWith(prefix) ? `${prefix}${device}` : device
   const unplaceable = !BOARD_NAME.test(name) || !BOARD_NAME.test(device)
     ? `后端给的新名字不合法：${device}` : name !== board && lab.boards.exists(name) ? `后端给的新名字 ${name} 和已有的板子重名` : null
   if (unplaceable) {

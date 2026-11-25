@@ -349,8 +349,9 @@ export class Backends {
   /**
    * Rename a board everywhere: the backend's own record (a lab's device and console alias, this machine's alias
    * daemons), boardd's board and chips, its lock, queue, actions and proposals. While someone holds it, only they may
-   * rename it and the lock goes with it; a busy board cannot be renamed. A lab board's name keeps the lab's prefix
-   * (giving `foo` renames the instance's `foo`). Returns the name afterwards. See rename.ts.
+   * rename it and the lock goes with it; a busy board cannot be renamed. The name a person gives is the board's name,
+   * with no lab prefix added (giving `foo` names it `foo`; a name written with the prefix keeps it). Returns the name
+   * afterwards. See rename.ts.
    */
   rename(actor: string, board: string, to: string, caller: Caller): Promise<{ board: string, message: string }> {
     return renameBoard({
