@@ -1325,6 +1325,10 @@ describe('renaming a board', () => {
     const again = await svc.backends.rename('claude:s1', 'k3alpha', 'lab1-other', { holder: 'claude:s1', token: held.token })
     expect(again.board).toBe('lab1-other')
     expect(lab.renamed.at(-1)).toEqual({ device: 'k3alpha', to: 'other' })
+    // A sync lists the lab's boards again: the name it now has is kept, not rebuilt as `<lab>-<device>`.
+    await svc.backends.sync('lab1')
+    expect(svc.boards.get('lab1-other').lab?.device).toBe('other')
+    expect(() => svc.boards.get('lab1-sub0-0')).toThrow(/没有这块板/)
     // An empty slot has nothing to rename.
     lab.listed.push({ name: 'sub0-9', model: null, online: true, serialPort: null, serialConnected: false, downloadUsbPath: null, ip: null, slot: 's9', empty: true })
     await svc.backends.sync('lab1')

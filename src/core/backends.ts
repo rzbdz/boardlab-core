@@ -297,7 +297,7 @@ export class Backends {
       const fields = backend.fields ?? {}
       return {
         id, kind: backend.kind, addedAs, about: backend.about ?? '', fields, canDiscover: !!backend.discovery, canRebuild: !!backend.discovery?.rebuild, canRediscover: !!backend.discovery?.rebuild && !!backend.discovery.keepsInUse, canRemove: !!backend.inventory?.remove, canListPorts: !!backend.ports, canRelay: !!backend.channels,
-        hosts: [...new Set([...this.devices].filter(([name]) => name.startsWith(`${id}-`)).map(([, device]) => device.host).filter((host): host is string => !!host))].sort(),
+        hosts: [...new Set(this.onLab(id).map(([, device]) => device.host).filter((host): host is string => !!host))].sort(),
         discovery: this.discoveries.get(id) ?? null, busy: this.lab.kernel.occupied(`lab:${id}`) ?? null, enabled: get('enabled') === '1', url, username: get('username'), hasPassword: !!get('password'),
         jump: get('jump'), defaultJump: url && fields.jump ? backend.defaultJump?.(new URL(url)) ?? null : null, devices: get('devices'),
         verifiedAt: get('verified_at'), verifyOk: flag('verify_ok'), verifyMessage: get('verify_message'),
@@ -508,14 +508,18 @@ export class Backends {
     return result
   }
 
-  /** The boards of instance `id` here, with what its backend last said of each. */
-  private onLab(id: string) { return [...this.devices].filter(([name]) => name.startsWith(`${id}-`)) }
+  /** The boards of the instance `id` here, with what its backend said of each: a board is the lab's by its record,
+   *  not by its name, since a board may be renamed to anything a person likes. */
+  private onLab(id: string) {
+    const mine = new Set(this.lab.kernel.db.prepare('SELECT name FROM boards WHERE lab=?').all(id).map(row => String((row as { name: unknown }).name)))
+    return [...this.devices].filter(([name]) => mine.has(name))
+  }
 
   /** Nobody holds a board of instance `id` that `ignore` does not exempt, here or in the backend. */
   private assertNoneHeld(id: string, ignore: (board: string) => boolean) {
     const held = this.heldIn(id, ignore)
     if (held) throw new BoardError('locked', `${String(held.board)} 正被 ${String(held.holder)} 使用，这会复位板子，未开始`)
-    const outside = [...this.devices].find(([name, device]) => name.startsWith(`${id}-`) && device.heldBy && !ignore(name))
+    const outside = this.onLab(id).find(([name, device]) => device.heldBy && !ignore(name))
     if (outside) throw new BoardError('locked', `${outside[0]} 在实验室里正被 ${outside[1].heldBy} 使用，这会复位板子，未开始`)
   }
 
@@ -718,18 +722,19 @@ export class Backends {
     const db = this.lab.kernel.db
     const devices = all.filter(device => deviceFilter(range)(device.name))
     const listing = () => JSON.stringify(db.prepare('SELECT boards.name, chips.serial_path, chips.download_usb_path FROM boards LEFT JOIN chips ON chips.board = boards.name WHERE boards.lab=? ORDER BY boards.name').all(id))
-    const known = () => JSON.stringify([...this.devices].filter(([name]) => name.startsWith(`${id}-`)))
+    const known = () => JSON.stringify(this.onLab(id))
     const before = listing(), beforeStatus = known()
     const seen = this.lab.kernel.iso()
-    const listed = new Set<string>(), clashes: string[] = [], moved: string[] = []
+    const listed = new Set<string>(), named = new Map<LabDevice, string>(), clashes: string[] = [], moved: string[] = []
     let kept: string[] = []
     transaction(db, () => {
       for (const device of devices) {
         const name = `${id}-${device.name}`
         const address = device.address ?? device.name
-        // A board in a slot boardlab knows under another name (registered into an empty slot, swapped and read again,
-        // renamed) is that slot's record: renamed in place, so its lock, queue and history stay with the slot.
-        if (device.slot && BOARD_NAME.test(name) && !this.lab.boards.exists(name)) {
+        // The board recorded for this device is that board, whatever it is called now (a renamed one stays renamed).
+        const recorded = (db.prepare('SELECT name FROM boards WHERE lab=? AND lab_device=?').get(id, address) ?? null) as { name: string } | null
+        const kept = recorded && BOARD_NAME.test(recorded.name) ? recorded.name : null
+        if (!kept && device.slot && BOARD_NAME.test(name) && !this.lab.boards.exists(name)) {
           const prior = db.prepare('SELECT name FROM boards WHERE lab=? AND lab_slot=?').get(id, device.slot)
           if (prior) {
             this.lab.boards.rename(String(prior.name), name)
@@ -738,24 +743,25 @@ export class Backends {
             moved.push(`${String(prior.name)} → ${name}`)
           }
         }
-        const existing = db.prepare('SELECT lab, lab_device FROM boards WHERE name=?').get(name)
-        if (!BOARD_NAME.test(name) || (existing && (existing.lab !== id || existing.lab_device !== address))) { clashes.push(device.name); continue }
-        listed.add(name)
+        const board = kept ?? name
+        const existing = db.prepare('SELECT lab, lab_device FROM boards WHERE name=?').get(board)
+        if (!BOARD_NAME.test(board) || (existing && (existing.lab !== id || existing.lab_device !== address))) { clashes.push(device.name); continue }
+        listed.add(board); named.set(device, board)
         const soc = device.soc?.toLowerCase() ?? null
         db.prepare(`INSERT INTO boards(name, product, soc, source, lab, lab_device, lab_slot, last_seen_at) VALUES(?,?,?,'lab',?,?,?,?)
           ON CONFLICT(name) DO UPDATE SET
             product=CASE WHEN boards.product_manual THEN boards.product ELSE COALESCE(excluded.product, boards.product) END,
             soc=CASE WHEN boards.product_manual THEN boards.soc ELSE COALESCE(excluded.soc, boards.soc) END,
             lab_slot=excluded.lab_slot, last_seen_at=excluded.last_seen_at`)
-          .run(name, device.model, soc, id, address, device.slot ?? null, seen)
+          .run(board, device.model, soc, id, address, device.slot ?? null, seen)
         // A download port learned when the board last entered download mode stays until the backend names another.
-        this.lab.boards.upsertChip(name, 'die0', { serial_path: device.serialPort, last_seen_at: seen, ...(device.downloadUsbPath ? { download_usb_path: device.downloadUsbPath } : {}) })
+        this.lab.boards.upsertChip(board, 'die0', { serial_path: device.serialPort, last_seen_at: seen, ...(device.downloadUsbPath ? { download_usb_path: device.downloadUsbPath } : {}) })
       }
       kept = this.dropBoards(id, name => !listed.has(name))
     })
-    for (const name of [...this.devices.keys()]) if (name.startsWith(`${id}-`) && !listed.has(name)) this.devices.delete(name)
+    for (const [name] of this.onLab(id)) if (!listed.has(name)) this.devices.delete(name)
     for (const device of devices) {
-      const name = `${id}-${device.name}`
+      const name = named.get(device) ?? `${id}-${device.name}`
       if (!listed.has(name)) continue
       const before = this.devices.get(name)?.attention ?? null
       this.devices.set(name, device)
@@ -771,7 +777,7 @@ export class Backends {
     status(true, message)
     if (listing() !== before) this.lab.kernel.record(actor, null, 'lab-sync', id, true, message)
     if (listing() !== before || known() !== beforeStatus) this.lab.kernel.changed(null)
-    // Keep backend leases alive (a run that outlived its lock keeps one too), and hand boards someone let go of in the
+    // Keep backend leases alive (a run that outlived its lock keeps one), and hand boards someone let go of in the
     // backend to whoever queued for them here.
     for (const name of listed) {
       if (this.lab.locks.held(name) || this.lab.kernel.occupied(name)) await this.lab.locks.settle(name)
@@ -779,16 +785,14 @@ export class Backends {
     }
   }
 
-  /** Take an instance's boards that `drop` names off the list, except held ones, which are returned. */
+  /** Take an instance's boards `drop` names off the list, except held ones, which are returned. */
   private dropBoards(id: string, drop: (name: string) => boolean): string[] {
     const kept: string[] = []
     for (const row of this.lab.kernel.db.prepare('SELECT name FROM boards WHERE lab=?').all(id)) {
       const name = String(row.name)
       if (!drop(name)) continue
       if (this.lab.locks.held(name)) { kept.push(name); continue }
-      this.lab.locks.forget(name)
-      this.lab.boards.drop(name)
-      this.devices.delete(name)
+      this.lab.locks.forget(name); this.lab.boards.drop(name); this.devices.delete(name)
     }
     return kept
   }
