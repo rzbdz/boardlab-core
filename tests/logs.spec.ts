@@ -1,6 +1,6 @@
 /** A console's buffer read as a log: numbered lines kept in a ring, windows by number or position, and searches. */
 import { describe, expect, it } from 'vitest'
-import { readLog } from '../src/core/consoles.ts'
+import { inRange, readLog } from '../src/core/consoles.ts'
 import { LineRing } from '../src/core/ring.ts'
 
 describe('the line ring', () => {
@@ -16,6 +16,16 @@ describe('the line ring', () => {
 
 describe('reading a log', () => {
   const lines = Array.from({ length: 10 }, (_, i) => `[2026-11-10 08:00:0${i}] line ${i}${i % 3 === 0 ? ' ERROR' : ''}`)
+
+  it('says where a time range is without reading it: its first line and how many it holds', () => {
+    // What the console asks for a range: one match number, not the lines, then the bounds it draws a log by.
+    const asked = readLog(lines, 100, 'e1', { since: '2026-11-10 08:00:03', until: '2026-11-10 08:00:06', hits: true, maxHits: 1 })
+    expect(asked).toMatchObject({ hits: [103], matched: 4 })
+    expect(inRange(asked)).toMatchObject({ base: 103, total: 4, lines: [], hits: [] })
+    // A range with nothing in it has no first line: saying 0 would read as a range that starts at line 0, which is another.
+    expect(inRange(readLog(lines, 100, 'e1', { since: '2026-11-11 00:00:00', hits: true, maxHits: 1 }))).toMatchObject({ total: 0 })
+    expect(inRange(readLog(lines, 100, 'e1', { since: '2026-11-11 00:00:00', hits: true, maxHits: 1 })).base).toBeUndefined()
+  })
 
   it('reads a window around a line by its number or position, and says whether the log goes on', () => {
     // Numbered from 100: the 100 lines before were dropped from the buffer.

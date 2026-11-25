@@ -192,13 +192,23 @@ export class Consoles {
     if (query.fromLine !== undefined && !(Number.isInteger(query.fromLine) && query.fromLine >= 0)) throw new BoardError('invalid', `fromLine 要写行号：${query.fromLine}`)
     const maxHits = Math.max(1, Math.min(query.maxHits ?? MAX_HITS, MAX_HITS))
     if (query.at != null && !/^[\x21-\x7e]{1,80}$/.test(query.at)) throw new BoardError('invalid', `at 不对：${query.at}`)
-    const asked: LogQuery = {
-      ...query, limit, ...(query.at != null ? window : {}), ...(query.hits ? { maxHits } : {}),
-      ...(query.marks ? { marks: query.marks.map(({ id, pattern, flags }) => ({ id, pattern, flags: flags ?? '' }) as BootMark), maxMarks: Math.max(1, Math.min(query.maxMarks ?? 100_000, 100_000)) } : {}),
-    }
+    // Where a range's lines are: a plain search over it that asks for one number instead of the lines. An indexed
+    // backend answers this from its day files without reading them (bsp's `log.bounds` gives the range's ends).
+    const bounds = query.bounds === true
+    const asked: LogQuery = bounds
+      ? { since: query.since, until: query.until, hits: true, maxHits: 1 }
+      : {
+          ...query, limit, ...(query.at != null ? window : {}), ...(query.hits ? { maxHits } : {}),
+          ...(query.marks ? { marks: query.marks.map(({ id, pattern, flags }) => ({ id, pattern, flags: flags ?? '' }) as BootMark), maxMarks: Math.max(1, Math.min(query.maxMarks ?? 100_000, 100_000)) } : {}),
+        }
     if (route.backend.serial.logs) {
-      try { return { ...(await route.backend.serial.logs(route.config, route.target, asked)), source: 'backend' } }
-      catch (error) { throw new BoardError('hardware', (error as Error).message) }
+      try {
+        const found = await route.backend.serial.logs(route.config, route.target, asked)
+        // A backend that ignored `hits` cannot say where the range is: an answer built from it would name other lines.
+        if (bounds && !found.hits) throw new BoardError('invalid', '这个后端说不出时间范围占哪几行（它不支持 hits）')
+        return { ...(bounds ? inRange(found) : found), source: 'backend' }
+      }
+      catch (error) { throw error instanceof BoardError ? error : new BoardError('hardware', (error as Error).message) }
     }
     // No log of its own: the console's buffer, numbered from the first line this watch saw.
     const session = await this.open(board, die)
@@ -208,7 +218,7 @@ export class Consoles {
     const lines: LogLines = { length: held.length + (partial ? 1 : 0), at: index => stripAnsi(index < held.length ? held.get(held.base + index)! : partial) }
     const read = readLog(lines, held.base, watch.epoch, asked)
     session.close()
-    return { ...read, source: 'buffer' }
+    return { ...(bounds ? inRange(read) : read), source: 'buffer' }
   }
 
   /** The lines that open a boot on this chip's console: the core's, and those its backend adds. */
@@ -323,6 +333,16 @@ const STAMP = /^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\]/
 export const MAX_SPAN = 5000
 export const MAX_HITS = 1_000_000
 const span = (value: number | undefined) => Math.max(0, Math.min(Math.floor(Number(value) || 0), MAX_SPAN))
+
+/**
+ * Where a time range's lines are, from a search that asked for one hit instead of the lines: the range's first line
+ * number as `base` and how many lines it holds as `total`, which is what a page draws its scrollbar by. An empty
+ * range has no first line, so it has no `base`: saying 0 would read as a range that starts at line 0.
+ */
+export function inRange(found: LogRange): LogRange {
+  const first = found.hits?.[0]
+  return { lines: [], matched: found.matched, truncated: false, total: found.matched, ...(first === undefined ? {} : { base: first }), hits: [], numbers: [], positions: [] }
+}
 
 /**
  * Read `lines` (numbered from `base`, named in positions by `epoch`) as a query asks: a window around `at`, or a search

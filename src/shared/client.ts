@@ -442,7 +442,7 @@ export class BoardsClient {
    * A console's log: a search (`grep`, `since`/`until`; `hits` for where every match is), or with `at` the lines around
    * a place in it. Each line comes with its number and position; `total` is how many lines the log keeps.
    */
-  logs(board: string, query: { die?: string, since?: string, until?: string, grep?: string, regex?: boolean, limit?: number, first?: boolean, hits?: boolean, maxHits?: number, at?: string, before?: number, after?: number, marks?: boolean, fromLine?: number } = {}) {
+  logs(board: string, query: { die?: string, since?: string, until?: string, grep?: string, regex?: boolean, limit?: number, first?: boolean, hits?: boolean, maxHits?: number, at?: string, before?: number, after?: number, marks?: boolean, fromLine?: number, bounds?: boolean } = {}) {
     const params = new URLSearchParams({ board })
     for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== null && value !== '' && value !== false) params.set(key, value === true ? '1' : String(value))
     return this.call<LogResult>('GET', `/api/logs?${params}`)

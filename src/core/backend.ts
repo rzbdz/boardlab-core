@@ -174,6 +174,17 @@ export interface LogQuery {
   marks?: BootMark[], maxMarks?: number
   /** Search only from this line number on: a page following a growing log asks only for what is new. */
   fromLine?: number
+  /**
+   * Where a time range's lines are, not what they say: the answer's `base` is its first line number and `total` how
+   * many lines it holds, so a page can draw a log of just that range and read its windows by number. `grep`, `marks`
+   * and `at` do not apply.
+   *
+   * This is not a backend's own capability: core asks the backend for a search over the range with `hits` and one
+   * `maxHits`, which every backend that searches its log already answers (a host that indexes its log answers it from
+   * the index, reading no lines), and hands back the first number and the count. A backend that cannot give `hits`
+   * cannot answer it, and is told so rather than shown a range that is not the one asked for.
+   */
+  bounds?: boolean
 }
 export type { LogRange }
 

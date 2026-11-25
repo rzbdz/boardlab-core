@@ -159,7 +159,7 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     },
     { method: 'GET', path: '/api/consoles', about: '开着的串口会话', handle: () => lab.consoles.reap() },
     {
-      method: 'GET', path: '/api/logs', about: '串口日志：一段时间里的行（since、until：YYYY-MM-DD HH:MM:SS），可搜索（grep，regex=1；hits=1 只给每个匹配的行号），download=1 作为文件下载；at（位置、line:<行号>、start、end）加 before、after 读那里的一段。每行带行号（numbers）和位置（positions），total 是日志一共多少行；marks=1 同时找每次启动的标记行（见 /api/boot-marks），fromLine 只搜这一行以后',
+      method: 'GET', path: '/api/logs', about: '串口日志：一段时间里的行（since、until：YYYY-MM-DD HH:MM:SS），可搜索（grep，regex=1；hits=1 只给每个匹配的行号），download=1 作为文件下载；at（位置、line:<行号>、start、end）加 before、after 读那里的一段。每行带行号（numbers）和位置（positions），total 是日志一共多少行；bounds=1 只问一段时间占哪几行（base 是它的第一行、total 是它的行数），不读行；marks=1 同时找每次启动的标记行（见 /api/boot-marks），fromLine 只搜这一行以后',
       handle: async ({ query }) => {
         const board = named(query.get('board'))
         const marks = query.get('marks') === '1' ? await lab.consoles.bootMarks(board, query.get('die') ?? undefined) : undefined
@@ -170,6 +170,8 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
           hits: query.get('hits') === '1', maxHits: query.get('maxHits') ? Number(query.get('maxHits')) : undefined,
           at: query.get('at') || null, before: Number(query.get('before') ?? 0), after: Number(query.get('after') ?? 0),
           marks, fromLine: query.get('fromLine') ? Number(query.get('fromLine')) : undefined,
+          // A download is the lines themselves: a bounds question answers with none, and an empty file is not an export.
+          bounds: query.get('bounds') === '1' && query.get('download') !== '1',
         })
         if (query.get('download') !== '1') return result
         const span = [query.get('since'), query.get('until')].map(value => value?.replace(/[^0-9]/g, '').slice(0, 12) ?? '').filter(Boolean).join('-')
