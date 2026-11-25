@@ -1124,11 +1124,15 @@ describe('remote labs', () => {
     // The board in s1 is swapped for another: read it again under the lock, by its slot; the new name keeps the lock.
     const { token } = await svc.locks.lock(svc.boards.resolve('h1/s1'), 'claude:s1', '换板后重新读取')
     await expect(svc.backends.refresh('lab1-k3-deb1', { holder: 'claude:s2' })).rejects.toThrow(/正被 claude:s1 使用/)
-    expect(await svc.backends.refresh('lab1-k3-deb1', { holder: 'claude:s1', token }, { name: 'k3-board' })).toEqual({ board: 'lab1-k3-board', message: '读到 k3_com260' })
+    // The name asked for is the name it gets, with no lab prefix added.
+    expect(await svc.backends.refresh('lab1-k3-deb1', { holder: 'claude:s1', token }, { name: 'k3-board' })).toEqual({ board: 'k3-board', message: '读到 k3_com260' })
     expect(lab.refreshed).toEqual(['k3-deb1 - k3-board'])
-    expect(svc.boards.get('lab1-k3-board')).toMatchObject({ slotRef: 'lab1/h1/s1', lease: { holder: 'claude:s1' } })
-    svc.locks.authorize('lab1-k3-board', { holder: 'claude:s1', token })
-    expect(svc.history().actions.find(action => action.kind === 'refresh')).toMatchObject({ board: 'lab1-k3-board', ok: true })
+    expect(svc.boards.get('k3-board')).toMatchObject({ slotRef: 'lab1/h1/s1', lease: { holder: 'claude:s1' } })
+    svc.locks.authorize('k3-board', { holder: 'claude:s1', token })
+    expect(svc.history().actions.find(action => action.kind === 'refresh')).toMatchObject({ board: 'k3-board', ok: true })
+    // The lab lists its boards again: the refreshed board is still its slot's, under the new name.
+    await svc.backends.sync('lab1')
+    expect(svc.boards.get('k3-board')).toMatchObject({ slotRef: 'lab1/h1/s1', lab: { device: 'k3-board' } })
     // The CLI takes a slot wherever a board goes, and keeps the lock's token under the board's name.
     const running = await serve(svc, { port: 47000 + Math.floor(Math.random() * 1000), socketPath: join(dir, 'boardd.sock'), uiDir: null })
     const log = console.log

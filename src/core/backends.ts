@@ -338,8 +338,11 @@ export class Backends {
       this.lab.kernel.record(lease.holder, board, 'refresh', detail, false, (error as Error).message)
       throw new BoardError('hardware', (error as Error).message)
     } finally { done() }
+    // A name a person asked for is the board's name; record it and the backend's device name before re-reading.
+    const now = options.name?.trim() || board
+    if (options.name?.trim()) this.lab.boards.rename(board, now)
+    if (route.isBoard) this.lab.kernel.db.prepare('UPDATE boards SET lab_device=? WHERE name=?').run(out.device, now)
     await this.sync(route.id).catch(() => {})
-    const now = str(this.lab.kernel.db.prepare('SELECT name FROM boards WHERE lab=? AND lab_device=?').get(route.id, out.device)?.name) ?? board
     this.lab.kernel.record(lease.holder, now, 'refresh', detail, true, out.message)
     this.lab.boards.setMode(now, 'unknown')
     this.lab.kernel.changed(now)
@@ -508,8 +511,7 @@ export class Backends {
     return result
   }
 
-  /** The boards of the instance `id` here, with what its backend said of each: a board is the lab's by its record,
-   *  not by its name, since a board may be renamed to anything a person likes. */
+  /** The boards of instance `id` here, with what its backend said of each: a board is the lab's by its record, not by its name. */
   private onLab(id: string) {
     const mine = new Set(this.lab.kernel.db.prepare('SELECT name FROM boards WHERE lab=?').all(id).map(row => String((row as { name: unknown }).name)))
     return [...this.devices].filter(([name]) => mine.has(name))
@@ -697,10 +699,8 @@ export class Backends {
     this.lab.kernel.emit({ type: 'lab-ports', lab: id, host: news.host, added: news.added, removed: news.removed })
   }
 
-  /**
-   * List an instance's boards: each one in its device range becomes the board `<instance>-<device>` here, with the
-   * backend's serial port and download port as its chip. Boards that left the range or the backend go, unless held.
-   */
+  /** List an instance's boards: each in its device range becomes `<instance>-<device>` here (or keeps the name it was
+   *  given), with the backend's ports as its chip. Boards that left the range or the backend go, unless held. */
   async sync(id: string, actor = 'boardd'): Promise<void> {
     const { backend } = this.configurable(id)
     if (!backend.inventory) return
@@ -725,28 +725,30 @@ export class Backends {
     const known = () => JSON.stringify(this.onLab(id))
     const before = listing(), beforeStatus = known()
     const seen = this.lab.kernel.iso()
-    const listed = new Set<string>(), named = new Map<LabDevice, string>(), clashes: string[] = [], moved: string[] = []
+    const listed = new Set<string>(), boards = new Map<LabDevice, string>(), clashes: string[] = [], moved: string[] = []
     let kept: string[] = []
     transaction(db, () => {
       for (const device of devices) {
         const name = `${id}-${device.name}`
         const address = device.address ?? device.name
-        // The board recorded for this device is that board, whatever it is called now (a renamed one stays renamed).
-        const recorded = (db.prepare('SELECT name FROM boards WHERE lab=? AND lab_device=?').get(id, address) ?? null) as { name: string } | null
+        // The board this device is: by its slot (a rename cannot change that), else by device name.
+        const at = (column: 'lab_slot' | 'lab_device', value: string) => db.prepare(`SELECT name FROM boards WHERE lab=? AND ${column}=?`).get(id, value) as { name: string } | undefined
+        const priorSlot = device.slot ? at('lab_slot', device.slot) : undefined
+        const emptySlot = !!priorSlot && this.devices.get(priorSlot.name)?.empty === true
+        const recorded = device.slot && !emptySlot ? priorSlot : at('lab_device', address)
         const kept = recorded && BOARD_NAME.test(recorded.name) ? recorded.name : null
         if (!kept && device.slot && BOARD_NAME.test(name) && !this.lab.boards.exists(name)) {
-          const prior = db.prepare('SELECT name FROM boards WHERE lab=? AND lab_slot=?').get(id, device.slot)
-          if (prior) {
-            this.lab.boards.rename(String(prior.name), name)
+          // The console boardlab knew in this slot takes its board.
+          if (emptySlot && priorSlot) {
+            this.lab.boards.rename(priorSlot.name, name)
             db.prepare('UPDATE boards SET lab_device=? WHERE name=?').run(address, name)
-            this.devices.delete(String(prior.name))
-            moved.push(`${String(prior.name)} → ${name}`)
+            this.devices.delete(priorSlot.name); moved.push(`${priorSlot.name} → ${name}`)
           }
         }
-        const board = kept ?? name
-        const existing = db.prepare('SELECT lab, lab_device FROM boards WHERE name=?').get(board)
+        const board = kept ?? name, existing = db.prepare('SELECT lab, lab_device FROM boards WHERE name=?').get(board)
         if (!BOARD_NAME.test(board) || (existing && (existing.lab !== id || existing.lab_device !== address))) { clashes.push(device.name); continue }
-        listed.add(board); named.set(device, board)
+        listed.add(board); boards.set(device, board)
+        if (kept) db.prepare('UPDATE boards SET lab_device=? WHERE name=?').run(address, board)
         const soc = device.soc?.toLowerCase() ?? null
         db.prepare(`INSERT INTO boards(name, product, soc, source, lab, lab_device, lab_slot, last_seen_at) VALUES(?,?,?,'lab',?,?,?,?)
           ON CONFLICT(name) DO UPDATE SET
@@ -761,19 +763,16 @@ export class Backends {
     })
     for (const [name] of this.onLab(id)) if (!listed.has(name)) this.devices.delete(name)
     for (const device of devices) {
-      const name = named.get(device) ?? `${id}-${device.name}`
+      const name = boards.get(device) ?? `${id}-${device.name}`
       if (!listed.has(name)) continue
       const before = this.devices.get(name)?.attention ?? null
       this.devices.set(name, device)
       // A reset started outside boardd that waits for a person shows up in the listing; tell the page too.
       if ((device.attention ?? null) !== before && !this.lab.relay.attention(name)) this.lab.kernel.emit({ type: 'attention', board: name, message: device.attention ?? null, holder: this.lab.locks.held(name)?.holder ?? null })
     }
-    const message = [
-      `列出 ${listed.size} 块（实验室共 ${all.length} 台${range ? `，范围 ${range}` : ''}）`,
-      ...(moved.length ? [`槽位里换了板子：${moved.join(', ')}`] : []),
-      ...(clashes.length ? [`和已有的板子重名，没有列出：${clashes.join(', ')}`] : []),
-      ...(kept.length ? [`${kept.join(', ')} 已经不在范围里，有人在用，先留着`] : []),
-    ].join('；')
+    const message = [`列出 ${listed.size} 块（实验室共 ${all.length} 台${range ? `，范围 ${range}` : ''}）`,
+      moved.length && `槽位里换了板子：${moved.join(', ')}`, clashes.length && `和已有的板子重名，没有列出：${clashes.join(', ')}`,
+      kept.length && `${kept.join(', ')} 已经不在范围里，有人在用，先留着`].filter(Boolean).join('；')
     status(true, message)
     if (listing() !== before) this.lab.kernel.record(actor, null, 'lab-sync', id, true, message)
     if (listing() !== before || known() !== beforeStatus) this.lab.kernel.changed(null)
@@ -787,13 +786,13 @@ export class Backends {
 
   /** Take an instance's boards `drop` names off the list, except held ones, which are returned. */
   private dropBoards(id: string, drop: (name: string) => boolean): string[] {
-    const kept: string[] = []
+    const held: string[] = []
     for (const row of this.lab.kernel.db.prepare('SELECT name FROM boards WHERE lab=?').all(id)) {
       const name = String(row.name)
       if (!drop(name)) continue
-      if (this.lab.locks.held(name)) { kept.push(name); continue }
+      if (this.lab.locks.held(name)) { held.push(name); continue }
       this.lab.locks.forget(name); this.lab.boards.drop(name); this.devices.delete(name)
     }
-    return kept
+    return held
   }
 }
