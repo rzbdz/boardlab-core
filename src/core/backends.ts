@@ -736,17 +736,17 @@ export class Backends {
         const priorSlot = device.slot ? at('lab_slot', device.slot) : undefined
         const emptySlot = !!priorSlot && this.devices.get(priorSlot.name)?.empty === true
         const recorded = device.slot && !emptySlot ? priorSlot : at('lab_device', address)
+        // A record found by its slot is this board even when the backend calls it something else now (`bsp dut
+        // rename` renames the device too); only the device name is updated. A record found by device name is kept
+        // as it is: a person may have renamed the board here.
         const kept = recorded && BOARD_NAME.test(recorded.name) ? recorded.name : null
-        if (!kept && device.slot && BOARD_NAME.test(name) && !this.lab.boards.exists(name)) {
-          // The console boardlab knew in this slot takes its board.
-          if (emptySlot && priorSlot) {
-            this.lab.boards.rename(priorSlot.name, name)
-            db.prepare('UPDATE boards SET lab_device=? WHERE name=?').run(address, name)
-            this.devices.delete(priorSlot.name); moved.push(`${priorSlot.name} → ${name}`)
-          }
+        if (!kept && emptySlot && priorSlot && BOARD_NAME.test(name) && !this.lab.boards.exists(name)) {
+          this.lab.boards.rename(priorSlot.name, name)
+          db.prepare('UPDATE boards SET lab_device=? WHERE name=?').run(address, name)
+          this.devices.delete(priorSlot.name); moved.push(`${priorSlot.name} → ${name}`)
         }
         const board = kept ?? name, existing = db.prepare('SELECT lab, lab_device FROM boards WHERE name=?').get(board)
-        if (!BOARD_NAME.test(board) || (existing && (existing.lab !== id || existing.lab_device !== address))) { clashes.push(device.name); continue }
+        if (!BOARD_NAME.test(board) || (existing && (existing.lab !== id || (existing.lab_device !== address && !kept)))) { clashes.push(device.name); continue }
         listed.add(board); boards.set(device, board)
         if (kept) db.prepare('UPDATE boards SET lab_device=? WHERE name=?').run(address, board)
         const soc = device.soc?.toLowerCase() ?? null
