@@ -195,7 +195,8 @@ export class Boards {
     }
   }
 
-  /** Chips follow through the foreign key; the lock, the queue, the actions and the proposals are carried over too. */
+  /** Chips follow through the foreign key; the lock, the queue, the actions and the proposals are carried over too.
+   *  The event says a board is now called something else, so a module holding its own records of a board follows. */
   rename(from: string, to: string) {
     const db = this.lab.kernel.db
     db.prepare('UPDATE boards SET name=? WHERE name=?').run(to, from)
@@ -203,6 +204,7 @@ export class Boards {
     this.lab.kernel.runs.rename(from, to)
     db.prepare('UPDATE proposals SET board=? WHERE board=?').run(to, from)
     this.lab.locks.rename(from, to)
+    this.lab.kernel.emit({ type: 'renamed', from, to })
   }
 
   /** The boards registered by hand or by scans, as TOML; boards listed from a backend are not kept by hand. */

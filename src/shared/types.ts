@@ -427,6 +427,8 @@ export interface LogResult extends LogRange { source: 'backend' | 'buffer' }
 /** Events pushed on /api/events. Console bytes use /api/console. */
 export type CoreEvent =
   | { type: 'changed', board: string | null }
+  /** A board is now called something else: anything that kept its name to itself follows. */
+  | { type: 'renamed', from: string, to: string }
   | { type: 'lease-stolen', board: string, from: string, by: string, reason: string }
   | { type: 'lease-granted', board: string, holder: string }
   /** A lab's free ports were asked for again, or changed. */
