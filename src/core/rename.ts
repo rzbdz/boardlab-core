@@ -38,11 +38,13 @@ export async function renameBoard(host: RenameHost, actor: string, board: string
   const wanted = to.trim()
   if (!wanted) throw new BoardError('invalid', '新名字不能为空')
   // A person names the board, not the lab: the name they give is the board's name as it stands, with no lab prefix
-  // added behind their back (a lab's `s3` board called `k3-alpha` is `k3-alpha`, not `CoM260-GPIO-k3-alpha`). A name
+  // added behind their back (a lab's `s3` board called `k3-alpha` is `k3-alpha`, not `<lab>-k3-alpha`). A name
   // typed with the prefix keeps it; the backend is still told its own device name, the board's name without it.
   let name = wanted
   let device = prefix && name.startsWith(prefix) ? name.slice(prefix.length) : name
-  const oldDevice = prefix && board.startsWith(prefix) ? board.slice(prefix.length) : board
+  // The backend is told the device name it knows the board by, which is not always the board's name here: once a
+  // person renamed the board, or the backend renamed its own device, the two differ (the listing keeps them apart).
+  const oldDevice = route.isBoard && route.target.device ? route.target.device : board
   if (!BOARD_NAME.test(name) || !BOARD_NAME.test(device)) throw new BoardError('invalid', `板名不合法：${wanted}`)
   if (name === board) return { board, message: '名字没有变' }
   if (lab.boards.exists(name)) throw new BoardError('conflict', `已有板子 ${name}`)

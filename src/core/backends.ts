@@ -1,7 +1,7 @@
 /**
- * The flasher-host backends boardlab fronts, by instance: this machine's own hardware, a rack behind a management controller, a fleet of board hosts.
- * Each board is on one of them. Instances with access settings are configured on the page (a "lab"); a listing backend
- * lists its boards itself, and boardlab keeps them in step: the list, their backend leases, their news and free ports.
+ * The backends boardlab fronts, by instance: this machine, a rack behind a management controller, a fleet of board
+ * hosts. Each board is on one of them. Instances with access settings are configured on the page (a "lab"); a listing
+ * backend lists its own boards, and boardlab keeps them in step: the list, their leases, their news and free ports.
  */
 import { randomUUID } from 'node:crypto'
 import type { Board, DiscoveryContext, DiscoveryMethod, DiscoveryValues, LabPorts, LabSettings, Proposal } from '../shared/types.ts'
@@ -24,11 +24,9 @@ export interface Instance {
   kind: string | null
 }
 
-/**
- * A kind of lab a module offers, so people add labs of it at runtime (on the page or with the CLI) instead of naming
- * them in boardd's configuration. What setting one up takes (a form, an install job) is the module's own business,
- * done through its views and API; the core only keeps the list of labs and makes each one's backend.
- */
+/** A kind of lab a module offers, so people add labs of it at runtime (on the page or with the CLI) instead of naming
+ *  them in boardd's configuration. Setting one up is the module's own business, through its views and API; the core
+ *  only keeps the list and makes each one's backend. */
 export interface LabKind {
   kind: string
   title: string
@@ -251,12 +249,9 @@ export class Backends {
 
   // ---------- leases ----------
 
-  /**
-   * Make a board's backend lease follow its lock: held for the lock's holder (renewed, and renamed on handover or
-   * steal) while the board is locked, given back when it is free. A run that outlives the lock (a flash, which is not
-   * stopped halfway) keeps the lease until it ends: the backend's run is under that lease, and stopping it takes it.
-   * Failures are kept and shown.
-   */
+  /** Make a board's backend lease follow its lock: held for the holder (renewed, renamed on handover or steal) while
+   *  locked, given back when free. A run that outlives the lock (a flash) keeps the lease until it ends. Failures are
+   *  kept and shown. */
   private async followLease(board: string): Promise<string | null> {
     let route: Route
     try { route = this.route(board) } catch { return null }
@@ -316,8 +311,7 @@ export class Backends {
 
   /**
    * Read the board in a slot again after someone swapped it, under its lock. The backend identifies it and updates its
-   * record; a new name comes back at the next listing as the same slot's board, which keeps its lock. Returns the
-   * board's name afterwards.
+   * record; a new name comes back at the next listing as the same slot's board, which keeps its lock.
    */
   async refresh(board: string, caller: Caller, options: { name?: string | null, rename?: boolean } = {}, signal?: AbortSignal): Promise<{ board: string, message: string }> {
     const lease = this.lab.locks.authorize(board, caller)
@@ -338,9 +332,18 @@ export class Backends {
       this.lab.kernel.record(lease.holder, board, 'refresh', detail, false, (error as Error).message)
       throw new BoardError('hardware', (error as Error).message)
     } finally { done() }
-    // A name a person asked for is the board's name; record it and the backend's device name before re-reading.
-    const now = options.name?.trim() || board
-    if (options.name?.trim()) this.lab.boards.rename(board, now)
+    // The name afterwards: the one a person asked for; with `--rename`, the one the backend read the board as; else
+    // the board's own. Recorded before re-reading, so the next listing finds the record by its device name too.
+    const now = options.name?.trim() || (options.rename ? out.device : board)
+    if (now !== board) {
+      if (this.lab.boards.exists(now)) throw new BoardError('conflict', `已有板子 ${now}，${board} 没有改名`)
+      this.lab.boards.rename(board, now)
+      const seen = this.devices.get(board)
+      if (seen) { this.devices.delete(board); this.devices.set(now, seen) }
+      const failure = this.leaseErrors.get(board)
+      if (failure !== undefined) { this.leaseErrors.delete(board); this.leaseErrors.set(now, failure) }
+      this.lab.kernel.changed(board)
+    }
     if (route.isBoard) this.lab.kernel.db.prepare('UPDATE boards SET lab_device=? WHERE name=?').run(out.device, now)
     await this.sync(route.id).catch(() => {})
     this.lab.kernel.record(lease.holder, now, 'refresh', detail, true, out.message)
@@ -350,11 +353,9 @@ export class Backends {
   }
 
   /**
-   * Rename a board everywhere: the backend's own record (a lab's device and console alias, this machine's alias
-   * daemons), boardd's board and chips, its lock, queue, actions and proposals. While someone holds it, only they may
-   * rename it and the lock goes with it; a busy board cannot be renamed. The name a person gives is the board's name,
-   * with no lab prefix added (giving `foo` names it `foo`; a name written with the prefix keeps it). Returns the name
-   * afterwards. See rename.ts.
+   * Rename a board everywhere: the backend's own record (a lab's device and console alias, this machine's aliases),
+   * boardd's board and chips, its lock, queue, actions and proposals. Only the holder may rename a held board (the lock
+   * goes with it) and a busy one cannot be renamed. No lab prefix is added. See rename.ts.
    */
   rename(actor: string, board: string, to: string, caller: Caller): Promise<{ board: string, message: string }> {
     return renameBoard({
@@ -363,11 +364,9 @@ export class Backends {
     }, actor, board, to, caller)
   }
 
-  /**
-   * Save an instance's access and whether boardd uses it. The password is write-only: omit it (or give null or '') to
-   * keep the stored one; `clearPassword` forgets it, for an instance that now takes none (a host without a token).
-   * Enabling checks the access and lists the boards; disabling takes them off the list, once nobody holds any of them.
-   */
+  /** Save an instance's access and whether boardd uses it. The password is write-only (omit it to keep it;
+   *  `clearPassword` forgets it). Enabling checks the access and lists the boards; disabling takes them off the list,
+   *  once nobody holds any. */
   async configure(actor: string, id: string, input: { enabled: boolean, url?: string | null, username?: string | null, password?: string | null, clearPassword?: boolean, jump?: string | null, devices?: string | null }): Promise<LabSettings> {
     this.configurable(id)
     const settings = this.settings(id)
@@ -488,13 +487,9 @@ export class Backends {
       (progress, registered, signal) => discovery.run(this.config(id), method.id, values, context, progress, registered, signal))
   }
 
-  /**
-   * Have an instance start one host over after it was re-cabled (`DiscoveryCapability.rebuild`). It forgets that host's
-   * boards, so nobody may hold any of them, empty slots included; boards on other hosts may stay held.
-   *
-   * `keepInUse` rediscovers instead: the backend keeps the boards in use untouched and redoes only what moved, so it
-   * runs while boards on the host are held.
-   */
+  /** Have an instance start one host over after it was re-cabled (`DiscoveryCapability.rebuild`). It forgets that
+   *  host's boards, so nobody may hold any of them, empty slots included. `keepInUse` rediscovers instead: boards in
+   *  use are kept untouched and only what moved is redone, so it runs while boards on the host are held. */
   async rebuild(actor: string, id: string, confirmed: boolean, host: string, keepInUse = false): Promise<{ message: string, proposals: number, registered: string[] }> {
     const { backend } = this.configurable(id)
     const rebuild = backend.discovery?.rebuild?.bind(backend.discovery)
@@ -732,13 +727,19 @@ export class Backends {
         const name = `${id}-${device.name}`
         const address = device.address ?? device.name
         // The board this device is: by its slot (a rename cannot change that), else by device name.
-        const at = (column: 'lab_slot' | 'lab_device', value: string) => db.prepare(`SELECT name FROM boards WHERE lab=? AND ${column}=?`).get(id, value) as { name: string } | undefined
+        const at = (column: 'lab_slot' | 'lab_device', value: string) => {
+          const rows = db.prepare(`SELECT name, lab_empty FROM boards WHERE lab=? AND ${column}=?`).all(id, value) as Array<{ name: string, lab_empty: number }>
+          // Two records for one thing means a lock may be on either: say so instead of taking the first one.
+          if (rows.length > 1) throw new BoardError('conflict', `${id} 里有两块板子都记着 ${column === 'lab_slot' ? '槽位' : '设备'} ${value}（${rows.map(row => row.name).join('、')}），先给其中一块改名`)
+          return rows[0]
+        }
         const priorSlot = device.slot ? at('lab_slot', device.slot) : undefined
-        const emptySlot = !!priorSlot && this.devices.get(priorSlot.name)?.empty === true
+        // Read from the row: the first listing after a restart has nothing in memory, and must still take the slot.
+        const emptySlot = !!priorSlot && Number(priorSlot.lab_empty) === 1
         const recorded = device.slot && !emptySlot ? priorSlot : at('lab_device', address)
-        // A record found by its slot is this board even when the backend calls it something else now (`bsp dut
-        // rename` renames the device too); only the device name is updated. A record found by device name is kept
-        // as it is: a person may have renamed the board here.
+        // A record found by its slot is this board even when the backend calls it something else now (a person or
+        // the backend renamed the device): only the device name is updated. One found by device name is kept as it
+        // is, since a person may have renamed the board here.
         const kept = recorded && BOARD_NAME.test(recorded.name) ? recorded.name : null
         if (!kept && emptySlot && priorSlot && BOARD_NAME.test(name) && !this.lab.boards.exists(name)) {
           this.lab.boards.rename(priorSlot.name, name)
@@ -750,12 +751,12 @@ export class Backends {
         listed.add(board); boards.set(device, board)
         if (kept) db.prepare('UPDATE boards SET lab_device=? WHERE name=?').run(address, board)
         const soc = device.soc?.toLowerCase() ?? null
-        db.prepare(`INSERT INTO boards(name, product, soc, source, lab, lab_device, lab_slot, last_seen_at) VALUES(?,?,?,'lab',?,?,?,?)
+        db.prepare(`INSERT INTO boards(name, product, soc, source, lab, lab_device, lab_slot, lab_empty, last_seen_at) VALUES(?,?,?,'lab',?,?,?,?,?)
           ON CONFLICT(name) DO UPDATE SET
             product=CASE WHEN boards.product_manual THEN boards.product ELSE COALESCE(excluded.product, boards.product) END,
             soc=CASE WHEN boards.product_manual THEN boards.soc ELSE COALESCE(excluded.soc, boards.soc) END,
-            lab_slot=excluded.lab_slot, last_seen_at=excluded.last_seen_at`)
-          .run(board, device.model, soc, id, address, device.slot ?? null, seen)
+            lab_slot=excluded.lab_slot, lab_empty=excluded.lab_empty, last_seen_at=excluded.last_seen_at`)
+          .run(board, device.model, soc, id, address, device.slot ?? null, device.empty ? 1 : 0, seen)
         // A download port learned when the board last entered download mode stays until the backend names another.
         this.lab.boards.upsertChip(board, 'die0', { serial_path: device.serialPort, last_seen_at: seen, ...(device.downloadUsbPath ? { download_usb_path: device.downloadUsbPath } : {}) })
       }

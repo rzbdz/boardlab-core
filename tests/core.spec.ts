@@ -1089,8 +1089,10 @@ describe('remote labs', () => {
         ]
         this.inventory.refresh = async (_config, target, options) => {
           this.refreshed.push(`${target.device} ${target.lease ?? '-'} ${options.name ?? ''}`)
-          this.listed[0] = { ...this.listed[0]!, name: options.name ?? target.device, model: 'k3' }
-          return { device: options.name ?? target.device, message: '读到 k3_com260' }
+          // `--rename`: the backend keeps its own name for the board; a name given here is the one it takes.
+          const name = options.name ?? (options.rename ? 'bsp-k3-deb1r' : target.device)
+          this.listed[0] = { ...this.listed[0]!, name, model: 'k3' }
+          return { device: name, message: '读到 k3_com260' }
         }
       }
       discovery = {
@@ -1133,6 +1135,14 @@ describe('remote labs', () => {
     // The lab lists its boards again: the refreshed board is still its slot's, under the new name.
     await svc.backends.sync('lab1')
     expect(svc.boards.get('k3-board')).toMatchObject({ slotRef: 'lab1/h1/s1', lab: { device: 'k3-board' } })
+    // `--rename` takes the name the backend read the board as, and a name already taken is refused before anything
+    // changes. The board in s2 (`lab1-k3-new`) is somebody else's.
+    expect(await svc.backends.refresh('k3-board', { holder: 'claude:s1', token }, { rename: true })).toMatchObject({ board: 'bsp-k3-deb1r' })
+    expect(svc.boards.exists('k3-board')).toBe(false)
+    await expect(svc.backends.refresh('bsp-k3-deb1r', { holder: 'claude:s1', token }, { name: 'lab1-k3-new' })).rejects.toThrow(/已有板子/)
+    expect(svc.boards.exists('bsp-k3-deb1r')).toBe(true)
+    // Back to the name the rest of this test uses.
+    expect(await svc.backends.refresh('bsp-k3-deb1r', { holder: 'claude:s1', token }, { name: 'k3-board' })).toMatchObject({ board: 'k3-board' })
     // The CLI takes a slot wherever a board goes, and keeps the lock's token under the board's name.
     const running = await serve(svc, { port: 47000 + Math.floor(Math.random() * 1000), socketPath: join(dir, 'boardd.sock'), uiDir: null })
     const log = console.log

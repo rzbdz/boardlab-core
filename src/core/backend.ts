@@ -13,7 +13,8 @@ export interface LabConfig { url: string, username: string, password: string, ju
 
 /** One board as its backend lists it, or an empty slot: a place for a board that so far has only a console. */
 export interface LabDevice {
-  /** What boardlab calls it, after the backend's prefix: `<backend>-<name>`. */
+  /** What boardlab calls it at first: the lab's id and the backend's name for it (`<lab>-<name>`, or `<lab>-<slot
+   *  ref>` for an empty slot). A person's rename, or the backend renaming itself, can make it differ afterwards. */
   name: string
   /** How the backend addresses it, when that is not `name` (an empty slot: `<host>/s4`). */
   address?: string
