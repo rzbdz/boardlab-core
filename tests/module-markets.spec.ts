@@ -108,7 +108,7 @@ describe('a module from a market', () => {
     const state = join(root, 'state-running')
     const synced = await syncMarket(state, 'demo', { url: source })
     writeFileSync(marketsFile(state), JSON.stringify({ markets: [{ id: 'demo', url: source, branch: null, commit: synced.commit }] }))
-    const selected = await marketModules(state, { probe: {} }, [], SDK)
+    const { loaded: selected } = await marketModules(state, { probe: {} }, [], SDK)
     expect(selected).toHaveLength(1)
     const lab = new BoardLab({ db: openDatabase(join(state, 'boards.sqlite')), modules: selected.map(({ module }) => module), moduleMarkets: marketsOf(state) })
     expect(lab.api.list().some(item => item.path === '/api/probe')).toBe(true)
@@ -125,8 +125,25 @@ describe('a module from a market', () => {
     const state = join(root, 'state-named')
     const synced = await syncMarket(state, 'demo', { url: source })
     writeFileSync(marketsFile(state), JSON.stringify({ markets: [{ id: 'demo', url: synced.dir, commit: synced.commit }] }))
-    const selected = await marketModules(state, { probe: {} }, [], SDK)
+    const { loaded: selected } = await marketModules(state, { probe: {} }, [], SDK)
     expect((selected[0]!.module.setup({} as never, {} as never) as { made: number }).made).toBe(1)
+  })
+
+  it('takes a module made by a function the entry exports, as a module object may be exported', async () => {
+    // A file that also exports what its module is built from offers the module as a factory: the module a market offers
+    // is the one that factory makes with no arguments.
+    // The export is named after the module (`some-module` -> `someModule`): a file that also exports helpers offers
+    // exactly one thing as its module.
+    const source = marketRepo('factory', [{ id: 'some-module', source: `
+      export const helper = () => 1
+      export function someModule() { return { id: 'some-module', title: 'some-module', setup: () => ({ made: helper() }) } }
+    ` }])
+    const state = join(root, 'state-factory')
+    const synced = await syncMarket(state, 'demo', { url: source })
+    writeFileSync(marketsFile(state), JSON.stringify({ markets: [{ id: 'demo', url: synced.dir, commit: synced.commit }] }))
+    const { loaded: selected } = await marketModules(state, { 'some-module': {} }, [], SDK)
+    expect(selected[0]!.module.id).toBe('some-module')
+    expect(selected[0]!.module.setup({} as never, {} as never)).toEqual({ made: 1 })
   })
 
   it('refuses a module whose id is not the one the manifest offered, and one a market offers twice', async () => {
@@ -144,6 +161,17 @@ describe('a module from a market', () => {
     await expect(marketModules(state, { probe: {} }, ['probe'], SDK)).rejects.toThrow(/随 boardlab 提供/)
   })
 
+  it('leaves out a market module that cannot be imported and says so, rather than stopping boardd', async () => {
+    // A foreign package is the machine owner's own choice: a broken one must not keep the rest of the lab down.
+    const broken = marketRepo('broken', [{ id: 'broken', source: 'throw new Error("its dependency is not here")' }])
+    const state = join(root, 'state-broken')
+    const synced = await syncMarket(state, 'demo', { url: broken })
+    writeFileSync(marketsFile(state), JSON.stringify({ markets: [{ id: 'demo', url: synced.dir, commit: synced.commit }] }))
+    const result = await marketModules(state, { broken: {} }, [], SDK)
+    expect(result.loaded).toEqual([])
+    expect(result.failed).toEqual([{ id: 'broken', problem: expect.stringContaining('its dependency is not here') }])
+  })
+
   it('tells a market module where boardd keeps its state, and nothing else', async () => {
     // `ctx.stateDir` is where a module writes what outlives a run (a vendor module's certificate); a lab built without it
     // must not hand a module the working directory of whatever process built it.
@@ -157,7 +185,7 @@ describe('a module from a market', () => {
     const state = join(root, 'state-settings')
     const synced = await syncMarket(state, 'demo', { url: source })
     writeFileSync(marketsFile(state), JSON.stringify({ markets: [{ id: 'demo', url: synced.dir, commit: synced.commit }] }))
-    const selected = await marketModules(state, { probe: { greeting: 'hi' } }, [], SDK)
+    const { loaded: selected } = await marketModules(state, { probe: { greeting: 'hi' } }, [], SDK)
     const lab = new BoardLab({ db: openDatabase(join(state, 'boards.sqlite')), modules: selected.map(({ module }) => module), settings: Object.fromEntries(selected.map(({ module, settings }) => [module.id, settings])) })
     const found = lab.api.match('GET', '/api/probe')!
     expect(found.endpoint.handle({ params: found.params, query: new URLSearchParams(), signal: new AbortController().signal } as never)).toEqual({ settings: { greeting: 'hi' } })
@@ -197,8 +225,8 @@ describe('a module from a market', () => {
     const state = join(root, 'state-selected')
     const synced = await syncMarket(state, 'demo', { url: marketRepo('selected', [{ id: 'probe' }, { id: 'other' }]) })
     writeFileSync(marketsFile(state), JSON.stringify({ markets: [{ id: 'demo', url: synced.dir, commit: synced.commit }] }))
-    expect(await marketModules(state, {}, [], SDK)).toEqual([])
-    expect((await marketModules(state, { other: {} }, [], SDK)).map(item => item.module.id)).toEqual(['other'])
+    expect(await marketModules(state, {}, [], SDK)).toEqual({ loaded: [], failed: [] })
+    expect((await marketModules(state, { other: {} }, [], SDK)).loaded.map(item => item.module.id)).toEqual(['other'])
   })
 })
 

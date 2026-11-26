@@ -70,12 +70,17 @@ export async function startBoardd(options: BoarddOptions) {
     stateDir: options.stateDir, shipped: options.shipped ?? (() => null), timing: config.timing,
     release: { version: options.version ?? 'dev', revision: options.revision ?? 'dev' },
   })
-  // Modules the configuration takes from a market (see markets.ts): imported before the lab exists, so one that cannot
-  // be imported stops boardd from starting rather than leaving a half-loaded lab behind.
+  // Modules the configuration takes from a market (see markets.ts). One that cannot be imported is said and left out,
+  // never fatal: it is a package the machine's owner chose, and the rest of the lab — and the page that says what is
+  // wrong with it — must still come up.
   for (const problem of markets.flatMap(market => market.problems)) console.error(`boardd: ${problem}`)
   const sdk = options.shipped?.('dist/sdk.js') ?? null
-  if (fromMarket.size && !sdk) throw new Error('这个 boardlab 没有带 dist/sdk.js：模块市场的模块要它才能 import \'boardlab\'')
-  const fromMarkets = sdk ? await marketModules(options.stateDir, selection, options.catalog.map(entry => entry.id), sdk) : []
+  const asked = Object.keys(selection).filter(id => fromMarket.has(id))
+  // Without the SDK a market module cannot `import 'boardlab'`: each one asked for is said, rather than boardd not starting.
+  if (asked.length && !sdk) for (const id of asked) console.error(`boardd: 模块加载不了，这次没有装它：${id}（这个 boardlab 没有带 dist/sdk.js，市场的模块要它才能 import 'boardlab'）`)
+  const marketResult = sdk ? await marketModules(options.stateDir, selection, options.catalog.map(entry => entry.id), sdk) : { loaded: [], failed: [] }
+  for (const { problem } of marketResult.failed) console.error(`boardd: 模块加载不了，这次没有装它：${problem}`)
+  const fromMarkets = marketResult.loaded
   const modules = [...builtIn, ...fromMarkets.map(({ module }) => module)]
   for (const { module, settings } of fromMarkets) config.modules[module.id] = settings
   // Checked before it opens: a broken file is moved aside and the newest good copy from backups/ put in its place, by
