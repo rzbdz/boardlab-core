@@ -97,7 +97,7 @@ export class BoardLab {
     this.api.add('core', [...coreEndpoints(this), ...debugEndpoints(this), ...marketEndpoints(this), ...moduleMarketEndpoints(this), ...databaseEndpoints(this)])
     this.kernel.recordUndo = undo => this.loader.record(undo)
     this.api.track(undo => this.loader.record(undo))
-    for (const module of inLoadOrder(options.modules ?? [])) this.use(module, options.settings?.[module.id] ?? {})
+    for (const module of inLoadOrder(options.modules ?? [])) this.use(module, options.settings?.[module.id] ?? {}, { tolerate: this.fromMarket(module.id) })
   }
 
   // ---------- modules ----------
@@ -105,18 +105,31 @@ export class BoardLab {
   /**
    * Set a module up; the modules it requires must be loaded already. Returns its API. Everything it registers goes
    * through the plugin context it is given, so it can be taken down again (`Loader.remove`).
+   *
+   * A setup that throws leaves nothing behind and the error goes on: a module this lab was built with not starting is
+   * the start's failure. A module from a market passes `tolerate` and is only reported, so one bad third-party module
+   * does not keep the lab from running.
    */
-  use<Api>(module: Module<Api>, config: Record<string, unknown> = {}): Api {
+  use<Api>(module: Module<Api>, config: Record<string, unknown> = {}, options: { tolerate?: boolean } = {}): Api {
     if (this.loader.has(module.id)) throw new Error(`module ${module.id} is loaded twice`)
     // `requires` names modules (set up here, in this order); `inject` names services (provided by whichever module
     // offers them). A missing one is refused now: boardd lists its modules in an order, so this is a bug in that list.
-    // A plugin added later through the loader waits instead and says why.
+    // A third-party module (`tolerate`) waits instead — the loader reports it pending and says what it waits for —
+    // and so does one added later through the loader.
     const missing = [...(module.requires ?? []).filter(id => !this.loader.has(id)), ...(module.inject ?? []).filter(name => !this.loader.services.has(name))]
-    if (missing.length) throw new Error(`module ${module.id} needs ${missing.join(', ')} loaded first`)
-    return this.loader.add(module, config) as Api
+    if (missing.length && !options.tolerate) throw new Error(`module ${module.id} needs ${missing.join(', ')} loaded first`)
+    const api = this.loader.add(module, config)
+    if (!options.tolerate) {
+      const state = this.loader.list().find(item => item.id === module.id)
+      if (state?.status === 'failed') throw new Error(`module ${module.id}: ${state.why}`)
+    }
+    return api as Api
   }
 
   has(id: string): boolean { return this.loader.has(id) }
+
+  /** Whether a module came from a market rather than this distribution's own build: a failed third-party one is reported, not fatal. */
+  fromMarket(id: string): boolean { return this.moduleMarkets.some(market => market.modules.some(module => module.id === id)) }
 
   /** A service a module provides (its API is one, under its id). */
   service<Api>(id: string): Api { return this.loader.service<Api>(id) }
@@ -215,11 +228,17 @@ export function inLoadOrder(modules: Module[]): Module[] {
   const byId = new Map(modules.map(module => [module.id, module]))
   const out: Module[] = []
   const placed = new Set<string>(), visiting = new Set<string>()
+  // `inject` names a service, not a module: whichever module offers it goes first. A module from a market may inject
+  // one a built-in provides, and its position in the list is up to whoever installed it.
+  const providers = new Map<string, Module>()
+  // A module's API is offered under its own id (see `Loader.setup`), so that name needs no `provide` entry.
+  for (const module of modules) { if (!providers.has(module.id)) providers.set(module.id, module); for (const name of module.provide ?? []) if (!providers.has(name)) providers.set(name, module) }
   const place = (module: Module) => {
     if (placed.has(module.id)) return
     if (visiting.has(module.id)) throw new Error(`modules require each other in a cycle: ${[...visiting, module.id].join(' → ')}`)
     visiting.add(module.id)
     for (const id of module.requires ?? []) { const needed = byId.get(id); if (needed) place(needed) }
+    for (const name of module.inject ?? []) { const provider = providers.get(name); if (provider && provider !== module) place(provider) }
     visiting.delete(module.id)
     placed.add(module.id)
     out.push(module)

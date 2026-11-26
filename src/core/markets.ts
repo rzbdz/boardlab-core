@@ -73,11 +73,18 @@ export class Markets {
 
   constructor(private readonly k: Kernel) {}
 
-  /** A module offers a kind of market; markets of it set up before are made now. */
+  /** A module offers a kind of market; markets of it set up before are made now. Taken back with the module. */
   offer(kind: MarketKind) {
     if (this.kinds.has(kind.kind)) throw new Error(`market kind ${kind.kind} is offered twice`)
     this.kinds.set(kind.kind, kind)
+    this.k.track(() => this.withdraw(kind.kind))
     for (const instance of this.instances.values()) if (instance.setup.kind === kind.kind) this.make(instance)
+  }
+
+  /** Withdraw a kind: the markets set up from it stay listed, saying nobody offers its kind any more. */
+  withdraw(kind: string) {
+    this.kinds.delete(kind)
+    for (const instance of this.instances.values()) if (instance.setup.kind === kind) { instance.market = null; instance.error = `没有模块提供 ${kind} 这种市场` }
   }
 
   /**

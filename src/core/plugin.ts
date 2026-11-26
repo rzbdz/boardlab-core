@@ -102,38 +102,56 @@ class Context implements PluginContext {
   /** The service names this module offered, so they are freed with it. */
   readonly provided: string[] = []
   private spent = false
-  /** Take on an undo the lab recorded while this context's module was being set up (a direct registration). */
-  adopt(undo: Dispose) { this.undo.push(this.guard(undo)) }
 
   constructor(readonly id: string, readonly config: Record<string, unknown>, readonly stateDir: string, private readonly loader: Loader) {}
 
-  /** `undo`, which may run once: a second call (or a removal) does nothing. */
-  private guard(undo: Dispose): Dispose {
+  /**
+   * Take on an undo: with the effect running now (a nested effect belongs to it), or else with the module. `undo` runs
+   * at most once; calling it by hand removes it from whichever list it is in.
+   */
+  private own(undo: Dispose): Dispose {
+    const list = this.loader.inEffect ?? this.undo
     let done = false
-    const once: Dispose = () => { if (done) return; done = true; const at = this.undo.indexOf(once); if (at >= 0) this.undo.splice(at, 1); return undo() }
+    const once: Dispose = () => {
+      if (done) return
+      done = true
+      const at = list.indexOf(once)
+      if (at >= 0) list.splice(at, 1)
+      return undo()
+    }
+    list.push(once)
     return once
   }
+
+  /** Take on an undo the lab recorded while this context's module was being set up (a direct registration). */
+  adopt(undo: Dispose) { this.own(undo) }
 
   /**
    * Run `run` as one undoable step. What it registers on the lab is undone with it, and so is whatever it returns: a
    * plugin can hand back its undo, or just call `lab.…` and let the lab's own undo be kept for it.
+   *
+   * What the body registers is undone newest first, then the undo it returned: a body usually opens something first and
+   * returns the way to close it, so whatever it set up inside goes before the thing it opened for them.
    */
   effect(run: () => Dispose | void): Dispose {
     if (this.spent) throw new Error(`plugin ${this.id} is not running`)
     const collected: Dispose[] = []
-    const given = this.loader.within(run, collected)
-    if (typeof given === 'function') collected.push(given)
-    if (!collected.length) throw new Error(`plugin ${this.id}: an effect must register something, to undo it later`)
-    const once = this.guard(() => {
+    let given: Dispose | void
+    try { given = this.loader.within(run, collected) }
+    catch (error) {
+      // A body that throws leaves nothing behind: what it registered before throwing is undone now, then the error goes on.
+      for (const undo of collected.splice(0).reverse()) { try { const result = undo(); if (result instanceof Promise) result.catch(() => {}) } catch {} }
+      throw error
+    }
+    if (!collected.length && typeof given !== 'function') throw new Error(`plugin ${this.id}: an effect must register something, to undo it later`)
+    // Sequential even when an undo is a promise, so an undo that needs the one before it to finish runs after it. One
+    // failing undo never stops the rest; the first failure is rethrown once all have run.
+    return this.own(async () => {
       let first: unknown = null
-      for (const undo of collected.splice(0).reverse()) {
-        try { const result = undo(); if (result instanceof Promise) first ??= result } catch (error) { first ??= error }
-      }
-      if (first instanceof Error) throw first
-      return first as Promise<void> | void
+      for (const undo of collected.splice(0).reverse()) { try { await undo() } catch (error) { first ??= error } }
+      if (typeof given === 'function') { try { await given() } catch (error) { first ??= error } }
+      if (first !== null) throw first
     })
-    this.undo.push(once)
-    return once
   }
 
   /** Undo everything this plugin registered, newest first; a failing undo never stops the others. */
@@ -145,11 +163,23 @@ class Context implements PluginContext {
     }
   }
 
+  /**
+   * Undo everything this plugin registered, as far as it goes before the first undo that returns a promise: a setup
+   * that threw must leave nothing visible to the module set up next, and most undos are synchronous.
+   */
+  discard() {
+    if (this.spent) return
+    this.spent = true
+    for (const undo of this.undo.splice(0).reverse()) {
+      try { const result = undo(); if (result instanceof Promise) result.catch(error => this.loader.report(this.id, error)) } catch (error) { this.loader.report(this.id, error) }
+    }
+  }
+
   on(event: string, listener: (payload: unknown) => void): Dispose { return this.effect(() => this.loader.registry.event(event, listener)) }
 
   provide<T>(name: string, service: T): T {
     if (this.loader.services.has(name)) throw new Error(`service ${name} is provided twice (${this.id})`)
-    this.undo.push(this.guard(() => { this.loader.services.delete(name) }))
+    this.own(() => { this.loader.services.delete(name) })
     this.provided.push(name)
     this.loader.services.set(name, service)
     return service
@@ -183,20 +213,24 @@ export class Loader {
   /** The module being set up right now, if any: what a direct `lab.…` registration is recorded with. */
   private setting: Context | null = null
 
-  /** The effect running right now: what it registers on the lab is undone with it, not with the module's setup. */
-  private collecting: Dispose[] | null = null
+  /**
+   * The effects running right now, outermost first: what is registered inside one belongs to it, not to the module, so
+   * a nested effect is undone with the effect it was opened in.
+   */
+  private readonly effects: Dispose[][] = []
+  /** The effect running right now, for a nested one to join (see `Context.own`). */
+  get inEffect(): Dispose[] | null { return this.effects[0] ?? null }
 
   /** Record an undo: with the effect running now, or else with the module being set up (see `plugin-registry.ts`). */
   record(undo: Dispose) {
-    if (this.collecting) this.collecting.push(undo)
+    if (this.effects[0]) this.effects[0].push(undo)
     else this.setting?.adopt(undo)
   }
 
   /** Run `run`, collecting what it registers on the lab into `collected`. */
   within<T>(run: () => T, collected: Dispose[]): T {
-    const outer = this.collecting
-    this.collecting = collected
-    try { return run() } finally { this.collecting = outer }
+    this.effects.unshift(collected)
+    try { return run() } finally { this.effects.shift() }
   }
 
   constructor(private readonly options: LoaderOptions) {}
@@ -243,22 +277,32 @@ export class Loader {
       return undefined
     }
     try {
-      const outer = this.setting
-      this.setting = ctx
-      let api: unknown
-      try { api = module.setup(this.options.lab, ctx) } finally { this.setting = outer }
-      if (api !== undefined && !this.services.has(module.id)) ctx.provide(module.id, api)
-      for (const name of module.provide ?? []) if (!this.services.has(name)) ctx.provide(name, api)
-      const entry: Entry = { module, ctx, api, status: 'active', why: null }
-      this.entries.set(module.id, entry)
+      const api = this.setup(module, ctx)
+      this.entries.set(module.id, { module, ctx, api, status: 'active', why: null })
       this.order.push(module.id)
+      // What was waiting for a service this one provides runs now.
+      this.resume()
       return api
     } catch (error) {
+      // A setup that throws halfway leaves nothing: everything it registered before throwing is undone now, so a
+      // module listed as failed is one whose endpoints, backends and services are gone too.
+      ctx.discard()
       this.entries.set(module.id, { module, ctx, api: undefined, status: 'failed', why: (error as Error).message })
       this.order.push(module.id)
       this.report(module.id, error)
       return undefined
     }
+  }
+
+  /** Run a module's setup with its context current, and offer what it provides (its API under its id, and `provide`). */
+  private setup(module: Module, ctx: Context): unknown {
+    const outer = this.setting
+    this.setting = ctx
+    let api: unknown
+    try { api = module.setup(this.options.lab, ctx) } finally { this.setting = outer }
+    if (api !== undefined && !this.services.has(module.id)) ctx.provide(module.id, api)
+    for (const name of module.provide ?? []) if (!this.services.has(name)) ctx.provide(name, api)
+    return api
   }
 
   /** Modules that name `service` in `inject` (a provider may be taken down only after them). */
@@ -272,8 +316,9 @@ export class Loader {
   async remove(id: string): Promise<void> {
     const entry = this.entries.get(id)
     if (!entry) return
-    // Everything it offered declares who else has to go first: the modules that injected it.
-    for (const name of [...entry.ctx.provided, ...(entry.module.provide ?? [])]) {
+    // Only the services it actually offered decide who has to go first. A name in `provide` that was already taken is
+    // not its to withdraw, so a module that declares a service it did not get does not tear down its real provider's users.
+    for (const name of entry.ctx.provided) {
       for (const dependent of this.dependentsOf(name)) if (dependent !== id) await this.remove(dependent)
     }
     await entry.ctx.take()
@@ -293,18 +338,13 @@ export class Loader {
     for (const state of this.list()) {
       if (state.status !== 'pending') continue
       const entry = this.entries.get(state.id)!
-      const ctx = entry.ctx
       if (this.missing(state.id).length) continue
       try {
-        const outer = this.setting
-        this.setting = ctx as Context
-        let api: unknown
-        try { api = entry.module.setup(this.options.lab, ctx) } finally { this.setting = outer }
-        for (const name of [...(entry.module.provide ?? []), state.id]) if (!this.services.has(name)) ctx.provide(name, api)
-        entry.api = api
+        entry.api = this.setup(entry.module, entry.ctx)
         entry.status = 'active'
         entry.why = null
       } catch (error) {
+        entry.ctx.discard()
         entry.status = 'failed'
         entry.why = (error as Error).message
         this.report(entry.module.id, error)

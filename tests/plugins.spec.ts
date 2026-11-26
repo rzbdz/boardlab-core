@@ -73,17 +73,16 @@ describe('a plugin registers through its context', () => {
 })
 
 describe('a plugin declares what it needs', () => {
-  it('waits for a service nobody provides, and runs once it arrives', async () => {
+  it('waits for a service nobody provides, and runs as soon as one arrives', async () => {
     const lab = labOf()
     const ran: string[] = []
     const consumer: Module = { id: 'consumer', title: '用的人', inject: ['provider'], setup: () => { ran.push('consumer'); return {} } }
     lab.loader.add(consumer)
     expect(lab.loader.list().find(item => item.id === 'consumer')).toMatchObject({ status: 'pending', why: 'needs provider' })
     expect(ran).toEqual([])
+    // A provider that arrives later is set up, and what waited for it runs with it: no caller has to remember to resume.
     const provider: Module = { id: 'provider', title: '给的人', setup: () => { ran.push('provider'); return { value: 1 } } }
     lab.loader.add(provider)
-    expect(ran).toEqual(['provider'])
-    lab.loader.resume()
     expect(ran).toEqual(['provider', 'consumer'])
     expect(lab.loader.list().find(item => item.id === 'consumer')).toMatchObject({ status: 'active', why: null })
     expect(lab.service<{ value: number }>('provider').value).toBe(1)
@@ -115,6 +114,106 @@ describe('a plugin declares what it needs', () => {
     // Boardd's state says the same: a module that is not running is listed with why, so a person can see it.
     expect(lab.state('user:a').plugins).toContainEqual(expect.objectContaining({ id: 'broken', status: 'failed', why: 'boom' }))
     expect(lab.state('user:a').modules.map(item => item.id)).toEqual(['fine'])
+  })
+
+  it('leaves nothing behind when a setup throws halfway, through an effect or a direct registration', async () => {
+    // A third-party module can fail after it registered: what it registered before throwing must not stay live, or a
+    // module reported `failed` still answers its endpoints and still has its backend.
+    const lab = labOf([], 'half.sqlite')
+    const broken: Module = {
+      id: 'half', title: '一半',
+      setup: (_l, ctx) => {
+        ctx.effect(() => { lab.api.addOne('half', { method: 'GET', path: '/api/half', about: 'h', handle: () => ({}) }); return () => {} })
+        lab.addState(() => ({ half: true }))
+        lab.backends.register('half-reg', { kind: 'fake', inventory: { list: async () => [], remove: async () => null } } as never)
+        throw new Error('halfway')
+      },
+    }
+    lab.use(broken, {}, { tolerate: true })
+    expect(lab.loader.list().find(item => item.id === 'half')).toMatchObject({ status: 'failed', why: 'halfway' })
+    expect(lab.api.list().some(item => item.path === '/api/half')).toBe(false)
+    expect(lab.state('user:a')).not.toHaveProperty('half')
+    expect(lab.backends.list().map(instance => instance.id)).not.toContain('half-reg')
+    expect(lab.has('half')).toBe(false)
+  })
+
+  it('takes a body that throws inside an effect back with it, and keeps the module whole', () => {
+    const lab = labOf([], 'body.sqlite')
+    const made: Module = {
+      id: 'throwing', title: '抛',
+      setup: (_l, ctx) => {
+        expect(() => ctx.effect(() => { lab.api.addOne('throwing', { method: 'GET', path: '/api/throwing', about: 't', handle: () => ({}) }); throw new Error('inside') })).toThrow(/inside/)
+        return {}
+      },
+    }
+    lab.use(made)
+    expect(lab.api.list().some(item => item.path === '/api/throwing')).toBe(false)
+    expect(lab.has('throwing')).toBe(true)
+  })
+
+  it('undoes a nested effect before the effect it was opened in, so what an effect opened closes last', async () => {
+    const lab = labOf([], 'nested.sqlite')
+    const order: string[] = []
+    lab.use({
+      id: 'nested', title: '套',
+      setup: (_l, ctx) => {
+        ctx.effect(() => {
+          ctx.effect(() => () => { order.push('inner') })
+          return () => { order.push('outer') }
+        })
+        return {}
+      },
+    })
+    await lab.loader.remove('nested')
+    // Reverse of registration: what the body registered (the nested effect) goes before what it returned.
+    expect(order).toEqual(['inner', 'outer'])
+  })
+
+  it('does not take a provider\'s users down for a service it declared but never got', async () => {
+    // Z declares `provide: ['db']` but X already provides it: Z never offered `db`, so removing Z must not remove Y,
+    // which uses X's service.
+    const lab = labOf([], 'declared.sqlite')
+    const x: Module = { id: 'x', title: 'X', setup: () => ({ db: 1 }) }
+    const z: Module = { id: 'z', title: 'Z', provide: ['x'], setup: (_l, ctx) => { ctx.effect(() => () => {}); return {} } }
+    const y: Module = { id: 'y', title: 'Y', inject: ['x'], setup: (_l, ctx) => { ctx.effect(() => () => {}); return {} } }
+    lab.use(x)
+    lab.use(z)
+    lab.use(y)
+    await lab.loader.remove('z')
+    expect(lab.has('y')).toBe(true)
+    expect(lab.has('x')).toBe(true)
+    expect(lab.service('x')).toMatchObject({ db: 1 })
+  })
+
+  it('offers its id after a resume only when its setup returned something, and orders by inject as well as requires', () => {
+    const lab = labOf([], 'resume.sqlite')
+    const ran: string[] = []
+    lab.loader.add({ id: 'consumer', title: 'C', inject: ['timed'], setup: () => { ran.push('consumer'); return {} } })
+    lab.loader.add({ id: 'timed', title: 'T', setup: () => { ran.push('timed'); return { value: 1 } } })
+    lab.loader.resume()
+    expect(ran).toEqual(['timed', 'consumer'])
+    // A resumed module that returned nothing claims no service: one under its id would resolve to `undefined`.
+    const quiet = new Loader({ lab: {}, stateDir: '/nonexistent', registry: Object.fromEntries(['endpoint', 'view', 'lockTarget', 'lockOccupant', 'lockFollower', 'state', 'history', 'service', 'backend', 'labKind', 'event'].map(name => [name, () => () => {}])) as never })
+    expect(quiet.add({ id: 'late', title: 'L', setup: () => {} })).toBeUndefined()
+    expect(quiet.services.has('late')).toBe(false)
+    expect(() => quiet.service('late')).toThrow(/not provided/)
+    // `inject` orders the lab the way `requires` does: a module that injects another's service is set up after it.
+    const order: string[] = []
+    new BoardLab({ db: openDatabase(join(dir, 'inject-order.sqlite')), modules: [
+      { id: 'beta', title: 'B', setup: () => { order.push('beta'); return { value: 1 } } },
+      { id: 'alpha', title: 'A', inject: ['beta'], setup: () => { order.push('alpha'); return {} } },
+    ] })
+    expect(order).toEqual(['beta', 'alpha'])
+  })
+
+  it('lets a market module fail without keeping the lab from starting, and says the distribution\'s own failure', () => {
+    const lab = labOf([], 'tolerate.sqlite')
+    // A distribution's own module that throws is the start's failure.
+    expect(() => lab.use({ id: 'own', title: '自己的', setup: () => { throw new Error('bad') } })).toThrow(/module own: bad/)
+    // A third-party one passed `tolerate` is listed as failed and the rest runs.
+    const third: Module = { id: 'third', title: '外来的', setup: () => { throw new Error('third') } }
+    expect(() => lab.use(third, {}, { tolerate: true })).not.toThrow()
+    expect(lab.loader.list().find(item => item.id === 'third')).toMatchObject({ status: 'failed' })
   })
 })
 
