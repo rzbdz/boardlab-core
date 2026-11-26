@@ -9,8 +9,8 @@
  *
  *   market.json
  *   { "modules": [
- *       { "id": "nexus", "title": "Nexus 镜像", "tags": ["images"],
- *         "entry": "nexus/module.js", "ui": "nexus/ui.js", "inject": [], "provide": [] } ] }
+ *       { "id": "images", "title": "镜像", "tags": ["images", "market"],
+ *         "entry": "images/module.js", "ui": "images/ui.js", "inject": [], "provide": [] } ] }
  *
  * `entry` defaults to `<id>/module.js`, then `<id>/index.js`; `ui` is optional, and is what a page imports to render the
  * module's part of it (`{ module, views }`, see `ui/contract.ts`). A `ui` file is a browser module as it is: a market

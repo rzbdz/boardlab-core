@@ -8,7 +8,7 @@ import type { Module } from '../core/module.ts'
 /** What making a module may need from the machine boardd runs on. */
 export interface ModuleContext {
   stateDir: string
-  /** A file shipped with this distribution (`externals/boardctrl/bin/bsp`, say), or null. */
+  /** A file shipped with this distribution (a bundled tool's binary, a site's tree), or null. */
   shipped(path: string): string | null
   /** boardd's timing settings (`timing` in its configuration), for modules that take some. */
   timing: Record<string, unknown>
