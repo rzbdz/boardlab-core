@@ -10,6 +10,12 @@ export * from './core/sdk.ts'
 export { isRemoteGroup } from './shared/commands.ts'
 export type { Command, CommandGroup, RemoteCommand, RemoteCommandGroup, RemoteContext } from './shared/commands.ts'
 export { parseDuration } from './shared/duration.ts'
+// Server side only, so not in `core/sdk.ts`, which the browser build re-exports: reading a host's console log, the
+// database's transaction, a file's digest, and a line a board said it was waiting on a person for.
+export { readLog } from './core/consoles.ts'
+export { transaction } from './core/db.ts'
+export { sha256File } from './core/files.ts'
+export { askedIn } from './core/relay.ts'
 // What a module's own command is handed by the CLI that runs it: a question on the terminal, a streamed answer, and
 // where an agent's skills live. Server side — these touch stdin/stdout and the filesystem — so not in `core/sdk.ts`,
 // which the browser build re-exports.
