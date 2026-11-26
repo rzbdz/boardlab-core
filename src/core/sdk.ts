@@ -37,6 +37,7 @@ export type { RemoteCommand, RemoteCommandGroup, RemoteContext } from '../shared
 export type {
   Action, Board, BoardChannels, BoardDetail, LabField, LabFields, LabSettings, Lease, LockResult, Market, MarketEntry, MarketListing,
   MarketSearch, MarketTarget, Proposal, SendResult, State, DiscoveryContext, DiscoveryMethod, DiscoveryValues,
+  FlashPlan, FlashMedium,
 } from '../shared/types.ts'
 
 /**
