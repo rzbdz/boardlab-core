@@ -268,5 +268,35 @@ export async function syncMarket(stateDir: string, id: string, options: { url: s
   }
   const head = await runGit(['rev-parse', 'HEAD'], { cwd: dir, env: options.env })
   if (head.code !== 0) throw new Error(`${id}：读不出 ${dir} 的版本：${lastLine(head)}`)
+  await installDependencies(dir, options.env)
   return { commit: head.stdout.trim(), dir }
+}
+
+/**
+ * A market's own packages, when it has any: a module may import one (`yaml`, say) and a market brings no `node_modules`
+ * of its own. Installed into the market's copy once per commit — a marker beside it says which — so a checkout without
+ * them, or a new one, gets them before boardd imports a module that needs them. No network is used when the lockfile says
+ * nothing is missing; a failure is said and the market still loads, since a module that needs nothing works without it.
+ */
+async function installDependencies(dir: string, env?: NodeJS.ProcessEnv): Promise<void> {
+  const manifest = join(dir, 'package.json')
+  if (!existsSync(manifest)) return
+  const commit = (await runGit(['rev-parse', 'HEAD'], { cwd: dir, env })).stdout.trim()
+  const marker = join(dir, '.boardlab-dependencies')
+  if (existsSync(marker) && readFileSync(marker, 'utf8').trim() === commit && existsSync(join(dir, 'node_modules'))) return
+  const installed = await runPackageManager(dir, env)
+  if (installed.code !== 0) { console.error(`${dir}：装市场的依赖失败：${lastLine(installed)}`); return }
+  writeFileSync(marker, `${commit}\n`)
+}
+
+/** `pnpm install --prod` when the market has a pnpm lockfile, else `npm install --omit=dev`: whichever the market ships. */
+function runPackageManager(dir: string, env?: NodeJS.ProcessEnv): Promise<Run> {
+  const tool: [string, string[]] = existsSync(join(dir, 'pnpm-lock.yaml')) ? ['pnpm', ['install', '--prod', '--no-frozen-lockfile']] : ['npm', ['install', '--omit=dev', '--no-audit', '--no-fund']]
+  return new Promise<Run>(resolve => {
+    execFile(tool[0], tool[1], { cwd: dir, env, maxBuffer: 32 * 1024 * 1024, timeout: 600_000, encoding: 'utf8' },
+      (error: Error | null, stdout: string, stderr: string) => {
+        const code = error ? (typeof (error as unknown as { code?: unknown }).code === 'number' ? (error as unknown as { code: number }).code : 1) : 0
+        resolve({ code, stdout, stderr: stderr || error?.message || '' })
+      })
+  })
 }
