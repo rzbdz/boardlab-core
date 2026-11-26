@@ -116,6 +116,11 @@ export class Markets {
     })
   }
 
+  /** The kinds of market modules offer, set up or not: what a module can add to the lab without being configured. */
+  offered(): Array<{ kind: string, title: string, about: string }> {
+    return [...this.kinds.values()].map(({ kind, title, about }) => ({ kind, title, about }))
+  }
+
   /**
    * What a folder of a market holds: folders first, then images, each newest first; only entries for `soc` (and those
    * the market files under no SoC) when one is given. A listing younger than a minute is not read again unless `refresh`.
