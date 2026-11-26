@@ -27,8 +27,10 @@ export type Dispose = () => void | Promise<void>
 export interface PluginContext {
   /** The module's id. */
   readonly id: string
-  /** The settings of its entry in boardd's `modules` map, as its catalog entry made them. */
+  /** The settings of its entry in boardd's `modules` map, as its catalog entry (or its market) made them. */
   readonly config: Record<string, unknown>
+  /** boardd's state directory: where it keeps what outlives a run (its database, files, its own keys). */
+  readonly stateDir: string
   /** Register a side effect, and the way to undo it (returned by what you register, or returned here). */
   effect(run: () => Dispose | void): Dispose
   /** Listen to an event of the lab; the listener is removed when the plugin is taken down. */
@@ -103,7 +105,7 @@ class Context implements PluginContext {
   /** Take on an undo the lab recorded while this context's module was being set up (a direct registration). */
   adopt(undo: Dispose) { this.undo.push(this.guard(undo)) }
 
-  constructor(readonly id: string, readonly config: Record<string, unknown>, private readonly loader: Loader) {}
+  constructor(readonly id: string, readonly config: Record<string, unknown>, readonly stateDir: string, private readonly loader: Loader) {}
 
   /** `undo`, which may run once: a second call (or a removal) does nothing. */
   private guard(undo: Dispose): Dispose {
@@ -165,6 +167,8 @@ class Context implements PluginContext {
 export interface LoaderOptions {
   /** What a module's setup is given: the lab it plugs into. */
   lab: unknown
+  /** boardd's state directory, given to every module's context. */
+  stateDir: string
   registry: Registry
   /** Where a module's own log lines go. */
   log?: (id: string, line: string) => void
@@ -232,7 +236,7 @@ export class Loader {
   add(module: Module, config: Record<string, unknown> = {}): unknown {
     if (this.entries.has(module.id)) throw new Error(`module ${module.id} is loaded twice`)
     const missing = [...(module.requires ?? []).filter(id => !this.has(id)), ...(module.inject ?? []).filter(name => !this.services.has(name))]
-    const ctx = new Context(module.id, config, this)
+    const ctx = new Context(module.id, config, this.options.stateDir, this)
     if (missing.length) {
       this.entries.set(module.id, { module, ctx, api: undefined, status: 'pending', why: `needs ${missing.join(', ')}` })
       this.order.push(module.id)

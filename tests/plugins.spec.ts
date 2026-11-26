@@ -122,7 +122,7 @@ describe('the loader on its own', () => {
   it('undoes in reverse, once, and never lets one failing undo stop the others', async () => {
     const done: string[] = []
     const loader = new Loader({
-      lab: {},
+      lab: {}, stateDir: '/nonexistent',
       registry: {
         endpoint: () => () => { done.push('a') },
         view: () => () => { done.push('b') }, lockTarget: () => () => {}, lockOccupant: () => () => {}, lockFollower: () => () => {},
@@ -146,7 +146,7 @@ describe('the loader on its own', () => {
   })
 
   it('lists what a module is, with its tags, for a market to search', () => {
-    const loader = new Loader({ lab: {}, registry: Object.fromEntries(['endpoint', 'view', 'lockTarget', 'lockOccupant', 'lockFollower', 'state', 'history', 'service', 'backend', 'labKind', 'event'].map(name => [name, () => () => {}])) as never })
+    const loader = new Loader({ lab: {}, stateDir: '/nonexistent', registry: Object.fromEntries(['endpoint', 'view', 'lockTarget', 'lockOccupant', 'lockFollower', 'state', 'history', 'service', 'backend', 'labKind', 'event'].map(name => [name, () => () => {}])) as never })
     loader.add({ id: 'recipes', title: '部门配方', about: '常用 SDK 配方', tags: ['content', 'sdk'], setup: (_l, ctx) => { ctx.effect(() => () => {}); return {} } })
     expect(loader.list()).toEqual([{ id: 'recipes', title: '部门配方', about: '常用 SDK 配方', tags: ['content', 'sdk'], inject: [], provide: [], status: 'active', why: null }])
   })

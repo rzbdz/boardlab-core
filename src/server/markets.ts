@@ -14,7 +14,7 @@
  */
 import { execFile } from 'node:child_process'
 import { mkdirSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { Module } from '../core/module.ts'
 import { resolveBoardlab } from './sdk.ts'
@@ -30,6 +30,16 @@ const git = (args: string[], cwd?: string): Promise<Run> => new Promise(resolve 
   execFile('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0' }, maxBuffer: 32 * 1024 * 1024, timeout: 600_000 },
     (error, stdout, stderr) => resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout: String(stdout), stderr: String(stderr || (error ? error.message : '')) })))
 const last = (run: Run) => (run.stderr || run.stdout).trim().split('\n').filter(Boolean).at(-1) ?? `退出码 ${run.code}`
+
+/**
+ * Where each module's page part is served from, by module id: the market's copy of its module directory, limited to the
+ * files the manifest could have named. A browser imports `/module-ui/<id>/<file>`, and only these directories answer.
+ */
+export function uiRootsOf(stateDir: string): Record<string, string> {
+  const roots: Record<string, string> = {}
+  for (const market of marketsOf(stateDir)) for (const offered of market.modules) if (offered.ui) roots[offered.id] = dirname(offered.ui)
+  return roots
+}
 
 /** What a market's copy says now, with the record it was made from. */
 function describe(record: MarketRecord, stateDir: string): ModuleMarket {

@@ -10,10 +10,14 @@
  *   market.json
  *   { "modules": [
  *       { "id": "nexus", "title": "Nexus 镜像", "tags": ["images"],
- *         "entry": "nexus/module.js", "inject": [], "provide": [] } ] }
+ *         "entry": "nexus/module.js", "ui": "nexus/ui.js", "inject": [], "provide": [] } ] }
  *
- * `entry` defaults to `<id>/module.js`, then `<id>/index.js`. Nothing here runs code: an entry is only checked to be
- * there, and `digestOf` hashes it, so a market update shows which modules changed before anything is imported.
+ * `entry` defaults to `<id>/module.js`, then `<id>/index.js`; `ui` is optional, and is what a page imports to render the
+ * module's part of it (`{ module, views }`, see `ui/contract.ts`). A `ui` file is a browser module as it is: a market
+ * that writes one in TypeScript builds it before it pushes.
+ *
+ * Nothing here runs code: an entry is only checked to be there, and `digestOf` hashes it, so a market update shows which
+ * modules changed before anything is imported.
  */
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
@@ -34,6 +38,8 @@ export interface MarketModule {
   market: string
   /** Its entry file, absolute. */
   entry: string
+  /** The file a page imports for this module's part of it, absolute; null when the module brings no page part. */
+  ui: string | null
   /** sha256 of the entry file: a market update that changes the code changes this. */
   digest: string
 }
@@ -95,9 +101,12 @@ export function readMarket(id: string, dir: string): { modules: MarketModule[], 
     const entry = named ? resolve(dir, named) : entryFor(dir, moduleId)
     if (!entry || !entry.startsWith(resolve(dir))) { problems.push(`${id}：${moduleId} 的 entry ${named ?? '（没写）'} 不在市场目录里`); continue }
     if (!existsSync(entry)) { problems.push(`${id}：${moduleId} 的 entry ${relative(dir, entry)} 不在`); continue }
+    const uiName = text(item.ui)
+    const ui = uiName ? resolve(dir, uiName) : null
+    if (uiName && (!ui!.startsWith(resolve(dir)) || !existsSync(ui!))) { problems.push(`${id}：${moduleId} 的 ui ${uiName} ${ui!.startsWith(resolve(dir)) ? '不在' : '不在市场目录里'}`); continue }
     modules.push({
       id: moduleId, title: text(item.title) ?? moduleId, about: text(item.about) ?? '', tags: words(item.tags),
-      inject: words(item.inject), provide: words(item.provide), version: text(item.version), market: id, entry, digest: digestOf(entry),
+      inject: words(item.inject), provide: words(item.provide), version: text(item.version), market: id, entry, ui, digest: digestOf(entry),
     })
   }
   return { modules, problems }

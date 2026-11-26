@@ -30,6 +30,8 @@ import { Relay } from './relay.ts'
 import { isHuman } from './text.ts'
 
 export interface BoardLabOptions extends KernelOptions {
+  /** Where boardd keeps what outlives a run; modules get it as `ctx.stateDir`. */
+  stateDir?: string
   /** firmware/: firmware.json and the files it lists. */
   firmwareDir?: string
   /** Where files sent by remote CLIs are kept, by sha256. */
@@ -75,6 +77,7 @@ export class BoardLab {
     // The plugin runtime comes first: every subsystem below registers extension points that record with it.
     this.loader = new Loader({
       lab: this,
+      stateDir: options.stateDir ?? '',
       registry: registryOf(this),
       log: (id, line) => console.error(`[${id}] ${line}`),
       report: (id, error) => console.error(`[${id}] ${(error as Error)?.stack ?? error}`),

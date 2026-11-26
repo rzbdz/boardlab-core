@@ -13,6 +13,7 @@ import { Api, EventStream, FileReply, RawReply, TextReply, type Caller, type Emi
 import { BoardError } from '../core/errors.ts'
 import type { BoardLab } from '../core/lab.ts'
 import { RUN_ID, withRunId } from '../core/runs.ts'
+import { uiRootsOf } from './markets.ts'
 import { HOLDER } from '../core/text.ts'
 import { API_VERSION } from '../shared/types.ts'
 
@@ -43,6 +44,8 @@ export interface ServeOptions {
   handed?: boolean,
   /** Told of each request (method and path, never the query), for the supervisor's log of what a worker last did. */
   observe?: (method: string, path: string) => void,
+  /** Where this build keeps what the page imports for a market module (`sdk.browser.js`), served at `/sdk.browser.js`. */
+  sdkDir?: string | null,
 }
 
 /** What `serve` started: its servers, and how a supervised worker takes connections and knows when it is idle. */
@@ -270,6 +273,8 @@ function cliEndpoint(options: GatewayOptions): Endpoint {
  */
 export interface Frontends { default: string, frontends: Array<{ name: string, title: string }> }
 
+
+
 export function readFrontends(uiDir: string | null): Frontends | null {
   if (!uiDir) return null
   try {
@@ -282,11 +287,23 @@ export function readFrontends(uiDir: string | null): Frontends | null {
 
 const FRONTEND_SETTING = 'ui.frontend'
 
-function serveStatic(uiDir: string, pathname: string, response: ServerResponse) {
+function serveStatic(uiDir: string, pathname: string, response: ServerResponse, roots: Record<string, string> = {}) {
+  // A module from a market brings its page part as a file of its own (`/module-ui/<module>/<file>`): served from the
+  // market's copy, and only from a directory that module's manifest named, so no other file there is reachable.
+  const at = /^\/module-ui\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})\/(.+)$/.exec(pathname)
+  if (at) {
+    const root = roots[at[1]!]
+    if (!root || at[2]!.includes('..')) return send(response, 404, { error: 'not found' })
+    return serveFile(join(root, at[2]!), response)
+  }
   const file = pathname === '/' ? 'index.html' : pathname.slice(1)
-  const path = join(uiDir, file)
-  if (file.includes('..') || !existsSync(path)) return send(response, 404, { error: 'not found' })
-  response.writeHead(200, { 'Content-Type': MIME[extname(path)] ?? 'application/octet-stream', 'Cache-Control': 'no-store' })
+  if (file.includes('..')) return send(response, 404, { error: 'not found' })
+  return serveFile(join(uiDir, file), response)
+}
+
+function serveFile(path: string, response: ServerResponse, type?: string) {
+  if (!path || !existsSync(path) || !statSync(path).isFile()) return send(response, 404, { error: 'not found' })
+  response.writeHead(200, { 'Content-Type': type ?? MIME[extname(path)] ?? 'application/octet-stream', 'Cache-Control': 'no-store' })
   response.end(readFileSync(path))
 }
 
@@ -330,10 +347,12 @@ export async function serve(lab: BoardLab, options: ServeOptions): Promise<Servi
       }
       return send(response, 200, { ...(list ?? { default: null, frontends: [] }), current: list ? current(list) : null })
     }
+    // What a module's part of the page imports as `boardlab/ui`: this boardd's own build of it.
+    if (pathname === '/sdk.browser.js') return serveFile(join(options.sdkDir ?? '', 'sdk.browser.js'), response, 'text/javascript; charset=utf-8')
     if (pathname === '/api' || pathname.startsWith('/api/')) return void api(request, response, { holder, local: false })
     if (!options.uiDir) return send(response, 404, { error: '这个 boardd 不带网页（只有 /api）' })
     const frontends = readFrontends(options.uiDir)
-    serveStatic(frontends ? join(options.uiDir, current(frontends)) : options.uiDir, pathname, response)
+    serveStatic(frontends ? join(options.uiDir, current(frontends)) : options.uiDir, pathname, response, uiRootsOf(options.stateDir ?? ''))
   }
   const unix = createServer((request, response) => {
     const pathname = new URL(request.url ?? '/', 'http://boardd').pathname

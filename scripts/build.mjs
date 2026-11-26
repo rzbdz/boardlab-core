@@ -16,6 +16,8 @@ const args = process.argv.slice(2)
 const option = (name, fallback) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : fallback }
 const out = resolve(option('out', 'dist'))
 const cli = option('cli', join(core, 'bare/boardlab.ts'))
+// A distribution that serves modules from a market also has a browser SDK for their parts of the page (`boardlab/ui`).
+const browserSdk = option('sdk-browser', null)
 
 await mkdir(out, { recursive: true })
 // `cli` (with boardd) and the client library, plus the SDK a market module imports as `boardlab`. The SDK is its own
@@ -26,5 +28,6 @@ await build({ entryPoints: { cli, client: join(core, 'src/shared/client.ts'), sd
   // person or a program asked for. The program says what it needs to; nothing is hidden that a user acts on.
   js: "#!/usr/bin/env -S node --no-warnings\nimport { createRequire as __boardlabCreateRequire } from 'node:module'; const require = __boardlabCreateRequire(import.meta.url);",
 } })
+if (browserSdk) await build({ entryPoints: { 'sdk.browser': resolve(browserSdk) }, outdir: out, bundle: true, format: 'esm', platform: 'browser', target: 'es2022', sourcemap: true, define: { 'process.env.NODE_ENV': '"production"' } })
 await chmod(join(out, 'cli.js'), 0o755)
 console.log(`Built the boardlab CLI and its client into ${out}.`)

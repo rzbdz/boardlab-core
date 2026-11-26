@@ -84,7 +84,7 @@ export async function startBoardd(options: BoarddOptions) {
   const port = options.port ?? DEFAULT_PORT
   // One frontend (index.html at the top), or several (frontends.json, see http.ts).
   const uiDir = options.uiDir && (existsSync(join(options.uiDir, 'index.html')) || existsSync(join(options.uiDir, 'frontends.json'))) ? options.uiDir : null
-  const server = await serve(lab, { port, hosts: options.hosts, origins: options.origins, cli: options.cli, stateDir: options.stateDir, socketPath: socketPathFor(options.stateDir), uiDir, docsDir: options.shipped?.('docs/help') ?? null, version: options.version, revision: options.revision, ownSocket: !options.worker, handed: options.handed, observe: options.observe })
+  const server = await serve(lab, { port, hosts: options.hosts, origins: options.origins, cli: options.cli, stateDir: options.stateDir, socketPath: socketPathFor(options.stateDir), uiDir, docsDir: options.shipped?.('docs/help') ?? null, version: options.version, revision: options.revision, ownSocket: !options.worker, handed: options.handed, observe: options.observe, sdkDir: options.shipped?.('dist') ?? null })
   const address = server.http[0]?.address()
   return {
     lab, port: address && typeof address === 'object' ? address.port : port, uiDir, config, hosts: ['127.0.0.1', ...(options.hosts ?? [])],
