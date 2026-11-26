@@ -15,6 +15,8 @@ import { debugCommands } from './commands/debug.ts'
 import { imageCommands } from './commands/images.ts'
 import { labCommands } from './commands/labs.ts'
 import { moduleCommands } from './commands/modules.ts'
+import { marketCommands, withMarketCommands } from './market-commands.ts'
+import { withMarketCli } from './market-cli.ts'
 import { presentRelease, setupCommands, type ReleaseIdentity } from './commands/setup.ts'
 import type { CliPresentation } from './command.ts'
 
@@ -133,11 +135,21 @@ export function createCli(distribution: Distribution): Cli {
   if (distribution.identity) presentRelease(distribution.identity)
   const groups = [boardCommands, debugCommands, imageCommands, labCommands, moduleCommands, ...distribution.groups, setupCommands]
   const commands = new Map<string, Command>(groups.flatMap(group => group.commands.map(command => [command.name, command] as const)))
-  const usage = (topic?: string) => usageOf(groups, topic)
-  return { usage, main: argv => run(argv, commands, usage, distribution) }
+  // The groups as the CLI knows them now, and as a market's commands extend them once a boardd has said what it has.
+  let present = groups
+  const usage = (topic?: string) => usageOf(present, topic)
+  return {
+    usage,
+    async main(argv: string[]) {
+      await run(argv, commands, usage, distribution, extended => {
+        present = extended.groups
+        for (const command of extended.commands) commands.set(command.name, command.command)
+      })
+    },
+  }
 }
 
-async function run(argv: string[], COMMANDS: Map<string, Command>, usage: (topic?: string) => string, distribution: Distribution) {
+async function run(argv: string[], COMMANDS: Map<string, Command>, usage: (topic?: string) => string, distribution: Distribution, extend?: (groups: { groups: CommandGroup[], commands: Array<{ name: string, command: Command }> }) => void) {
   const { positional, flags } = parseArgs(argv)
   const [name, ...args] = positional
   const json = flags.has('json')
@@ -183,6 +195,21 @@ async function run(argv: string[], COMMANDS: Map<string, Command>, usage: (topic
       // An older boardd does not run commands for clients: fall back to what this CLI knows.
       if (!(error instanceof BoardsApiError && (error.status === 404 || error.status === 501))) throw error
     }
+  }
+  // A module's commands live with the boardd that loaded it (a market's `cli.ts`): this build learns their names from
+  // that boardd, so `boardlab help` lists them, and one is run where its code is (`POST /api/cli`, which boardd serves
+  // by running this same CLI with the module's files in `BOARDLAB_MARKET_CLI` — see `withMarketCli`).
+  if (extend && (help || !command)) {
+    const offered = await marketCommands(client)
+    if (offered.length) {
+      const groups = withMarketCommands([], offered, () => client)
+      extend({ groups, commands: groups.flatMap(group => group.commands.map(item => ({ name: item.name, command: item }))) })
+    }
+  }
+  // Run by boardd for a client, with the commands of the modules it loaded from markets in front of it: those ARE this
+  // process's commands, and this is where the module's own `run` executes.
+  if (process.env.BOARDLAB_MARKET_CLI) for (const command of await withMarketCli(process.env.BOARDLAB_MARKET_CLI)) {
+    if (!COMMANDS.has(command.name)) { COMMANDS.set(command.name, command.command); extend?.({ groups: [], commands: [command] }) }
   }
   if (help) return console.log(name === 'help' ? usage(args.length ? args.join('\0') : flags.has('all') ? '--all' : undefined) : usage(name))
   if (!command) throw new Error(`未知命令：${name}（boardlab help 看有哪些）`)

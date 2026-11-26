@@ -58,6 +58,15 @@ describe('a market manifest', () => {
     expect(modules[0]!.digest).toBe(digestOf(join(dir, 'probe/module.js')))
   })
 
+  it('names the commands a module brings, and says when its cli file is not there', () => {
+    const dir = marketRepo('commands', [{ id: 'probe', manifest: { cli: 'probe/cli.js' } }, { id: 'other', manifest: { cli: 'other/cli.js' } }])
+    writeFileSync(join(dir, 'probe/cli.js'), 'export const commands = { title: "探针", commands: [] }\n')
+    const { modules, problems } = readMarket('commands', dir)
+    expect(modules.find(module => module.id === 'probe')).toMatchObject({ cli: join(dir, 'probe/cli.js') })
+    expect(modules.find(module => module.id === 'other')?.cli).toBeNull()
+    expect(problems.join('\n')).toMatch(/other 的 cli other\/cli\.js 不在/)
+  })
+
   it('names what is wrong instead of importing something that is not there', () => {
     const dir = join(root, 'broken-src')
     mkdirSync(join(dir, 'gone'), { recursive: true })
@@ -146,8 +155,7 @@ describe('a module from a market', () => {
     expect(selected[0]!.module.setup({} as never, {} as never)).toEqual({ made: 1 })
   })
 
-  it('refuses a module whose id is not the one the manifest offered, and one a market offers twice', async () => {
-    const wrong = join(root, 'wrong-src')
+  it('refuses a module whose id is not the one the manifest offered, and one a market offers twice', async () => {    const wrong = join(root, 'wrong-src')
     mkdirSync(join(wrong, 'asked'), { recursive: true })
     writeFileSync(join(wrong, 'market.json'), JSON.stringify({ modules: [{ id: 'asked' }] }))
     writeFileSync(join(wrong, 'asked/module.js'), 'export default { id: "other", title: "other", setup: () => ({}) }\n')

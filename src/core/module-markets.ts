@@ -41,6 +41,11 @@ export interface MarketModule {
   entry: string
   /** What a page imports for this module's part of it, at `module-ui/<module>/<file>` (relative: a page works under a sub-path); null when it brings none. */
   ui: string | null
+  /**
+   * The module's own `boardlab` commands, as a file the boardd that loaded it runs (its `cli.ts`): null when it has none.
+   * Commands are the module's code, so they run where the module is loaded, not in a CLI built without it.
+   */
+  cli: string | null
   /** The directory that page part is served from, absolute; null when it brings none. Nothing else of it is served. */
   uiDir: string | null
   /** sha256 of the entry file: a market update that changes the code changes this. */
@@ -104,6 +109,15 @@ export function readMarket(id: string, dir: string): { modules: MarketModule[], 
     const entry = named ? resolve(dir, named) : entryFor(dir, moduleId)
     if (!entry || !inside(dir, entry)) { problems.push(`${id}：${moduleId} 的 entry ${named ?? '（没写）'} 不在市场目录里`); continue }
     if (!existsSync(entry)) { problems.push(`${id}：${moduleId} 的 entry ${relative(dir, entry)} 不在`); continue }
+    const cliName = text(item.cli)
+    const cliFile = cliName ? resolve(dir, cliName) : null
+    let cli: string | null = null
+    if (cliFile) {
+      const real = realOf(cliFile)
+      if (!inside(dir, cliFile) || !existsSync(cliFile)) problems.push(`${id}：${moduleId} 的 cli ${cliName} 不在，它的命令不会有`)
+      else if (!real || !inside(dir, real) || real.split(sep).includes('.git')) problems.push(`${id}：${moduleId} 的 cli ${cliName} 不能从市场里提供（要在市场目录里，且不在 .git 里）`)
+      else cli = real
+    }
     const uiName = text(item.ui)
     const uiFile = uiName ? resolve(dir, uiName) : null
     // A page part a market cannot serve is said, and costs only that part: the module itself still loads. It is never
@@ -118,7 +132,7 @@ export function readMarket(id: string, dir: string): { modules: MarketModule[], 
     }
     modules.push({
       id: moduleId, title: text(item.title) ?? moduleId, about: text(item.about) ?? '', tags: words(item.tags),
-      inject: words(item.inject), provide: words(item.provide), version: text(item.version), market: id, entry, ui, uiDir, digest: digestOf(entry),
+      inject: words(item.inject), provide: words(item.provide), version: text(item.version), market: id, entry, ui, uiDir, cli, digest: digestOf(entry),
     })
   }
   return { modules, problems }

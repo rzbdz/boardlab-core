@@ -1,7 +1,7 @@
 /** `boardlab serve`: build a BoardLab from boardd's configuration and the distribution's modules, and serve it. */
 import { existsSync, mkdirSync } from 'node:fs'
 import type { Socket } from 'node:net'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { DEFAULT_PORT, socketPathFor } from '../shared/client.ts'
 import { openDatabase, scheduleBackups } from '../core/db.ts'
 import { BoardLab } from '../core/lab.ts'
@@ -9,6 +9,7 @@ import { databaseSettings, moveAddedLabs } from '../core/renamed-kinds.ts'
 import { createModules, type CatalogEntry } from './catalog.ts'
 import { marketsOf, marketModules } from './markets.ts'
 import { loadConfig, type BoarddConfig } from './config.ts'
+import { describe, loadCommands, type CommandGroup } from '../cli/market-cli.ts'
 import { serve } from './http.ts'
 
 export interface BoarddOptions {
@@ -102,6 +103,17 @@ export async function startBoardd(options: BoarddOptions): Promise<Boardd> {
   const fromMarkets = marketResult.loaded
   const modules = [...builtIn, ...fromMarkets.map(({ module }) => module)]
   for (const { module, settings } of fromMarkets) config.modules[module.id] = settings
+  // A market module brings its own `boardlab` commands, as a file beside it: loaded here (where the module is), so a CLI
+  // that does not have the module can list them and run one against this boardd (GET /api/cli/commands).
+  const commandGroups: CommandGroup[] = []
+  const commandFiles: string[] = []
+  for (const { module } of fromMarkets) {
+    const offered = markets.flatMap(market => market.modules).find(item => item.id === module.id)
+    if (!offered?.cli) continue
+    const { group, problem } = await loadCommands(offered.cli, module.id)
+    if (problem) console.error(`boardd: ${module.id} 的命令加载不了：${problem}`)
+    else if (group) { commandGroups.push(group); commandFiles.push(`${module.id}=${offered.cli}`) }
+  }
   // Checked before it opens: a broken file is moved aside and the newest good copy from backups/ put in its place, by
   // a boardd that is the only one using it. One that shares it with another worker refuses to start instead.
   const file = join(options.stateDir, 'boards.sqlite'), backups = join(options.stateDir, 'backups')
@@ -120,7 +132,7 @@ export async function startBoardd(options: BoarddOptions): Promise<Boardd> {
   const port = options.port ?? DEFAULT_PORT
   // One frontend (index.html at the top), or several (frontends.json, see http.ts).
   const uiDir = options.uiDir && (existsSync(join(options.uiDir, 'index.html')) || existsSync(join(options.uiDir, 'frontends.json'))) ? options.uiDir : null
-  const server = await serve(lab, { port, hosts: options.hosts, origins: options.origins, cli: options.cli, stateDir: options.stateDir, socketPath: socketPathFor(options.stateDir), uiDir, docsDir: options.shipped?.('docs/help') ?? null, version: options.version, revision: options.revision, ownSocket: !options.worker, handed: options.handed, observe: options.observe, sdkDir: options.shipped?.('dist') ?? null })
+  const server = await serve(lab, { port, hosts: options.hosts, origins: options.origins, cli: options.cli, stateDir: options.stateDir, socketPath: socketPathFor(options.stateDir), uiDir, docsDir: options.shipped?.('docs/help') ?? null, version: options.version, revision: options.revision, ownSocket: !options.worker, handed: options.handed, observe: options.observe, sdkDir: options.shipped?.('dist') ?? null, marketCommands: async () => commandGroups.flatMap(describe), marketCli: commandFiles.join(delimiter) })
   const address = server.http[0]?.address()
   // How this boardd asks for a new process of its own (a module installed or taken out): the CLI wires `reload` when it
   // runs as a worker under a supervisor.

@@ -10,6 +10,7 @@ import type { Socket } from 'node:net'
 import { userInfo } from 'node:os'
 import { extname, join, sep } from 'node:path'
 import { Api, EventStream, FileReply, RawReply, TextReply, type Caller, type Emit, type Endpoint } from '../core/api.ts'
+import type { DescribedCommand } from '../cli/market-cli.ts'
 import { BoardError } from '../core/errors.ts'
 import type { BoardLab } from '../core/lab.ts'
 import { RUN_ID, withRunId } from '../core/runs.ts'
@@ -46,6 +47,13 @@ export interface ServeOptions {
   observe?: (method: string, path: string) => void,
   /** Where this build keeps what the page imports for a market module (`sdk.browser.js`), served at `/sdk.browser.js`. */
   sdkDir?: string | null,
+  /**
+   * The commands the modules loaded from markets bring (`GET /api/cli/commands`): each module's own `cli` file is the
+   * code, and a CLI that has not got it lists and runs the command through this boardd.
+   */
+  marketCommands?: () => Promise<DescribedCommand[]>,
+  /** The `cli` files of the modules loaded from markets, as `id=path` joined by the path delimiter (`BOARDLAB_MARKET_CLI`). */
+  marketCli?: string,
 }
 
 /** What `serve` started: its servers, and how a supervised worker takes connections and knows when it is idle. */
@@ -70,12 +78,12 @@ export interface Serving {
  * What the gateway's own endpoints need from how boardd runs: its own CLI (to run commands for older clients), state
  * directory, and help pages.
  */
-type GatewayOptions = { cli?: string, stateDir?: string, docsDir?: string | null, version?: string, revision?: string }
+type GatewayOptions = { cli?: string, stateDir?: string, docsDir?: string | null, version?: string, revision?: string, marketCommands?: () => Promise<DescribedCommand[]>, marketCli?: string }
 
 export function createApi(lab: BoardLab, options: GatewayOptions = {}): (request: IncomingMessage, response: ServerResponse, caller: Caller) => Promise<void> {
   // The gateway's own endpoints, served beside the lab's; its index lists both.
   const own = new Api()
-  own.add('gateway', [cliEndpoint(options), ...docsEndpoints(options.docsDir ?? null), {
+  own.add('gateway', [cliEndpoint(options), marketCommandsEndpoint(options.marketCommands), ...docsEndpoints(options.docsDir ?? null), {
     method: 'GET', path: '/api/version', about: 'boardd 的版本和它提供的 API 版本', handle: () => ({ version: options.version ?? 'dev', revision: options.revision ?? 'dev', api: API_VERSION }),
   }, {
     method: 'GET', path: '/api', about: '列出所有接口和模块（openapi：机器可读的 OpenAPI 描述）', handle: () => {
@@ -233,6 +241,14 @@ function runId(headers: Record<string, string | string[] | undefined> | undefine
   return id && RUN_ID.test(id) ? id : ''
 }
 
+/** The commands the modules loaded from markets bring, for a CLI that does not have them (`GET /api/cli/commands`). */
+function marketCommandsEndpoint(load?: () => Promise<DescribedCommand[]>): Endpoint {
+  return {
+    method: 'GET', path: '/api/cli/commands', about: '市场模块自带的 boardlab 命令（名字、用法、分组）：本机的 CLI 用它们来列 help 和转发',
+    handle: async () => ({ commands: load ? await load() : [] }),
+  }
+}
+
 function cliEndpoint(options: GatewayOptions): Endpoint {
   return {
     method: 'POST', path: '/api/cli', about: '用 boardd 自己的 boardlab 命令行替调用者跑命令（旧客户端不认识的命令）',
@@ -248,7 +264,7 @@ function cliEndpoint(options: GatewayOptions): Endpoint {
       return new EventStream((emit, end, signal) => {
         // The same Node flags as boardd itself (on some CPUs it needs --no-sparkplug to run at all).
         const child = spawn(process.execPath, [...process.execArgv, options.cli!, ...(args as string[]), ...(body.json === true ? ['--json'] : [])], {
-          env: { ...process.env, BOARDS_HOLDER: caller.holder, BOARDS_STATE_DIR: options.stateDir, BOARDS_REMOTE: '', BOARDS_PROXIED: '1', BOARDS_RUN: runId(headers) },
+          env: { ...process.env, BOARDS_HOLDER: caller.holder, BOARDS_STATE_DIR: options.stateDir, BOARDS_REMOTE: '', BOARDS_PROXIED: '1', BOARDS_RUN: runId(headers), ...(options.marketCli ? { BOARDLAB_MARKET_CLI: options.marketCli } : {}) },
           stdio: ['ignore', 'pipe', 'pipe'],
         })
         child.stdout.setEncoding('utf8').on('data', text => emit('out', { stream: 'stdout', text }))
@@ -324,7 +340,7 @@ function serveFile(path: string, response: ServerResponse, type?: string) {
 export async function serve(lab: BoardLab, options: ServeOptions): Promise<Serving> {
   const listFrontends = () => readFrontends(options.uiDir)
   const current = (list: Frontends) => { const chosen = lab.kernel.setting(FRONTEND_SETTING); return chosen && list.frontends.some(item => item.name === chosen) ? chosen : list.default }
-  const api = createApi(lab, { cli: options.cli, stateDir: options.stateDir, docsDir: options.docsDir, version: options.version, revision: options.revision })
+  const api = createApi(lab, { cli: options.cli, stateDir: options.stateDir, docsDir: options.docsDir, version: options.version, revision: options.revision, marketCommands: options.marketCommands, marketCli: options.marketCli })
   const human = `user:${userInfo().username}`
   const hosts = [...new Set(['127.0.0.1', ...(options.hosts ?? [])])]
   const allowed = new Set([...hosts, 'localhost'].map(host => `${host}:${options.port}`))

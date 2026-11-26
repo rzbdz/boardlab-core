@@ -23,7 +23,11 @@
       "may": [
         "core",
         "shared"
-      ]
+      ],
+      "entries": [
+        "src/cli/market-cli.ts"
+      ],
+      "$comment": "a market module brings its commands as its own file (cli/market-cli.ts), which boardd loads where the module is and describes to a CLI; that one file's contract is shared, not the CLI"
     },
     "cli": {
       "path": "src/cli",
