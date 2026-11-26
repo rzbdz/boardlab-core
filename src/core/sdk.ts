@@ -8,6 +8,7 @@
  * by Node. `src/sdk.ts` re-exports the same names with their types, for checking a module's TypeScript against.
  */
 import type { BoardLab } from './lab.ts'
+export type { BoardLab }
 import type { PluginContext } from './module.ts'
 
 export { BoardError, BusyError, CancelledError } from './errors.ts'
@@ -22,7 +23,10 @@ export type { Row } from './text.ts'
 export type { Backend, BoardTarget, LabConfig, LabDevice, LabFinding, LabHolder, LabNews, LabSlots, Notice, RunReport } from './backend.ts'
 export type { ConsoleSession, ConsoleHello } from './console.ts'
 export type { LabKind } from './backends.ts'
-export type { Settings } from './kernel.ts'
+export type { Settings, Kernel } from './kernel.ts'
+export { humanArchive, isStatus, oneLine, cleaned, STATUSES } from './human.ts'
+export type { HumanArchive, HumanAsk, HumanInbox, HumanRequest, HumanStatus } from './human.ts'
+export type { RemoteCommand, RemoteCommandGroup } from '../shared/commands.ts'
 
 export type {
   Action, Board, BoardChannels, BoardDetail, LabField, LabFields, LabSettings, Lease, LockResult, Market, MarketEntry, MarketListing,
