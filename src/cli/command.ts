@@ -4,11 +4,13 @@
  */
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { createInterface } from 'node:readline/promises'
 import type { BoardsClient } from '../shared/client.ts'
 import type { RemoteContext } from '../shared/commands.ts'
 import type { Board, Chip, State } from '../shared/types.ts'
 import type { CatalogEntry } from '../server/catalog.ts'
+
+// Asking a person and writing back are generic terminal work, in `shared` so a module's command gets them too.
+export { confirm, write } from '../shared/terminal.ts'
 
 export interface Command {
   name: string
@@ -84,14 +86,3 @@ export class TokenStore {
   }
 }
 
-/** Ask on the terminal; without one the answer is no. */
-export async function confirm(question: string): Promise<boolean> {
-  if (!process.stdin.isTTY) return false
-  const rl = createInterface({ input: process.stdin, output: process.stdout })
-  const answer = await rl.question(`${question} [y/N] `)
-  rl.close()
-  return /^y(es)?$/i.test(answer.trim())
-}
-
-/** Write a streamed command's output where it came from. */
-export const write = (stream: 'stdout' | 'stderr', text: string) => { (stream === 'stdout' ? process.stdout : process.stderr).write(text) }

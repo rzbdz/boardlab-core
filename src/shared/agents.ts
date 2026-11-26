@@ -1,4 +1,7 @@
-/** Agent skill destinations shared by distribution commands. Content and naming stay with the command. */
+/**
+ * Where an agent's skills live on a machine: the directories a `boardlab` command installs a skill into, and what to
+ * say when there is no agent. In `shared` because a module's own command asks the same question, and the SDK hands it out.
+ */
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 

@@ -10,6 +10,12 @@ export * from './core/sdk.ts'
 export { isRemoteGroup } from './shared/commands.ts'
 export type { RemoteCommand, RemoteCommandGroup, RemoteContext } from './shared/commands.ts'
 export { parseDuration } from './shared/duration.ts'
+// What a module's own command is handed by the CLI that runs it: a question on the terminal, a streamed answer, and
+// where an agent's skills live. Server side — these touch stdin/stdout and the filesystem — so not in `core/sdk.ts`,
+// which the browser build re-exports.
+export { confirm, write } from './shared/terminal.ts'
+export { installedAgentSkills, noAgentsMessage } from './shared/agents.ts'
+export type { AgentSkillDestination, AgentSkills } from './shared/agents.ts'
 // A catalog entry is a distribution's, not a module's: a module from a market has no entry, so the few helpers an
 // entry's `create` uses to read its settings are here, for a module that reads them the same way. Lives in `shared`,
 // because the SDK may not import `server`.

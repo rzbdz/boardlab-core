@@ -1404,7 +1404,7 @@ describe('renaming a board', () => {
   it('discovers installed agent skill destinations without owning their content', () => {
     mkdirSync(join(dir, '.claude'), { recursive: true })
     mkdirSync(join(dir, '.config/opencode'), { recursive: true })
-    return import('../src/cli/agents.ts').then(({ installedAgentSkills, noAgentsMessage }) => {
+    return import('../src/shared/agents.ts').then(({ installedAgentSkills, noAgentsMessage }) => {
       expect(installedAgentSkills(dir).map(item => [item.agent, item.directory])).toEqual([
         ['Claude Code', join(dir, '.claude/skills')], ['opencode', join(dir, '.config/opencode/skill')],
       ])

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { BoardsClient, DEFAULT_PORT, remoteConfigPath, socketPathFor, transportFor, type RemoteConfig } from '../../shared/client.ts'
 import { API_VERSION, type DatabaseRestore } from '../../shared/types.ts'
 import type { Command, CommandGroup } from '../command.ts'
-import { installedAgentSkills, noAgentsMessage } from '../agents.ts'
+import { installedAgentSkills, noAgentsMessage } from '../../shared/agents.ts'
 import { shipped } from '../shipped.ts'
 
 export interface ReleaseIdentity { version: string, revision: string }
