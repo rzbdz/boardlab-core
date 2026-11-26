@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { DEFAULT_PORT, socketPathFor } from '../shared/client.ts'
 import { openDatabase, scheduleBackups } from '../core/db.ts'
 import { BoardLab } from '../core/lab.ts'
+import { databaseSettings, moveAddedLabs } from '../core/renamed-kinds.ts'
 import { createModules, type CatalogEntry } from './catalog.ts'
 import { loadConfig } from './config.ts'
 import { serve } from './http.ts'
@@ -45,6 +46,12 @@ export async function startBoardd(options: BoarddOptions) {
   mkdirSync(options.stateDir, { recursive: true, mode: 0o700 })
   const config = loadConfig(options.stateDir, options.config, options.catalog.map(entry => entry.id))
   const selection = options.modules ? Object.fromEntries(options.modules.map(id => [id, config.modules[id] ?? {}])) : config.modules
+  // A module that renamed its id moves the labs someone added by the old name before any kind is offered.
+  const moves = Object.fromEntries(options.catalog.flatMap(entry => (entry.was ?? []).map(old => [old, entry.id])))
+  if (Object.keys(moves).length) {
+    const moved = openDatabase(join(options.stateDir, 'boards.sqlite'), { backups: join(options.stateDir, 'backups'), restore: !options.sharedDatabase })
+    try { for (const move of moveAddedLabs(databaseSettings(moved), moves)) console.error(`boardd: lab ${move.id} is a ${move.to} now (was added as ${move.from})`) } finally { moved.close() }
+  }
   const modules = createModules(options.catalog, selection, {
     stateDir: options.stateDir, shipped: options.shipped ?? (() => null), timing: config.timing,
     release: { version: options.version ?? 'dev', revision: options.revision ?? 'dev' },

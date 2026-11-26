@@ -3,7 +3,7 @@
  * `$BOARDLAB_CONFIG`, or `boardd.json` in the state directory; without one boardd loads every module with its defaults.
  *
  *   {
- *     "modules": { "bsp": { "instances": ["bsp"] } },          // or a list of ids: ["local", "script-slots"]
+ *     "modules": { "boardctrl": { "instances": ["boardctrl"] } }, // or a list of ids: ["local", "script-slots"]
  *     "timing": { "boot": { "firstMs": 8000 }, "console": { "watchIdleMs": 30000 }, "scan": { "rounds": 2 }, "syncMs": 60000 }
  *   }
  *

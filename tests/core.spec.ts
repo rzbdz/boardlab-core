@@ -12,6 +12,7 @@ import { BoardsClient, sshTransport, webTransport } from '../src/shared/client.t
 import { agentHolder, consoleKeys, createCli, defaultHolder, parseArgs } from '../src/cli/main.ts'
 import { openDatabase } from '../src/core/db.ts'
 import { BoardLab, inLoadOrder } from '../src/core/lab.ts'
+import { moveAddedLabs } from '../src/core/renamed-kinds.ts'
 import { main } from '../bare/boardlab.ts'
 import { BoardError } from '../src/core/errors.ts'
 import { API_VERSION, type DiscoveryMethod, type LabFields } from '../src/shared/types.ts'
@@ -195,6 +196,21 @@ describe('lab kinds', () => {
     expect(again.backends.labSettings()).toEqual([])
     expect(again.boards.list().filter(board => board.name.startsWith('lab1-'))).toEqual([])
     expect(new BoardLab({ db: openDatabase(file), modules: [kindModule] }).backends.labSettings()).toEqual([])
+  })
+
+  it('keeps a lab someone added by a module\'s old id when that module renames itself', async () => {
+    // A module's id is part of what a stored lab names. A rename must not strand the lab: the catalog entry says what
+    // it was called, and the stored kind moves before any kind is offered, once.
+    const made: string[] = []
+    const kind = (id: string): Module => ({ id, title: id, setup: lab => lab.backends.offer({ kind: id, title: '假实验室', about: '测试用', create: name => { made.push(name); return new FakeLab() } }) })
+    const file = join(dir, 'renamed-kind.sqlite')
+    const first = new BoardLab({ db: openDatabase(file), modules: [kind('old-name')] })
+    first.backends.add('user:alice', 'lab1', 'old-name')
+    expect(moveAddedLabs(first.kernel, { 'old-name': 'new-name' })).toEqual([{ id: 'lab1', from: 'old-name', to: 'new-name' }])
+    expect(moveAddedLabs(first.kernel, { 'old-name': 'new-name' })).toEqual([])      // idempotent
+    // Started again with the renamed module: the lab is there, under the new kind, and no other start moves anything.
+    const again = new BoardLab({ db: openDatabase(file), modules: [kind('new-name')] })
+    expect(again.backends.labSettings()).toMatchObject([{ id: 'lab1', addedAs: 'new-name' }])
   })
 
   it('takes a lab address of http, https, ssh or a backend\'s own scheme on them, and nothing else', async () => {

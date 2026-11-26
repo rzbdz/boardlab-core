@@ -8,7 +8,7 @@ import type { Module } from '../core/module.ts'
 /** What making a module may need from the machine boardd runs on. */
 export interface ModuleContext {
   stateDir: string
-  /** A file shipped with this distribution (`externals/bsp/bin/bsp`, say), or null. */
+  /** A file shipped with this distribution (`externals/boardctrl/bin/bsp`, say), or null. */
   shipped(path: string): string | null
   /** boardd's timing settings (`timing` in its configuration), for modules that take some. */
   timing: Record<string, unknown>
@@ -21,6 +21,11 @@ export type Settings = Record<string, unknown>
 export interface CatalogEntry {
   id: string
   about: string
+  /**
+   * The ids this module had before, oldest last. A lab someone added by an old id keeps working: boardd moves the
+   * stored kind to `id` before it offers any kind. Only the ids a stored `labs.added` can hold belong here.
+   */
+  was?: string[]
   create(settings: Settings, context: ModuleContext): Module
 }
 
