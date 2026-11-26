@@ -1545,6 +1545,24 @@ describe('boardd configuration', () => {
     expect(() => parseConfig({ modules: 'b' })).toThrow(/modules 要是/)
   })
 
+  it('keeps the settings a module stored under its old name, and moves each on its first write', () => {
+    // A module that renamed itself has its data under the old prefix (`bsp.site.url`): reading it must not go back to
+    // "nothing chosen yet", and a write must leave one setting, under the name it has now.
+    const lab = new BoardLab({ db: openDatabase(join(dir, 'renamed-settings.sqlite')), modules: [] })
+    lab.kernel.setSetting('bsp.site.url', 'git@example:site.git')
+    const site = lab.kernel.settings('boardctrl.site', ['bsp.site'])
+    expect(site.get('url')).toBe('git@example:site.git')
+    site.set('branch', 'main')
+    expect(lab.kernel.setting('boardctrl.site.branch')).toBe('main')
+    site.set('url', 'git@example:new.git')
+    expect(lab.kernel.setting('boardctrl.site.url')).toBe('git@example:new.git')
+    expect(lab.kernel.setting('bsp.site.url')).toBeNull()
+    // What the module has now wins over what the old name held.
+    lab.kernel.setSetting('bsp.site.branch', 'old')
+    lab.kernel.setSetting('boardctrl.site.branch', 'new')
+    expect(site.get('branch')).toBe('new')
+  })
+
   it('reads a configuration that names a module by the id it had before it renamed itself', () => {
     // A machine upgrading with `{"modules": {"bsp": {…}}}` must load the board controller, not lose it: the catalog
     // entry says the old id, and the configuration is read as naming the module now.

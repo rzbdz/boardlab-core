@@ -235,13 +235,28 @@ export class Kernel {
     else this.db.prepare('INSERT INTO settings(key, value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value)
   }
 
-  /** The settings under `<prefix>.`. */
-  settings(prefix: string): Settings {
+  /**
+   * The settings under `<prefix>.`. A module that renamed itself keeps what it had stored under its old name: its
+   * catalog entry's `was` names those too, and `settings('boardctrl.site', ['bsp.site'])` reads and writes the settings
+   * the module had, moving them on the first write rather than losing them on an upgrade.
+   */
+  settings(prefix: string, previous: string[] = []): Settings {
     const key = (name: string) => `${prefix}.${name}`
+    const older = (name: string) => previous.map(old => `${old}.${name}`)
+    const read = (name: string): string | null => {
+      const own = this.setting(key(name))
+      if (own !== null) return own
+      for (const candidate of older(name)) { const value = this.setting(candidate); if (value !== null) return value }
+      return null
+    }
     return {
-      get: name => this.setting(key(name)),
-      set: (name, value) => this.setSetting(key(name), value),
-      flag: name => { const value = this.setting(key(name)); return value === null ? null : value === '1' },
+      get: read,
+      set: (name, value) => {
+        this.setSetting(key(name), value)
+        // What the old name held is the same setting: it goes, so a later read does not answer with a stale one.
+        for (const candidate of older(name)) if (this.setting(candidate) !== null) this.setSetting(candidate, null)
+      },
+      flag: name => { const value = read(name); return value === null ? null : value === '1' },
     }
   }
 }
