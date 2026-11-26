@@ -356,7 +356,7 @@ function serveFile(path: string, response: ServerResponse, type?: string) {
 export async function serve(lab: BoardLab, options: ServeOptions): Promise<Serving> {
   const listFrontends = () => readFrontends(options.uiDir)
   const current = (list: Frontends) => { const chosen = lab.kernel.setting(FRONTEND_SETTING); return chosen && list.frontends.some(item => item.name === chosen) ? chosen : list.default }
-  const api = createApi(lab, { cli: options.cli, stateDir: options.stateDir, docsDir: options.docsDir, version: options.version, revision: options.revision, marketCommands: options.marketCommands, marketCli: options.marketCli, marketDocs: options.marketDocs })
+  const api = createApi(lab, { cli: options.cli, stateDir: options.stateDir, docsDir: options.docsDir, version: options.version, revision: options.revision, marketCommands: options.marketCommands, marketCli: options.marketCli, marketSdk: options.marketSdk, marketDocs: options.marketDocs })
   const human = `user:${userInfo().username}`
   const hosts = [...new Set(['127.0.0.1', ...(options.hosts ?? [])])]
   const allowed = new Set([...hosts, 'localhost'].map(host => `${host}:${options.port}`))
