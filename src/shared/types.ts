@@ -285,8 +285,11 @@ export interface State {
   firmware: Firmware[]
   proposals: Proposal[]
   modules: ModuleInfo[]
-  /** Every module boardd was given, including one that is waiting or failed (see `PluginInfo`). */
-  plugins: PluginInfo[]
+  /**
+   * Every module boardd was given, including one that is waiting or failed (see `PluginInfo`). Optional: a boardd older
+   * than the plugin runtime does not send it, and a page reads `modules` as it always did.
+   */
+  plugins?: PluginInfo[]
   you: string
   now: string
   /** Agents waiting for a person to let go of a board they are using. */
