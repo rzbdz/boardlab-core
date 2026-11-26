@@ -10,3 +10,8 @@ export * from './core/sdk.ts'
 export { isRemoteGroup } from './shared/commands.ts'
 export type { RemoteCommand, RemoteCommandGroup, RemoteContext } from './shared/commands.ts'
 export { parseDuration } from './shared/duration.ts'
+// The module markets themselves: a module that lists markets, adds one, or changes which modules boardd loads (the
+// market's own page) reads and writes them with these, rather than running git and parsing manifests itself. Server
+// side only — `core/sdk.ts` is shared with the browser build, and this reads files and runs git.
+export { digestOf, marketsDir, marketsFile, marketsOnDisk, readMarket, readRecords, syncMarket, uiPartsOf, writeRecords } from './core/module-markets.ts'
+export type { MarketModule, MarketRecord, ModuleMarket } from './core/module-markets.ts'
