@@ -107,6 +107,19 @@ describe('a market on this machine', () => {
     expect(marketsOf(state)[0]!.modules.map(module => module.id)).toEqual(['probe'])
   })
 
+  it('installs nothing for a market that declares no runtime packages, and says so in its marker', async () => {
+    // A market's tools (a bundler, a type checker) are what builds its page parts; a boardd never builds, and a machine
+    // with no network must still load a market that has nothing to run but `boardlab` itself.
+    const source = marketRepo('tools-only', [{ id: 'probe' }])
+    writeFileSync(join(source, 'package.json'), JSON.stringify({ name: 'tools-only', private: true, devDependencies: { esbuild: '0.27.7' } }))
+    writeFileSync(join(source, 'pnpm-lock.yaml'), 'lockfileVersion: "9.0"\n')
+    git(source, 'add', '-A'); git(source, 'commit', '-q', '-m', 'tools')
+    const state = join(root, 'state-tools-only')
+    const synced = await syncMarket(state, 'demo', { url: source })
+    expect(readFileSync(join(synced.dir, '.boardlab-dependencies'), 'utf8').trim()).toBe(synced.commit)
+    expect(existsSync(join(synced.dir, 'node_modules'))).toBe(false)
+  })
+
   it('follows the source on update, and a changed entry changes its digest', async () => {
     const source = marketRepo('updated', [{ id: 'probe' }])
     const state = join(root, 'state-updated')

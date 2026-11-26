@@ -289,9 +289,24 @@ async function installDependencies(dir: string, env?: NodeJS.ProcessEnv): Promis
   const commit = (await runGit(['rev-parse', 'HEAD'], { cwd: dir, env })).stdout.trim()
   const marker = join(dir, '.boardlab-dependencies')
   if (existsSync(marker) && readFileSync(marker, 'utf8').trim() === commit && existsSync(join(dir, 'node_modules'))) return
+  // A market with nothing to install (only tools to build it with, or none at all) asks its manager for nothing: an
+  // install there would fetch a toolchain for a machine that never builds, and can fail on a host that has no network.
+  const wanted = wantedPackages(dir)
+  if (wanted === 0) { writeFileSync(marker, `${commit}\n`); return }
   const installed = await runPackageManager(dir, env)
   if (installed.code !== 0) { console.error(`${dir}：装市场的依赖失败：${lastLine(installed)}`); return }
   writeFileSync(marker, `${commit}\n`)
+}
+
+/** How many runtime packages a market's manifest declares (`dependencies`, not `devDependencies`); null when unclear. */
+function wantedPackages(dir: string): number | null {
+  try {
+    const raw = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { dependencies?: unknown }
+    const dependencies = raw?.dependencies
+    if (dependencies === undefined) return 0
+    if (!dependencies || typeof dependencies !== 'object' || Array.isArray(dependencies)) return null
+    return Object.keys(dependencies).length
+  } catch { return null }
 }
 
 /**
@@ -306,8 +321,11 @@ function runPackageManager(dir: string, env?: NodeJS.ProcessEnv): Promise<Run> {
   const found = findTool(prefer, env) ?? findTool('npm', env)
   if (!found) return Promise.resolve({ code: 1, stdout: '', stderr: 'no pnpm or npm beside boardlab\'s node, and none on PATH' })
   const args = found.name === 'pnpm' ? ['install', '--prod', '--no-frozen-lockfile'] : ['install', '--omit=dev', '--no-audit', '--no-fund']
+  // A package manager's own scripts run `node` by name (npm's `node-gyp`, a postinstall), and boardd's machine may have
+  // no Node on its PATH at all: this Node's directory goes first, so the install runs on the Node that asked for it.
+  const path = [...new Set([dirname(process.execPath), ...((env?.PATH ?? '').split(delimiter).filter(Boolean))])].join(delimiter)
   return new Promise<Run>(resolve => {
-    execFile(found.command, [...found.prefix, ...args], { cwd: dir, env, maxBuffer: 32 * 1024 * 1024, timeout: 600_000, encoding: 'utf8' },
+    execFile(found.command, [...found.prefix, ...args], { cwd: dir, env: { ...env, PATH: path }, maxBuffer: 32 * 1024 * 1024, timeout: 600_000, encoding: 'utf8' },
       (error: Error | null, stdout: string, stderr: string) => {
         const code = error ? (typeof (error as unknown as { code?: unknown }).code === 'number' ? (error as unknown as { code: number }).code : 1) : 0
         resolve({ code, stdout, stderr: stderr || error?.message || '' })
