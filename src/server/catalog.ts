@@ -2,34 +2,17 @@
  * The modules a distribution offers boardd, and how each is made from its settings in boardd's configuration. A
  * distribution hands its catalog to boardd (`startBoardd`) and to the CLI (`createCli`); boardd loads the ones its
  * configuration selects, in the order their `requires` need.
+ *
+ * The shapes are the core's (`core/catalog.ts`), because a module from a market is made the same way and its SDK hands
+ * out the same types. The readers are `shared`'s, so a module reads its settings with what the catalog does.
  */
 import type { Module } from '../core/module.ts'
+import type { CatalogEntry, ModuleContext } from '../core/catalog.ts'
+import type { Settings } from '../shared/settings.ts'
 
-/** What making a module may need from the machine boardd runs on. */
-export interface ModuleContext {
-  stateDir: string
-  /** A file shipped with this distribution (a bundled tool's binary, a site's tree), or null. */
-  shipped(path: string): string | null
-  /** boardd's timing settings (`timing` in its configuration), for modules that take some. */
-  timing: Record<string, unknown>
-  /** The distribution release boardd is serving. */
-  release: { version: string, revision: string }
-  /** boardd's configuration file, for a module that changes which modules boardd loads (the market's page). */
-  configFile?: string | null
-}
-
-export type Settings = Record<string, unknown>
-
-export interface CatalogEntry {
-  id: string
-  about: string
-  /**
-   * The ids this module had before, oldest last. A lab someone added by an old id keeps working: boardd moves the
-   * stored kind to `id` before it offers any kind. Only the ids a stored `labs.added` can hold belong here.
-   */
-  was?: string[]
-  create(settings: Settings, context: ModuleContext): Module
-}
+export * from '../core/catalog.ts'
+export { instances, number, text } from '../shared/settings.ts'
+export type { Settings } from '../shared/settings.ts'
 
 /** The modules for a selection ({id: settings}), from the catalog. */
 export function createModules(catalog: CatalogEntry[], selection: Record<string, Settings>, context: ModuleContext): Module[] {
@@ -39,29 +22,4 @@ export function createModules(catalog: CatalogEntry[], selection: Record<string,
     try { return entry.create(selection[entry.id] ?? {}, context) }
     catch (error) { throw new Error(`模块 ${entry.id} 的设置不对：${(error as Error).message}`) }
   })
-}
-
-// ---------- reading settings, for modules' catalog entries ----------
-
-/** Backend instance ids (`instances`), each `<id>` naming boards `<id>-<device>`. */
-export function instances(settings: Settings, fallback: string): string[] {
-  const value = settings.instances ?? [fallback]
-  if (!Array.isArray(value) || !value.length || value.some(id => typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(id))) {
-    throw new Error(`instances 要是实例名的数组，例如 ["${fallback}"]`)
-  }
-  return value as string[]
-}
-
-export function text(settings: Settings, key: string): string | undefined {
-  const value = settings[key]
-  if (value === undefined) return undefined
-  if (typeof value !== 'string' || !value) throw new Error(`${key} 要是字符串`)
-  return value
-}
-
-export function number(settings: Settings, key: string): number | undefined {
-  const value = settings[key]
-  if (value === undefined) return undefined
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) throw new Error(`${key} 要是正数`)
-  return value
 }

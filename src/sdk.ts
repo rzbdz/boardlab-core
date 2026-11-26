@@ -10,6 +10,12 @@ export * from './core/sdk.ts'
 export { isRemoteGroup } from './shared/commands.ts'
 export type { RemoteCommand, RemoteCommandGroup, RemoteContext } from './shared/commands.ts'
 export { parseDuration } from './shared/duration.ts'
+// A catalog entry is a distribution's, not a module's: a module from a market has no entry, so the few helpers an
+// entry's `create` uses to read its settings are here, for a module that reads them the same way. Lives in `shared`,
+// because the SDK may not import `server`.
+export { instances, number, text } from './shared/settings.ts'
+export type { Settings } from './shared/settings.ts'
+export type { CatalogEntry, ModuleContext } from './core/catalog.ts'
 // Reaching another machine over ssh as boardd does it: one surface for every module that sets one up, wherever it came
 // from. Server side only (it runs ssh), so not in `core/sdk.ts`, which the browser build re-exports.
 export { Hosts, hostsFor } from './shared/ssh.ts'
