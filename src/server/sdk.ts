@@ -10,19 +10,25 @@
  */
 import { registerHooks } from 'node:module'
 
-const BARE = /^boardlab(\/sdk)?$/
+/**
+ * The names a module may import: the SDK itself, and the client library beside it (`boardlab/client`, what this package
+ * exports as `./client`). Anything else is refused — a market module's dependencies are boardlab's surface.
+ */
+const IMPORTABLE = /^boardlab(\/(?:sdk|client))?$/
 
 /**
  * Resolve `boardlab` and `boardlab/sdk` to the SDK at `sdk`, for every module. Installed once per process; a second call
  * changes what the name resolves to only if `sdk` differs.
  */
 let current: string | null = null
+/** The client library beside the SDK (`dist/client.js` for `dist/sdk.js`), as the package's `./client` export names it. */
+const clientUrl = (sdk: string) => new URL('./client.js', sdk).href
 export function resolveBoardlab(sdk: string): void {
   if (current === sdk) return
   if (!current) {
     registerHooks({
       resolve(specifier, context, nextResolve) {
-        if (BARE.test(specifier) && current) return { url: current, shortCircuit: true, format: 'module' }
+        if (IMPORTABLE.test(specifier) && current) return { url: specifier === 'boardlab/client' ? clientUrl(current) : current, shortCircuit: true, format: 'module' }
         return nextResolve(specifier, context)
       },
     })

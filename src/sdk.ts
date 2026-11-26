@@ -19,3 +19,7 @@ export type { Access, Executor, Result } from './shared/ssh.ts'
 // side only — `core/sdk.ts` is shared with the browser build, and this reads files and runs git.
 export { digestOf, marketsDir, marketsFile, marketsOnDisk, readMarket, readRecords, syncMarket, uiPartsOf, writeRecords } from './core/module-markets.ts'
 export type { MarketModule, MarketRecord, ModuleMarket } from './core/module-markets.ts'
+// The client library, for a module that talks to another boardd — a hub forwarding to the boardd of a board host. Server
+// side: it opens sockets. A module's page part imports `boardlab/ui`; this is `boardlab`'s client.
+export { BoardsApiError, BoardsClient, DEFAULT_PORT, defaultStateDir, defaultTransport, remoteConfigPath, socketPathFor, transportFor, unixTransport } from './shared/client.ts'
+export type { Transport, RemoteConfig } from './shared/client.ts'
