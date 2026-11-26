@@ -10,6 +10,10 @@ export * from './core/sdk.ts'
 export { isRemoteGroup } from './shared/commands.ts'
 export type { RemoteCommand, RemoteCommandGroup, RemoteContext } from './shared/commands.ts'
 export { parseDuration } from './shared/duration.ts'
+// Reaching another machine over ssh as boardd does it: one surface for every module that sets one up, wherever it came
+// from. Server side only (it runs ssh), so not in `core/sdk.ts`, which the browser build re-exports.
+export { Hosts, hostsFor } from './shared/ssh.ts'
+export type { Access, Executor, Result } from './shared/ssh.ts'
 // The module markets themselves: a module that lists markets, adds one, or changes which modules boardd loads (the
 // market's own page) reads and writes them with these, rather than running git and parsing manifests itself. Server
 // side only — `core/sdk.ts` is shared with the browser build, and this reads files and runs git.
