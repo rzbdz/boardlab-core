@@ -33,6 +33,7 @@
       "entries": [
         "src/server/main.ts",
         "src/server/catalog.ts",
+        "src/server/markets.ts",
         "src/server/supervisor.ts",
         "src/server/worker.ts"
       ]

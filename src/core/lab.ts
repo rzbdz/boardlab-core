@@ -14,6 +14,7 @@ import { Download, type BootTiming } from './download.ts'
 import { acknowledgeRestore, restoreRecord } from './db.ts'
 import { debugEndpoints } from './debug-endpoints.ts'
 import { marketEndpoints } from './market-endpoints.ts'
+import { moduleMarketEndpoints } from './module-market-endpoints.ts'
 import { coreEndpoints } from './endpoints.ts'
 import { Files } from './files.ts'
 import { Kernel, type KernelOptions } from './kernel.ts'
@@ -21,6 +22,7 @@ import { resumeRuns } from './resume.ts'
 import { Locks } from './locks.ts'
 import { Markets } from './markets.ts'
 import type { Module, ModuleInfo } from './module.ts'
+import type { ModuleMarket } from './module-markets.ts'
 import { Loader, type Dispose, type PluginState } from './plugin.ts'
 import { registryOf } from './plugin-registry.ts'
 import { Proposals } from './proposals.ts'
@@ -37,6 +39,8 @@ export interface BoardLabOptions extends KernelOptions {
   /** Distribution-owned product knowledge; core does not infer SoCs from model names. */
   socFromProduct?: (product: string) => string | null
   modules?: Module[]
+  /** The module markets this boardd was started with, as their copies describe them (see `module-markets.ts`). */
+  moduleMarkets?: ModuleMarket[]
 }
 
 /** A running piece of a module (a timer, a stream): started with boardd, stopped with it. */
@@ -54,6 +58,8 @@ export class BoardLab {
   readonly backends: Backends
   readonly consoles: Consoles
   readonly markets: Markets
+  /** The module markets boardd was started with: what they offer, and which modules came from one. */
+  readonly moduleMarkets: ModuleMarket[]
   /** Every endpoint, the core's and the modules'; a gateway serves them. */
   readonly api = new Api()
   /** The plugin runtime: what a module registers, and how to take it back. */
@@ -82,7 +88,8 @@ export class BoardLab {
     this.backends = new Backends(this)
     this.consoles = new Consoles(this, options.consoleTiming)
     this.markets = new Markets(this.kernel)
-    this.api.add('core', [...coreEndpoints(this), ...debugEndpoints(this), ...marketEndpoints(this), ...databaseEndpoints(this)])
+    this.moduleMarkets = options.moduleMarkets ?? []
+    this.api.add('core', [...coreEndpoints(this), ...debugEndpoints(this), ...marketEndpoints(this), ...moduleMarketEndpoints(this), ...databaseEndpoints(this)])
     this.kernel.recordUndo = undo => this.loader.record(undo)
     this.api.track(undo => this.loader.record(undo))
     for (const module of inLoadOrder(options.modules ?? [])) this.use(module)

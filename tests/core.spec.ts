@@ -1573,6 +1573,9 @@ describe('the bare distribution', () => {
     expect(overview).toMatch(/^ {2}setup +状态、版本.*：status version install remote serve/m)
     expect(overview.split('\n').length).toBeLessThan(25)
     expect(cli.usage('labs')).toMatch(/^实验室：\n {2}lab kinds/)
+    // What boardd loaded and where more comes from: the core's own group, whatever the distribution brings.
+    expect(cli.usage('module')).toMatch(/module search <文字>/)
+    expect(cli.usage('market')).toMatch(/market add <市场> <git 地址>/)
     expect(cli.usage('reset')).toMatch(/reset <board>/)
     expect(cli.usage('flash')).toMatch(/flash <board> <链接\|文件> \[--flasher <工具>\][\s\S]*flash <board> --sdk <SDK>/)
     expect(cli.usage('nope')).toMatch(/没有这个命令或分组：nope/)

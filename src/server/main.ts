@@ -6,6 +6,7 @@ import { openDatabase, scheduleBackups } from '../core/db.ts'
 import { BoardLab } from '../core/lab.ts'
 import { databaseSettings, moveAddedLabs } from '../core/renamed-kinds.ts'
 import { createModules, type CatalogEntry } from './catalog.ts'
+import { marketsOf, marketModules } from './markets.ts'
 import { loadConfig } from './config.ts'
 import { serve } from './http.ts'
 
@@ -52,17 +53,24 @@ export async function startBoardd(options: BoarddOptions) {
     const moved = openDatabase(join(options.stateDir, 'boards.sqlite'), { backups: join(options.stateDir, 'backups'), restore: !options.sharedDatabase })
     try { for (const move of moveAddedLabs(databaseSettings(moved), moves)) console.error(`boardd: lab ${move.id} is a ${move.to} now (was added as ${move.from})`) } finally { moved.close() }
   }
-  const modules = createModules(options.catalog, selection, {
+  const builtIn = createModules(options.catalog, selection, {
     stateDir: options.stateDir, shipped: options.shipped ?? (() => null), timing: config.timing,
     release: { version: options.version ?? 'dev', revision: options.revision ?? 'dev' },
   })
+  // Modules the configuration takes from a market (see markets.ts): imported before the lab exists, so one that cannot
+  // be imported stops boardd from starting rather than leaving a half-loaded lab behind.
+  const markets = marketsOf(options.stateDir)
+  for (const problem of markets.flatMap(market => market.problems.map(issue => `${issue}`))) console.error(`boardd: ${problem}`)
+  const fromMarkets = await marketModules(options.stateDir, selection, options.catalog.map(entry => entry.id))
+  const modules = [...builtIn, ...fromMarkets.map(({ module }) => module)]
+  for (const { module, settings } of fromMarkets) config.modules[module.id] = settings
   // Checked before it opens: a broken file is moved aside and the newest good copy from backups/ put in its place, by
   // a boardd that is the only one using it. One that shares it with another worker refuses to start instead.
   const file = join(options.stateDir, 'boards.sqlite'), backups = join(options.stateDir, 'backups')
   const db = openDatabase(file, { backups, restore: !options.sharedDatabase })
   const lab = new BoardLab({
     db, firmwareDir: options.firmwareDir, filesDir: join(options.stateDir, 'files'),
-    bootTiming: config.timing.boot, consoleTiming: config.timing.console, modules,
+    bootTiming: config.timing.boot, consoleTiming: config.timing.console, modules, moduleMarkets: markets,
   })
   // A copy a little after start and every 6 hours, while this boardd (or worker) is the one serving: a worker an update
   // drained stops with the lab's other services, and a lock in backups/ keeps two workers from copying at once.
