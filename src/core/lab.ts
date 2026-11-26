@@ -43,6 +43,8 @@ export interface BoardLabOptions extends KernelOptions {
   modules?: Module[]
   /** The module markets this boardd was started with, as their copies describe them (see `module-markets.ts`). */
   moduleMarkets?: ModuleMarket[]
+  /** The release boardd serves, for a module's context (`PluginContext.release`). */
+  release?: { version: string, revision: string }
   /** Its own configuration file, for a module that changes which modules boardd loads (the market's page). */
   configFile?: string | null
   /** Each module's settings, by id (what its catalog entry, or its market, was made with). */
@@ -88,6 +90,7 @@ export class BoardLab {
       stateDir: options.stateDir ?? '',
       registry: registryOf(this),
       configFile: options.configFile ?? null,
+      ...(options.release ? { release: options.release } : {}),
       log: (id, line) => console.error(`[${id}] ${line}`),
       report: (id, error) => console.error(`[${id}] ${(error as Error)?.stack ?? error}`),
     })

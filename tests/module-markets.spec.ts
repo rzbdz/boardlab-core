@@ -188,6 +188,17 @@ describe('a module from a market', () => {
     expect(lab.service<{ dir: string }>('probe').dir).toBe(state)
   })
 
+  it('tells every module the release boardd serves, a market module included', () => {
+    // A module from a market has no catalog entry to be told its release through, and one that names where it raised
+    // something (a card's footer) needs it. A lab with no release says dev, not nothing.
+    const state = join(root, 'state-release')
+    const release = { version: '0.5.0', revision: 'a'.repeat(40) }
+    const lab = new BoardLab({ db: openDatabase(join(state, 'boards.sqlite')), stateDir: state, release, modules: [{ id: 'probe', title: 'probe', setup: (_l, ctx) => ({ release: ctx.release }) }] })
+    expect(lab.service<{ release: unknown }>('probe').release).toEqual(release)
+    const bare = new BoardLab({ db: openDatabase(join(state, 'bare.sqlite')), modules: [{ id: 'probe', title: 'probe', setup: (_l, ctx) => ({ release: ctx.release }) }] })
+    expect(bare.service<{ release: unknown }>('probe').release).toEqual({ version: 'dev', revision: 'dev' })
+  })
+
   it('gives a market module the settings its configuration has for it', async () => {
     const source = marketRepo('settings', [{ id: 'probe', source: 'export default { id: "probe", title: "probe", setup(lab, ctx) { lab.api.addOne("probe", { method: "GET", path: "/api/probe", about: "p", handle: () => ({ settings: ctx.config }) }); return {} } }\n' }])
     const state = join(root, 'state-settings')

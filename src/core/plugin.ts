@@ -36,6 +36,11 @@ export interface PluginContext {
    * installs and uninstalls from it. Null when boardd runs without one (a test, an embedder).
    */
   readonly configFile: string | null
+  /**
+   * The release boardd serves: which boardlab this module runs in. A module that says where it raised something (a
+   * card's footer, a report) names it, and one from a market has no catalog entry to be told through.
+   */
+  readonly release: { version: string, revision: string }
   /** Register a side effect, and the way to undo it (returned by what you register, or returned here). */
   effect(run: () => Dispose | void): Dispose
   /** Listen to an event of the lab; the listener is removed when the plugin is taken down. */
@@ -110,6 +115,7 @@ class Context implements PluginContext {
 
   constructor(readonly id: string, readonly config: Record<string, unknown>, readonly stateDir: string, private readonly loader: Loader) {}
   get configFile(): string | null { return this.loader.options.configFile ?? null }
+  get release(): { version: string, revision: string } { return this.loader.options.release ?? { version: 'dev', revision: 'dev' } }
 
   /**
    * Take on an undo: with the effect running now (a nested effect belongs to it), or else with the module. `undo` runs
@@ -207,6 +213,8 @@ export interface LoaderOptions {
   stateDir: string
   /** boardd's configuration file, for a module that changes which modules boardd loads. */
   configFile?: string | null
+  /** The release boardd serves (see PluginContext.release). */
+  release?: { version: string, revision: string }
   /** How boardd asks for a process that loads what its configuration says now (see BoardLab.reloader). */
   reloader?: (why: string) => void
   registry: Registry

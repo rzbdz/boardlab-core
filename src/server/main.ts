@@ -129,6 +129,7 @@ export async function startBoardd(options: BoarddOptions): Promise<Boardd> {
     settings: Object.fromEntries(fromMarkets.map(({ module, settings }) => [module.id, settings])),
     // The file a module that changes which modules load (the market's page) has to edit: the one this boardd read.
     configFile: config.source,
+    release: { version: options.version ?? 'dev', revision: options.revision ?? 'dev' },
   })
   // A copy a little after start and every 6 hours, while this boardd (or worker) is the one serving: a worker an update
   // drained stops with the lab's other services, and a lock in backups/ keeps two workers from copying at once.
