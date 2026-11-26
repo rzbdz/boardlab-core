@@ -20,7 +20,8 @@
  * modules changed before anything is imported.
  */
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 
 /** What a market offers: one module, as the market's manifest describes it (no code has run). */
@@ -159,4 +160,60 @@ export function readRecords(stateDir: string): { records: MarketRecord[], proble
     records.push({ id: text(item.id)!, url: text(item.url)!, branch: text(item.branch), commit: text(item.commit) })
   }
   return { records, problems }
+}
+
+/** Write the records back to `markets.json`: what the next boardd process reads. */
+export function writeRecords(stateDir: string, records: MarketRecord[]) {
+  mkdirSync(stateDir, { recursive: true })
+  writeFileSync(marketsFile(stateDir), `${JSON.stringify({ markets: records }, null, 2)}\n`)
+}
+
+/** The markets on this machine, each with what its copy says now (what the CLI and the page both show). */
+export function marketsOnDisk(stateDir: string): { markets: Array<MarketRecord & { modules: MarketModule[], problems: string[] }>, problems: string[] } {
+  const { records, problems } = readRecords(stateDir)
+  const markets = records.map(record => {
+    const dir = join(marketsDir(stateDir), record.id)
+    const read = existsSync(join(dir, 'market.json')) ? readMarket(record.id, dir) : { modules: [], problems: [`${record.id}：还没拉取（boardlab market update ${record.id}）`] }
+    return { ...record, modules: read.modules, problems: read.problems }
+  })
+  return { markets, problems }
+}
+
+interface Run { code: number, stdout: string, stderr: string }
+
+/**
+ * Run git in a market's copy. A market is a git repository outside this program: it is fetched, never installed, so
+ * this is the whole of boardlab's git use. No prompt (a private repository's key must be in the agent's
+ * configuration; the caller passes `env`), a bounded time, and the last line of stderr as the error.
+ */
+function runGit(args: string[], options: { cwd?: string, env?: NodeJS.ProcessEnv } = {}): Promise<Run> {
+  return new Promise(resolve => {
+    execFile('git', args, { cwd: options.cwd, env: options.env, maxBuffer: 32 * 1024 * 1024, timeout: 600_000 },
+      (error, stdout, stderr) => resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout: String(stdout), stderr: String(stderr || (error ? error.message : '')) }))
+  })
+}
+const lastLine = (run: Run) => (run.stderr || run.stdout).trim().split('\n').filter(Boolean).at(-1) ?? `退出码 ${run.code}`
+
+/**
+ * Fetch or update one market's copy under the state directory, and say which commit it is at. A shallow clone: boardlab
+ * reads a market's files, and does not need its history. `env` is the environment git runs with: a caller supplies it
+ * (no prompt, a stable locale) rather than the core reading one itself.
+ */
+export async function syncMarket(stateDir: string, id: string, options: { url: string, branch?: string | null, env?: NodeJS.ProcessEnv }): Promise<{ commit: string, dir: string }> {
+  mkdirSync(marketsDir(stateDir), { recursive: true })
+  const dir = join(marketsDir(stateDir), id)
+  const branch = options.branch ?? null
+  if (await runGit(['rev-parse', '--git-dir'], { cwd: dir, env: options.env }).then(run => run.code === 0)) {
+    const fetched = await runGit(['fetch', '--depth', '1', 'origin', branch ?? 'HEAD'], { cwd: dir, env: options.env })
+    if (fetched.code !== 0) throw new Error(`${id}：拉不到 ${options.url}：${lastLine(fetched)}`)
+    const checkout = await runGit(['checkout', '-q', 'FETCH_HEAD'], { cwd: dir, env: options.env })
+    if (checkout.code !== 0) throw new Error(`${id}：切换到新版本失败：${lastLine(checkout)}`)
+  } else {
+    rmSync(dir, { recursive: true, force: true })
+    const cloned = await runGit(['clone', '-q', '--depth', '1', ...(branch ? ['-b', branch] : []), options.url, dir], { env: options.env })
+    if (cloned.code !== 0) throw new Error(`${id}：克隆不了 ${options.url}：${lastLine(cloned)}`)
+  }
+  const head = await runGit(['rev-parse', 'HEAD'], { cwd: dir, env: options.env })
+  if (head.code !== 0) throw new Error(`${id}：读不出 ${dir} 的版本：${lastLine(head)}`)
+  return { commit: head.stdout.trim(), dir }
 }

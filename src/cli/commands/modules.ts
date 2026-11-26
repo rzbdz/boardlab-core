@@ -9,6 +9,9 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { marketsDir, marketsFile, marketsOf, readMarket, readRecords, syncMarket, type MarketRecord } from '../../server/markets.ts'
+
+/** Git's own environment for a market fetch: no prompt, and a C locale so a message parses the same everywhere. */
+const GIT_ENV = { ...process.env, LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0' }
 import type { Command, CommandGroup } from '../command.ts'
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -49,7 +52,7 @@ const commands: Command[] = [
         if (!ID.test(id)) throw new Error(`市场名 ${id}：只能用字母、数字、点、下划线和短横线`)
         if (records.some(record => record.id === id)) throw new Error(`已经有市场 ${id}：boardlab market update ${id}`)
         const branch = flag('branch') ?? null
-        const synced = await syncMarket(stateDir, id, { url, branch })
+        const synced = await syncMarket(stateDir, id, { url, branch, env: GIT_ENV })
         const { modules, problems: readProblems } = readMarket(id, synced.dir)
         save(stateDir, [...records, { id, url, branch, commit: synced.commit }])
         return out({ id, url, branch, commit: synced.commit, modules, problems: readProblems }, () => {
@@ -79,7 +82,7 @@ const commands: Command[] = [
         const changed: Array<{ id: string, from: string | null, to: string, before: ReturnType<typeof readMarket>, after: ReturnType<typeof readMarket> }> = []
         for (const record of chosen) {
           const before = existsSync(join(marketsDir(stateDir), record.id, 'market.json')) ? readMarket(record.id, join(marketsDir(stateDir), record.id)) : { modules: [], problems: [] }
-          const synced = await syncMarket(stateDir, record.id, { url: record.url, branch: record.branch })
+          const synced = await syncMarket(stateDir, record.id, { url: record.url, branch: record.branch, env: GIT_ENV })
           const after = readMarket(record.id, synced.dir)
           changed.push({ id: record.id, from: record.commit, to: synced.commit, before, after })
           const next = records.map(item => item.id === record.id ? { ...item, commit: synced.commit } : item)

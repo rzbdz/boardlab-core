@@ -12,8 +12,6 @@
  * What a market offers and what a module does are kept apart: the manifest is what boardd imports and what a person
  * searches; the module, once imported, is the truth about what it injects and provides.
  */
-import { execFile } from 'node:child_process'
-import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { Module } from '../core/module.ts'
@@ -22,14 +20,8 @@ import { marketsDir, readMarket, readRecords, type MarketModule, type MarketReco
 
 // A CLI reads and writes markets without a boardd: what it needs of the manifest format is here, re-exported, so `cli`
 // reaches it through this layer like it reaches the catalog.
-export { marketsDir, marketsFile, readMarket, readRecords } from '../core/module-markets.ts'
+export { marketsDir, marketsFile, marketsOnDisk, readMarket, readRecords, syncMarket, writeRecords } from '../core/module-markets.ts'
 export type { MarketModule, MarketRecord, ModuleMarket } from '../core/module-markets.ts'
-
-interface Run { code: number, stdout: string, stderr: string }
-const git = (args: string[], cwd?: string): Promise<Run> => new Promise(resolve =>
-  execFile('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0' }, maxBuffer: 32 * 1024 * 1024, timeout: 600_000 },
-    (error, stdout, stderr) => resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout: String(stdout), stderr: String(stderr || (error ? error.message : '')) })))
-const last = (run: Run) => (run.stderr || run.stdout).trim().split('\n').filter(Boolean).at(-1) ?? `退出码 ${run.code}`
 
 /**
  * Where each module's page part is served from, by module id: the directory its module's `ui` file is in, inside the
@@ -55,26 +47,6 @@ function describe(record: MarketRecord, stateDir: string): ModuleMarket {
 export function marketsOf(stateDir: string): ModuleMarket[] {
   const { records } = readRecords(stateDir)
   return records.map(record => describe(record, stateDir))
-}
-
-/** Fetch or update one market's copy, and say which commit it is at. */
-export async function syncMarket(stateDir: string, id: string, options: { url: string, branch?: string | null }): Promise<{ commit: string, dir: string }> {
-  mkdirSync(marketsDir(stateDir), { recursive: true })
-  const dir = join(marketsDir(stateDir), id)
-  const branch = options.branch ?? null
-  if (await git(['rev-parse', '--git-dir'], dir).then(run => run.code === 0)) {
-    const fetched = await git(['fetch', '--depth', '1', 'origin', branch ?? 'HEAD'], dir)
-    if (fetched.code !== 0) throw new Error(`${id}：拉不到 ${options.url}：${last(fetched)}`)
-    const checkout = await git(['checkout', '-q', 'FETCH_HEAD'], dir)
-    if (checkout.code !== 0) throw new Error(`${id}：切换到新版本失败：${last(checkout)}`)
-  } else {
-    rmSync(dir, { recursive: true, force: true })
-    const cloned = await git(['clone', '-q', '--depth', '1', ...(branch ? ['-b', branch] : []), options.url, dir])
-    if (cloned.code !== 0) throw new Error(`${id}：克隆不了 ${options.url}：${last(cloned)}`)
-  }
-  const head = await git(['rev-parse', 'HEAD'], dir)
-  if (head.code !== 0) throw new Error(`${id}：读不出 ${dir} 的版本：${last(head)}`)
-  return { commit: head.stdout.trim(), dir }
 }
 
 /**
