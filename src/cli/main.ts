@@ -157,6 +157,15 @@ async function run(argv: string[], COMMANDS: Map<string, Command>, usage: (topic
   const out = (value: unknown, text: () => void) => json ? console.log(JSON.stringify(value, null, 2)) : text()
   if (!name) return console.log(usage(flags.has('all') ? '--all' : undefined))
   const stateDir = resolve(flag('state-dir') ?? defaultStateDir())
+  // A branch of this CLI boardd started for a client, with the commands of the modules it loaded from markets named in
+  // `BOARDLAB_MARKET_CLI`: those ARE this process's commands, and this is where a module's own `run` executes. Registered
+  // before the lookup below, since this process was started for one of them.
+  if (process.env.BOARDLAB_MARKET_CLI) for (const command of await withMarketCli(process.env.BOARDLAB_MARKET_CLI)) {
+    if (!COMMANDS.has(command.name)) {
+      const found = command.group.commands.find(item => item.name === command.name)!
+      COMMANDS.set(command.name, { name: command.name, usage: found.usage, ...(found.standalone ? { standalone: true } : {}), ...(found.noBoard ? { noBoard: true } : {}), run: context => found.run(context) })
+    }
+  }
   const command = COMMANDS.get(name)
   // What followed the command word, flags included, for commands that hand their arguments on.
   const rest = argv.slice(argv.indexOf(name) + 1)
@@ -204,14 +213,6 @@ async function run(argv: string[], COMMANDS: Map<string, Command>, usage: (topic
     if (offered.length) {
       const groups = withMarketCommands([], offered, () => client)
       extend({ groups, commands: groups.flatMap(group => group.commands.map(item => ({ name: item.name, command: item }))) })
-    }
-  }
-  // A branch of this CLI boardd started for a client, with the commands of the modules it loaded from markets named in
-  // `BOARDLAB_MARKET_CLI`: those ARE this process's commands, and this is where a module's own `run` executes.
-  if (process.env.BOARDLAB_MARKET_CLI) for (const command of await withMarketCli(process.env.BOARDLAB_MARKET_CLI)) {
-    if (!COMMANDS.has(command.name)) {
-      const found = command.group.commands.find(item => item.name === command.name)!
-      COMMANDS.set(command.name, { name: command.name, usage: found.usage, ...(found.standalone ? { standalone: true } : {}), ...(found.noBoard ? { noBoard: true } : {}), run: context => found.run(context) })
     }
   }
   if (help) return console.log(name === 'help' ? usage(args.length ? args.join('\0') : flags.has('all') ? '--all' : undefined) : usage(name))
