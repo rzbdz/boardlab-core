@@ -23,7 +23,7 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { delimiter, dirname, join, relative, resolve, sep } from 'node:path'
 
 /** What a market offers: one module, as the market's manifest describes it (no code has run). */
 export interface MarketModule {
@@ -294,14 +294,35 @@ async function installDependencies(dir: string, env?: NodeJS.ProcessEnv): Promis
   writeFileSync(marker, `${commit}\n`)
 }
 
-/** `pnpm install --prod` when the market has a pnpm lockfile, else `npm install --omit=dev`: whichever the market ships. */
+/**
+ * Install a market's dependencies: `pnpm --prod` when it has a pnpm lockfile and pnpm is there, else `npm --omit=dev`.
+ *
+ * The package manager is looked for beside boardd's own Node first — a release carries its Node in `<release>/node/bin`,
+ * and a board host has none of its own on PATH — then on the PATH `env` gives. A tool beside this Node is a script, so
+ * it runs on this same Node rather than through a shebang the machine may not resolve.
+ */
 function runPackageManager(dir: string, env?: NodeJS.ProcessEnv): Promise<Run> {
-  const tool: [string, string[]] = existsSync(join(dir, 'pnpm-lock.yaml')) ? ['pnpm', ['install', '--prod', '--no-frozen-lockfile']] : ['npm', ['install', '--omit=dev', '--no-audit', '--no-fund']]
+  const prefer: 'pnpm' | 'npm' = existsSync(join(dir, 'pnpm-lock.yaml')) ? 'pnpm' : 'npm'
+  const found = findTool(prefer, env) ?? findTool('npm', env)
+  if (!found) return Promise.resolve({ code: 1, stdout: '', stderr: 'no pnpm or npm beside boardlab\'s node, and none on PATH' })
+  const args = found.name === 'pnpm' ? ['install', '--prod', '--no-frozen-lockfile'] : ['install', '--omit=dev', '--no-audit', '--no-fund']
   return new Promise<Run>(resolve => {
-    execFile(tool[0], tool[1], { cwd: dir, env, maxBuffer: 32 * 1024 * 1024, timeout: 600_000, encoding: 'utf8' },
+    execFile(found.command, [...found.prefix, ...args], { cwd: dir, env, maxBuffer: 32 * 1024 * 1024, timeout: 600_000, encoding: 'utf8' },
       (error: Error | null, stdout: string, stderr: string) => {
         const code = error ? (typeof (error as unknown as { code?: unknown }).code === 'number' ? (error as unknown as { code: number }).code : 1) : 0
         resolve({ code, stdout, stderr: stderr || error?.message || '' })
       })
   })
+}
+
+/** How to run a package manager: its command and what comes before its arguments. */
+interface Found { name: 'pnpm' | 'npm', command: string, prefix: string[] }
+
+/** A package manager beside this Node, else on `env`'s PATH: null when neither has it. */
+function findTool(name: 'pnpm' | 'npm', env?: NodeJS.ProcessEnv): Found | null {
+  const own = join(dirname(process.execPath), name)
+  if (existsSync(own)) return { name, command: process.execPath, prefix: [own] }
+  if (existsSync(join(dirname(process.execPath), `${name}.cmd`))) return { name, command: join(dirname(process.execPath), `${name}.cmd`), prefix: [] }
+  for (const path of (env?.PATH ?? '').split(delimiter)) if (path && existsSync(join(path, name))) return { name, command: join(path, name), prefix: [] }
+  return null
 }
