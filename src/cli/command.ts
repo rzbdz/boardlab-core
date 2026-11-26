@@ -6,6 +6,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import type { BoardsClient } from '../shared/client.ts'
+import type { RemoteContext } from '../shared/commands.ts'
 import type { Board, Chip, State } from '../shared/types.ts'
 import type { CatalogEntry } from '../server/catalog.ts'
 
@@ -36,28 +37,9 @@ export interface CliPresentation {
   lockTokenHint?(gateToken: string): string | null
 }
 
-export interface CommandContext {
-  /** What followed the command name: positional words, and every raw argument (for commands that pass them on). */
-  args: string[]
-  argv: string[]
-  flags: Map<string, string | true>
-  flag(name: string): string | undefined
-  json: boolean
-  /** Print `value` as JSON with --json, else run `text`. */
-  out(value: unknown, text: () => void): void
-  stateDir: string
+export interface CommandContext extends RemoteContext {
   /** The distribution's modules, for running boardd (`serve`). */
   catalog: CatalogEntry[]
-  /** boardd, and who this CLI acts as there. Not set for standalone commands. */
-  client: BoardsClient
-  holder: string
-  /** boardd is on another machine (its files are not this machine's). */
-  remote: boolean
-  /** The board (and chip) named first: `<board>[.<die>]`. */
-  target(): { board: string, die: string | undefined }
-  /** The lock token this CLI holds for a board, if any, and keeping or forgetting one. */
-  token(board?: string): string | null
-  keepToken(board: string, token: string | null): void
 }
 
 /**

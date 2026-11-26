@@ -26,7 +26,7 @@ export type { LabKind } from './backends.ts'
 export type { Settings, Kernel } from './kernel.ts'
 export { humanArchive, isStatus, oneLine, cleaned, STATUSES } from './human.ts'
 export type { HumanArchive, HumanAsk, HumanInbox, HumanRequest, HumanStatus } from './human.ts'
-export type { RemoteCommand, RemoteCommandGroup } from '../shared/commands.ts'
+export type { RemoteCommand, RemoteCommandGroup, RemoteContext } from '../shared/commands.ts'
 
 export type {
   Action, Board, BoardChannels, BoardDetail, LabField, LabFields, LabSettings, Lease, LockResult, Market, MarketEntry, MarketListing,

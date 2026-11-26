@@ -54,6 +54,8 @@ export interface ServeOptions {
   marketCommands?: () => Promise<DescribedCommand[]>,
   /** The `cli` files of the modules loaded from markets, as `id=path` joined by the path delimiter (`BOARDLAB_MARKET_CLI`). */
   marketCli?: string,
+  /** The help pages the modules loaded from markets bring, named `<module>/<page>` (`GET /api/docs`). */
+  marketDocs?: () => Array<{ name: string, title: string, file: string }>,
 }
 
 /** What `serve` started: its servers, and how a supervised worker takes connections and knows when it is idle. */
@@ -78,12 +80,17 @@ export interface Serving {
  * What the gateway's own endpoints need from how boardd runs: its own CLI (to run commands for older clients), state
  * directory, and help pages.
  */
-type GatewayOptions = { cli?: string, stateDir?: string, docsDir?: string | null, version?: string, revision?: string, marketCommands?: () => Promise<DescribedCommand[]>, marketCli?: string }
+type GatewayOptions = {
+  cli?: string, stateDir?: string, docsDir?: string | null, version?: string, revision?: string,
+  marketCommands?: () => Promise<DescribedCommand[]>, marketCli?: string,
+  /** The help pages modules loaded from markets bring, by name as a view names them (`<module>/<page>`). */
+  marketDocs?: () => Array<{ name: string, title: string, file: string }>,
+}
 
 export function createApi(lab: BoardLab, options: GatewayOptions = {}): (request: IncomingMessage, response: ServerResponse, caller: Caller) => Promise<void> {
   // The gateway's own endpoints, served beside the lab's; its index lists both.
   const own = new Api()
-  own.add('gateway', [cliEndpoint(options), marketCommandsEndpoint(options.marketCommands), ...docsEndpoints(options.docsDir ?? null), {
+  own.add('gateway', [cliEndpoint(options), marketCommandsEndpoint(options.marketCommands), ...docsEndpoints(options.docsDir ?? null, options.marketDocs), {
     method: 'GET', path: '/api/version', about: 'boardd 的版本和它提供的 API 版本', handle: () => ({ version: options.version ?? 'dev', revision: options.revision ?? 'dev', api: API_VERSION }),
   }, {
     method: 'GET', path: '/api', about: '列出所有接口和模块（openapi：机器可读的 OpenAPI 描述）', handle: () => {
@@ -214,9 +221,11 @@ const DOC = /^[a-z0-9][a-z0-9-]{0,39}$/
 /** A help page's title: its first `# ` heading, or its name. */
 const docTitle = (text: string, name: string) => /^#\s+(.+)$/m.exec(text)?.[1]?.trim() ?? name
 
-/** `GET /api/docs`, `GET /api/docs/<name>`: the help pages shipped with the distribution, as Markdown. */
-function docsEndpoints(dir: string | null): Endpoint[] {
+/** `GET /api/docs`, `GET /api/docs/<name>`: the help pages shipped with the distribution, and those a market module brings. */
+function docsEndpoints(dir: string | null, fromMarkets?: () => Array<{ name: string, title: string, file: string }>): Endpoint[] {
   const read = (name: string) => {
+    const offered = fromMarkets?.().find(page => page.name === name)
+    if (offered) return readFileSync(offered.file, 'utf8')
     const file = dir && DOC.test(name) ? join(dir, `${name}.md`) : null
     if (!file || !existsSync(file)) throw new BoardError('not-found', `没有帮助页 ${name}`)
     return readFileSync(file, 'utf8')
@@ -224,8 +233,11 @@ function docsEndpoints(dir: string | null): Endpoint[] {
   return [{
     method: 'GET', path: '/api/docs', about: '帮助页的列表（name、title）',
     handle: () => ({
-      docs: (dir && existsSync(dir) ? readdirSync(dir) : []).filter(file => file.endsWith('.md') && DOC.test(file.slice(0, -3))).sort()
-        .map(file => { const name = file.slice(0, -3); return { name, title: docTitle(read(name), name) } }),
+      docs: [
+        ...(dir && existsSync(dir) ? readdirSync(dir) : []).filter(file => file.endsWith('.md') && DOC.test(file.slice(0, -3))).sort()
+          .map(file => { const name = file.slice(0, -3); return { name, title: docTitle(read(name), name) } }),
+        ...(fromMarkets?.() ?? []).map(page => ({ name: page.name, title: page.title })),
+      ],
     }),
   }, {
     method: 'GET', path: '/api/docs/:name', about: '一页帮助（Markdown）：name、title、text',
@@ -340,7 +352,7 @@ function serveFile(path: string, response: ServerResponse, type?: string) {
 export async function serve(lab: BoardLab, options: ServeOptions): Promise<Serving> {
   const listFrontends = () => readFrontends(options.uiDir)
   const current = (list: Frontends) => { const chosen = lab.kernel.setting(FRONTEND_SETTING); return chosen && list.frontends.some(item => item.name === chosen) ? chosen : list.default }
-  const api = createApi(lab, { cli: options.cli, stateDir: options.stateDir, docsDir: options.docsDir, version: options.version, revision: options.revision, marketCommands: options.marketCommands, marketCli: options.marketCli })
+  const api = createApi(lab, { cli: options.cli, stateDir: options.stateDir, docsDir: options.docsDir, version: options.version, revision: options.revision, marketCommands: options.marketCommands, marketCli: options.marketCli, marketDocs: options.marketDocs })
   const human = `user:${userInfo().username}`
   const hosts = [...new Set(['127.0.0.1', ...(options.hosts ?? [])])]
   const allowed = new Set([...hosts, 'localhost'].map(host => `${host}:${options.port}`))

@@ -12,6 +12,33 @@
  * A module's `cli.ts` exports a `RemoteCommandGroup`; this distribution's own modules export a `CommandGroup`
  * (`./command.ts`, whose commands are `listed`).
  */
+import type { BoardsClient } from './client.ts'
+
+/**
+ * What a command's `run` is handed. The CLI's own commands get more (`CatalogEntry`s, for running boardd), but this is
+ * what a command in a market may rely on: it is the same context, described from the other side of the seam.
+ */
+export interface RemoteContext {
+  /** What followed the command name: positional words, and every raw argument (for commands that pass them on). */
+  args: string[]
+  argv: string[]
+  flags: Map<string, string | true>
+  flag(name: string): string | undefined
+  json: boolean
+  /** Print `value` as JSON with --json, else run `text`. */
+  out(value: unknown, text: () => void): void
+  stateDir: string
+  /** boardd, and who this CLI acts as there. */
+  client: BoardsClient
+  holder: string
+  /** boardd is on another machine (its files are not this machine's). */
+  remote: boolean
+  /** The board (and chip) named first: `<board>[.<die>]`. */
+  target(): { board: string, die: string | undefined }
+  /** The lock token this CLI holds for a board, if any, and keeping or forgetting one. */
+  token(board?: string): string | null
+  keepToken(board: string, token: string | null): void
+}
 
 /** A command that runs where its module is loaded (a market module's own). */
 export interface RemoteCommand {
@@ -25,8 +52,8 @@ export interface RemoteCommand {
   standalone?: boolean
   /** Its first argument is not a board (it names a lab, or hands its arguments on), so a slot reference is left alone. */
   noBoard?: boolean
-  /** The module's own code; boardd runs it in its CLI process, with `ctx` the same context a built-in command gets. */
-  run(context: unknown): Promise<void> | void
+  /** The module's own code; boardd runs it in its CLI process, with a context of the same shape a built-in command gets. */
+  run(context: RemoteContext): Promise<void> | void
 }
 
 /** Commands under one heading of `boardlab help`, as a module in a market exports them. */

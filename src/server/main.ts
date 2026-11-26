@@ -108,9 +108,13 @@ export async function startBoardd(options: BoarddOptions): Promise<Boardd> {
   // that does not have the module can list them and run one against this boardd (GET /api/cli/commands).
   const commandGroups: RemoteCommandGroup[] = []
   const commandFiles: string[] = []
+  // The help pages those modules bring, under `<module>/<page>`: a view names one, and it answers as boardd's own do.
+  const marketDocs: Array<{ name: string, title: string, file: string }> = []
   for (const { module } of fromMarkets) {
     const offered = markets.flatMap(market => market.modules).find(item => item.id === module.id)
-    if (!offered?.cli) continue
+    if (!offered) continue
+    marketDocs.push(...offered.docs)
+    if (!offered.cli) continue
     const { group, problem } = await loadCommands(offered.cli, module.id)
     if (problem) console.error(`boardd: ${module.id} 的命令加载不了：${problem}`)
     else if (group) { commandGroups.push(group); commandFiles.push(`${module.id}=${offered.cli}`) }
@@ -133,7 +137,7 @@ export async function startBoardd(options: BoarddOptions): Promise<Boardd> {
   const port = options.port ?? DEFAULT_PORT
   // One frontend (index.html at the top), or several (frontends.json, see http.ts).
   const uiDir = options.uiDir && (existsSync(join(options.uiDir, 'index.html')) || existsSync(join(options.uiDir, 'frontends.json'))) ? options.uiDir : null
-  const server = await serve(lab, { port, hosts: options.hosts, origins: options.origins, cli: options.cli, stateDir: options.stateDir, socketPath: socketPathFor(options.stateDir), uiDir, docsDir: options.shipped?.('docs/help') ?? null, version: options.version, revision: options.revision, ownSocket: !options.worker, handed: options.handed, observe: options.observe, sdkDir: options.shipped?.('dist') ?? null, marketCommands: async () => commandGroups.flatMap(describe), marketCli: commandFiles.join(delimiter) })
+  const server = await serve(lab, { port, hosts: options.hosts, origins: options.origins, cli: options.cli, stateDir: options.stateDir, socketPath: socketPathFor(options.stateDir), uiDir, docsDir: options.shipped?.('docs/help') ?? null, version: options.version, revision: options.revision, ownSocket: !options.worker, handed: options.handed, observe: options.observe, sdkDir: options.shipped?.('dist') ?? null, marketCommands: async () => commandGroups.flatMap(describe), marketCli: commandFiles.join(delimiter), marketDocs: () => marketDocs })
   const address = server.http[0]?.address()
   // How this boardd asks for a new process of its own (a module installed or taken out): the CLI wires `reload` when it
   // runs as a worker under a supervisor.

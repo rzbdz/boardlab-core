@@ -14,14 +14,15 @@
  *
  * `entry` defaults to `<id>/module.js`, then `<id>/index.js`; `ui` is optional, and is what a page imports to render the
  * module's part of it (`{ module, views }`, see `ui/contract.ts`). A `ui` file is a browser module as it is: a market
- * that writes one in TypeScript builds it before it pushes.
+ * that writes one in TypeScript builds it before it pushes. `cli` names the module's own `boardlab` commands, and `docs`
+ * a directory of help pages (`<module>/<name>`, see `View.help`), which defaults to `docs/` beside the entry.
  *
  * Nothing here runs code: an entry is only checked to be there, and `digestOf` hashes it, so a market update shows which
  * modules changed before anything is imported.
  */
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 
 /** What a market offers: one module, as the market's manifest describes it (no code has run). */
@@ -46,6 +47,11 @@ export interface MarketModule {
    * Commands are the module's code, so they run where the module is loaded, not in a CLI built without it.
    */
   cli: string | null
+  /**
+   * Its help pages, which are not boardd's: a view names one by name (`view.help`), and a page from a market answers to
+   * `<id>/<name>` everywhere, listed and fetched as boardd's own are. Empty when it brings none.
+   */
+  docs: Array<{ name: string, title: string, file: string }>
   /** The directory that page part is served from, absolute; null when it brings none. Nothing else of it is served. */
   uiDir: string | null
   /** sha256 of the entry file: a market update that changes the code changes this. */
@@ -130,12 +136,45 @@ export function readMarket(id: string, dir: string): { modules: MarketModule[], 
       else if (!existsSync(uiFile)) problems.push(`${id}：${moduleId} 的 ui ${uiName} 不在，页面部分不会出现`)
       else { ui = `module-ui/${moduleId}/${uiName.slice(uiName.lastIndexOf('/') + 1)}`; uiDir = dirname(real) }
     }
+    const docs = docsOf(dir, moduleId, item.docs, entry, problems)
     modules.push({
       id: moduleId, title: text(item.title) ?? moduleId, about: text(item.about) ?? '', tags: words(item.tags),
-      inject: words(item.inject), provide: words(item.provide), version: text(item.version), market: id, entry, ui, uiDir, cli, digest: digestOf(entry),
+      inject: words(item.inject), provide: words(item.provide), version: text(item.version), market: id, entry, ui, uiDir, cli, docs, digest: digestOf(entry),
     })
   }
   return { modules, problems }
+}
+
+/** A help page's title: its first `# ` heading, as boardd's own pages get theirs. */
+const docTitle = (text: string, name: string) => /^#\s+(.+)$/m.exec(text)?.[1]?.trim() ?? name
+
+/**
+ * A module's help pages: the directory the manifest's `docs` names, or `docs/` beside the module's entry when it names
+ * none. Each `.md` file in it is a page called `<module>/<file>` (`view.help`, see `ui/contract.ts`). No such directory
+ * is no pages and no problem (a module that needs no help), but a page that is a symlink out of the market or inside
+ * `.git` is said and skipped, as a `ui` would be.
+ */
+function docsOf(dir: string, id: string, named: unknown, entry: string, problems: string[]): Array<{ name: string, title: string, file: string }> {
+  const folder = resolve(dir, text(named) ?? join(dirname(relative(dir, entry)), 'docs'))
+  if (!existsSync(folder)) {
+    if (text(named)) problems.push(`${id}：docs ${text(named)} 不在，它的帮助页不会有`)
+    return []
+  }
+  if (!inside(dir, folder)) { problems.push(`${id}：docs 要在市场目录里`); return [] }
+  const pages: Array<{ name: string, title: string, file: string }> = []
+  for (const file of readdirSync(folder).filter(name => name.endsWith('.md')).sort()) {
+    const path = join(folder, file)
+    const real = realOf(path)
+    if (!inside(dir, path) || !real || !inside(dir, real) || real.split(sep).includes('.git')) {
+      problems.push(`${id}：帮助页 ${file} 不能从市场里提供（要在市场目录里，且不在 .git 里）`)
+      continue
+    }
+    let body = ''
+    try { body = readFileSync(real, 'utf8') } catch { problems.push(`${id}：帮助页 ${file} 读不了`); continue }
+    const name = file.slice(0, -3)
+    pages.push({ name: `${id}/${name}`, title: docTitle(body, name), file: real })
+  }
+  return pages
 }
 
 /** The markets a boardd has: `<state>/markets.json` says which, and each has a copy under `<state>/markets/<id>`. */

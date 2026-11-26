@@ -327,3 +327,58 @@ describe('a market cannot reach past its own page part', () => {
     expect(answered.pages).toEqual([])
   })
 })
+
+describe('a market brings its help pages', () => {
+  /** A market whose module keeps its help beside its entry (`probe/docs/`), or in a directory the manifest names. */
+  function withDocs(name: string, manifest: Record<string, unknown> = {}, pages: Record<string, string> = { 'usage.md': '# Using it\n\nWhat it does.\n' }) {
+    const dir = marketRepo(name, [{ id: 'probe', manifest }])
+    mkdirSync(join(dir, 'probe/docs'), { recursive: true })
+    for (const [name, body] of Object.entries(pages)) writeFileSync(join(dir, 'probe/docs', name), body)
+    git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', 'docs')
+    return dir
+  }
+
+  it('reads the pages beside a module\'s entry, titled by their heading and named <module>/<page>', () => {
+    const dir = withDocs('docs')
+    const { modules, problems } = readMarket('docs', dir)
+    expect(problems).toEqual([])
+    expect(modules[0]!.docs).toEqual([{ name: 'probe/usage', title: 'Using it', file: join(dir, 'probe/docs/usage.md') }])
+  })
+
+  it('takes a directory when the manifest names one, and is silent for a module with no help', () => {
+    const dir = marketRepo('no-docs', [{ id: 'probe' }])
+    expect(readMarket('no-docs', dir).modules[0]!.docs).toEqual([])
+    mkdirSync(join(dir, 'pages'), { recursive: true })
+    writeFileSync(join(dir, 'pages/intro.md'), 'no heading\n')
+    writeFileSync(join(dir, 'pages/notes.txt'), 'not a page')
+    writeFileSync(join(dir, 'market.json'), JSON.stringify({ modules: [{ id: 'probe', entry: 'probe/module.js', docs: 'pages' }] }))
+    git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', 'pages')
+    expect(readMarket('no-docs', dir).modules[0]!.docs).toEqual([{ name: 'probe/intro', title: 'intro', file: join(dir, 'pages/intro.md') }])
+  })
+
+  it('will not serve a page that leaves the market, and says so', () => {
+    const dir = withDocs('docs-symlink')
+    const outside = join(root, 'outside.md'); writeFileSync(outside, 'secret')
+    try { execFileSync('rm', [join(dir, 'probe/docs/usage.md')]); execFileSync('ln', ['-s', outside, join(dir, 'probe/docs/usage.md')]) } catch { return }
+    expect(readMarket('docs-link', dir).problems.join('\n')).toMatch(/帮助页 usage\.md 不能从市场里提供/)
+  })
+
+  it('answers GET /api/docs/<module>/<page> beside boardd\'s own, and lists them together', async () => {
+    const { serve } = await import('../src/server/http.ts')
+    const state = join(root, 'state-docs')
+    const dir = withDocs('docs-served')
+    const synced = await syncMarket(state, 'docs', { url: dir })
+    writeFileSync(marketsFile(state), JSON.stringify({ markets: [{ id: 'docs', url: synced.dir, commit: synced.commit }] }))
+    const own = join(state, 'help'); mkdirSync(own, { recursive: true }); writeFileSync(join(own, 'site.md'), '# The site\n')
+    const ui = join(state, 'ui2'); mkdirSync(ui, { recursive: true }); writeFileSync(join(ui, 'index.html'), '<html></html>')
+    const lab = new BoardLab({ db: openDatabase(join(state, 'boards.sqlite')), moduleMarkets: marketsOf(state) })
+    const marketDocs = readMarket('docs', synced.dir).modules.flatMap(module => module.docs)
+    const running = await serve(lab, { port: 0, socketPath: join(state, 'b.sock'), uiDir: ui, docsDir: own, marketDocs: () => marketDocs })
+    try {
+      const base = `http://127.0.0.1:${(running.http[0]!.address() as { port: number }).port}`
+      expect(await (await fetch(`${base}/api/docs`)).json()).toEqual({ docs: [{ name: 'site', title: 'The site' }, { name: 'probe/usage', title: 'Using it' }] })
+      expect(await (await fetch(`${base}/api/docs/probe%2Fusage`)).json()).toEqual({ name: 'probe/usage', title: 'Using it', text: '# Using it\n\nWhat it does.\n' })
+      expect((await fetch(`${base}/api/docs/probe%2Fmissing`)).status).toBe(404)
+    } finally { await running.close() }
+  })
+})

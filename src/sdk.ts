@@ -8,5 +8,5 @@
  */
 export * from './core/sdk.ts'
 export { isRemoteGroup } from './shared/commands.ts'
-export type { RemoteCommand, RemoteCommandGroup } from './shared/commands.ts'
+export type { RemoteCommand, RemoteCommandGroup, RemoteContext } from './shared/commands.ts'
 export { parseDuration } from './shared/duration.ts'
