@@ -1,7 +1,7 @@
 /**
  * A boardlab module: one piece of what boardd can do, plugged in at start. A module sets itself up on the lab through
  * its extension points (backends, lock targets and followers, board views, proposal owners, state, endpoints,
- * services) and may hand other modules an API of its own.
+ * services, and firmware it brings) and may hand other modules an API of its own.
  *
  * The type lives in `plugin.ts`, next to the loader that runs it; this file stays where modules have always imported
  * it from.

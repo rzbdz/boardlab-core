@@ -320,6 +320,25 @@ describe('remote labs', () => {
     expect(svc.boards.get('com260').lab).toBeNull()
   })
 
+  it('loads firmware a module brings, on top of the release\'s, and drops it when the module does', async () => {
+    const { svc, lab } = labService()
+    await enable(svc)
+    const file = join(dir, 'vendor-fsbl.bin')
+    writeFileSync(file, 'vendor FSBL')
+    const image = { soc: 'test-soc', purpose: 'fsbl', path: file, sha256: sha('vendor FSBL'), note: null }
+    const dropped = svc.addFirmware([image])
+    expect(svc.state('user:alice').firmware).toEqual([image])
+    const { token } = await svc.locks.lock('lab1-sub0-0', 'claude:s1', '内存启动')
+    await svc.download.stage('lab1-sub0-0', { holder: 'claude:s1', token }, { firmware: 'fsbl' })
+    expect(lab.staged).toEqual([{ usbPath: '1-2.1', sha256: sha('vendor FSBL') }])
+    // A file that is not what the module listed is refused, as a release's own would be.
+    writeFileSync(file, 'someone else')
+    await expect(svc.download.stage('lab1-sub0-0', { holder: 'claude:s1', token }, { firmware: 'fsbl' })).rejects.toThrow(/sha256/)
+    dropped()
+    expect(svc.state('user:alice').firmware).toEqual([])
+    await expect(svc.download.stage('lab1-sub0-0', { holder: 'claude:s1', token }, { firmware: 'fsbl' })).rejects.toThrow(/没有可加载的/)
+  })
+
   it('keeps the download port a lab learned when the board entered download mode, and reads no backlog to send input', async () => {
     const { svc, lab } = labService()
     lab.listed = lab.listed.map(device => ({ ...device, downloadUsbPath: null }))

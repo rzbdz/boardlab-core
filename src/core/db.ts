@@ -80,7 +80,7 @@ export function openDatabase(file: string, options: OpenOptions = {}): DatabaseS
     CREATE TABLE IF NOT EXISTS run_boards (
       run TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, board TEXT NOT NULL, PRIMARY KEY(board, run)
     );
-    -- Firmware used to be registered here; it now ships in firmware/.
+    -- Firmware used to be registered here; a release's now ships in firmware/ and a vendor's comes from a module.
     DROP TABLE IF EXISTS images;
   `)
   // Version 2 gives each lease the token the input gates of the board's serial ports follow.

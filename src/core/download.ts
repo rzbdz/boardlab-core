@@ -9,7 +9,7 @@ import { basename, isAbsolute } from 'node:path'
 import type { Firmware } from '../shared/types.ts'
 import { DEFAULT_PACKAGES, takesPackage, type BootFile, type DownloadCapability, type FlashPackage, type LabConfig, type BoardTarget, type FlashPlan, type PackageKinds, type RunReport } from './backend.ts'
 import { BoardError, CancelledError, isCancelled } from './errors.ts'
-import { readFirmware, verifiedFirmware } from './firmware.ts'
+import { firmwareOf, verifiedFirmware } from './firmware.ts'
 import { askedIn } from './relay.ts'
 import type { BoardLab } from './lab.ts'
 import type { Caller } from './locks.ts'
@@ -33,12 +33,21 @@ export class Download {
   private readonly progressLines = new Map<string, string>()
   readonly timing: BootTiming
 
+  /** Firmware a module added at start (a vendor's own), on top of the release's `firmware/`. */
+  private readonly added: Firmware[] = []
+
   constructor(private readonly lab: BoardLab, private readonly firmwareDir: string | undefined, timing: Partial<BootTiming> = {}) {
     this.timing = { ...BOOT_TIMING, ...timing }
   }
 
-  firmware(): Firmware[] { return readFirmware(this.firmwareDir) }
-  verifiedFirmware(purpose: string, soc: string | null): Firmware { return verifiedFirmware(this.firmwareDir, purpose, soc) }
+  /** Add firmware a module brings; returns the way to take it back. */
+  addFirmware(images: Firmware[]): () => void {
+    this.added.push(...images)
+    return () => { for (const image of images) { const at = this.added.indexOf(image); if (at >= 0) this.added.splice(at, 1) } }
+  }
+
+  firmware(): Firmware[] { return firmwareOf(this.firmwareDir, this.added) }
+  verifiedFirmware(purpose: string, soc: string | null): Firmware { return verifiedFirmware(this.firmware(), purpose, soc) }
   progress(board: string): string | null { return this.progressLines.get(board) ?? null }
 
   /** The board's chip with a download port, and its backend addressing it. */

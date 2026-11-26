@@ -4,7 +4,7 @@
  * deployment can do beyond that, from the hardware on this machine to a remote lab, comes from the modules it loads.
  */
 import { basename } from 'node:path'
-import type { Action, Lease, State } from '../shared/types.ts'
+import type { Action, Firmware, Lease, State } from '../shared/types.ts'
 import { Api, type Endpoint } from './api.ts'
 import { Backends } from './backends.ts'
 import { BoardError } from './errors.ts'
@@ -32,7 +32,7 @@ import { isHuman } from './text.ts'
 export interface BoardLabOptions extends KernelOptions {
   /** Where boardd keeps what outlives a run; modules get it as `ctx.stateDir`. */
   stateDir?: string
-  /** firmware/: firmware.json and the files it lists. */
+  /** firmware/: firmware.json and the files it lists (a release's; a module adds its own at start). */
   firmwareDir?: string
   /** Where files sent by remote CLIs are kept, by sha256. */
   filesDir?: string
@@ -169,6 +169,16 @@ export class BoardLab {
   removeState(part: (you: string) => Record<string, unknown>) { this.drop(this.stateParts, part) }
   addHistory(part: (limit: number) => Record<string, unknown>) { this.historyParts.push(part); this.track(() => this.removeHistory(part)) }
   removeHistory(part: (limit: number) => Record<string, unknown>) { this.drop(this.historyParts, part) }
+  /**
+   * Add firmware the lab can load (`stage`/`boot` by name), on top of what the release ships: a vendor's modules bring
+   * their own files, so the core names no SoC's. Returns the way to take them back (a module's setup tracks it).
+   */
+  addFirmware(images: Firmware[]): Dispose {
+    const drop = this.download.addFirmware(images)
+    this.track(drop)
+    return drop
+  }
+
   /** Run something while boardd runs (see `start`). */
   addService(service: Service) { this.services.push(service); this.track(() => this.removeService(service)) }
   removeService(service: Service) { this.drop(this.services, service) }
