@@ -4,7 +4,7 @@
  * SDK hands out these types — and both sides must agree on it.
  */
 import type { Module } from './module.ts'
-import type { Settings } from '../shared/settings.ts'
+import type { ModuleSettings as Settings } from '../shared/settings.ts'
 
 /** What making a module may need from the machine boardd runs on. */
 export interface ModuleContext {

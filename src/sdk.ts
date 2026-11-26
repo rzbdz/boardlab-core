@@ -20,7 +20,7 @@ export type { AgentSkillDestination, AgentSkills } from './shared/agents.ts'
 // entry's `create` uses to read its settings are here, for a module that reads them the same way. Lives in `shared`,
 // because the SDK may not import `server`.
 export { instances, number, text } from './shared/settings.ts'
-export type { Settings } from './shared/settings.ts'
+export type { ModuleSettings } from './shared/settings.ts'
 export type { CatalogEntry, ModuleContext } from './core/catalog.ts'
 // Reaching another machine over ssh as boardd does it: one surface for every module that sets one up, wherever it came
 // from. Server side only (it runs ssh), so not in `core/sdk.ts`, which the browser build re-exports.

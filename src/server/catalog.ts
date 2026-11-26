@@ -8,11 +8,11 @@
  */
 import type { Module } from '../core/module.ts'
 import type { CatalogEntry, ModuleContext } from '../core/catalog.ts'
-import type { Settings } from '../shared/settings.ts'
+import type { ModuleSettings as Settings } from '../shared/settings.ts'
 
 export * from '../core/catalog.ts'
 export { instances, number, text } from '../shared/settings.ts'
-export type { Settings } from '../shared/settings.ts'
+export type { ModuleSettings as Settings } from '../shared/settings.ts'
 
 /** The modules for a selection ({id: settings}), from the catalog. */
 export function createModules(catalog: CatalogEntry[], selection: Record<string, Settings>, context: ModuleContext): Module[] {
