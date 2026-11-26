@@ -23,7 +23,7 @@ const browserSdk = option('sdk-browser', null)
 await mkdir(out, { recursive: true })
 // `cli` (with boardd) and the client library, plus the SDK a market module imports as `boardlab`. The SDK is its own
 // entry so it shares its chunks with the CLI: a module's `new BoardError(...)` is the class boardd itself checks.
-await build({ entryPoints: { cli, client: join(core, 'src/shared/client.ts'), sdk: join(core, 'src/core/sdk.ts') }, outdir: out, bundle: true, splitting: true, format: 'esm', platform: 'node', target: 'node24', sourcemap: true, banner: {
+await build({ entryPoints: { cli, client: join(core, 'src/shared/client.ts'), sdk: join(core, 'src/sdk.ts') }, outdir: out, bundle: true, splitting: true, format: 'esm', platform: 'node', target: 'node24', sourcemap: true, banner: {
   // CommonJS dependencies bundled into ES modules still call require(): give every file one.
   // `--no-warnings`: node's SQLite is experimental and every run would print its warning before anything else a
   // person or a program asked for. The program says what it needs to; nothing is hidden that a user acts on.

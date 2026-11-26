@@ -206,10 +206,13 @@ async function run(argv: string[], COMMANDS: Map<string, Command>, usage: (topic
       extend({ groups, commands: groups.flatMap(group => group.commands.map(item => ({ name: item.name, command: item }))) })
     }
   }
-  // Run by boardd for a client, with the commands of the modules it loaded from markets in front of it: those ARE this
-  // process's commands, and this is where the module's own `run` executes.
+  // A branch of this CLI boardd started for a client, with the commands of the modules it loaded from markets named in
+  // `BOARDLAB_MARKET_CLI`: those ARE this process's commands, and this is where a module's own `run` executes.
   if (process.env.BOARDLAB_MARKET_CLI) for (const command of await withMarketCli(process.env.BOARDLAB_MARKET_CLI)) {
-    if (!COMMANDS.has(command.name)) { COMMANDS.set(command.name, command.command); extend?.({ groups: [], commands: [command] }) }
+    if (!COMMANDS.has(command.name)) {
+      const found = command.group.commands.find(item => item.name === command.name)!
+      COMMANDS.set(command.name, { name: command.name, usage: found.usage, ...(found.standalone ? { standalone: true } : {}), ...(found.noBoard ? { noBoard: true } : {}), run: context => found.run(context) })
+    }
   }
   if (help) return console.log(name === 'help' ? usage(args.length ? args.join('\0') : flags.has('all') ? '--all' : undefined) : usage(name))
   if (!command) throw new Error(`未知命令：${name}（boardlab help 看有哪些）`)

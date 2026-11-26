@@ -13,7 +13,7 @@
  * Nothing in this file knows a module's name: a market says what it has, and this turns that into commands.
  */
 import type { BoardsClient } from '../shared/client.ts'
-import type { Command, CommandGroup, CommandContext } from './command.ts'
+import type { Command, CommandContext, CommandGroup } from './command.ts'
 
 /** One command a market offers, as its manifest or its module describes it. */
 export interface MarketCommand {
@@ -29,7 +29,10 @@ export interface MarketCommand {
 /** What a market answers for `GET /api/cli`: every command the modules it loaded bring. */
 export interface MarketCommands { commands: MarketCommand[] }
 
-/** A command a market offers: it is run by the boardd that has the module, and its output comes back here. */
+/**
+ * A command a market offers: run by the boardd that has the module, as typed (the module parses its own flags as its
+ * own `cli.ts` did), and its output comes back here line by line.
+ */
 function marketCommand(described: MarketCommand, client: () => BoardsClient): Command {
   return {
     name: described.name,
@@ -37,9 +40,7 @@ function marketCommand(described: MarketCommand, client: () => BoardsClient): Co
     ...(described.standalone ? { standalone: true } : {}),
     ...(described.noBoard ? { noBoard: true } : {}),
     async run(context: CommandContext) {
-      // Everything after the command word, as typed: the module parses its own flags, as its own `cli.ts` did.
-      const args = [described.name, ...context.argv]
-      const result = await client().proxy(args, context.json, (stream, text) => {
+      const result = await client().proxy([described.name, ...context.argv], context.json, (stream, text) => {
         (stream === 'stdout' ? process.stdout : process.stderr).write(text)
       })
       process.exitCode = result.code

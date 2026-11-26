@@ -7,3 +7,6 @@
  * which exports the same helper names from `ui/contract.ts` and the page's own `call`.
  */
 export * from './core/sdk.ts'
+export { isRemoteGroup } from './shared/commands.ts'
+export type { RemoteCommand, RemoteCommandGroup } from './shared/commands.ts'
+export { parseDuration } from './shared/duration.ts'

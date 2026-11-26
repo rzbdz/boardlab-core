@@ -9,7 +9,8 @@ import { databaseSettings, moveAddedLabs } from '../core/renamed-kinds.ts'
 import { createModules, type CatalogEntry } from './catalog.ts'
 import { marketsOf, marketModules } from './markets.ts'
 import { loadConfig, type BoarddConfig } from './config.ts'
-import { describe, loadCommands, type CommandGroup } from '../cli/market-cli.ts'
+import { describe, loadCommands } from '../cli/market-cli.ts'
+import type { RemoteCommandGroup } from '../shared/commands.ts'
 import { serve } from './http.ts'
 
 export interface BoarddOptions {
@@ -105,7 +106,7 @@ export async function startBoardd(options: BoarddOptions): Promise<Boardd> {
   for (const { module, settings } of fromMarkets) config.modules[module.id] = settings
   // A market module brings its own `boardlab` commands, as a file beside it: loaded here (where the module is), so a CLI
   // that does not have the module can list them and run one against this boardd (GET /api/cli/commands).
-  const commandGroups: CommandGroup[] = []
+  const commandGroups: RemoteCommandGroup[] = []
   const commandFiles: string[] = []
   for (const { module } of fromMarkets) {
     const offered = markets.flatMap(market => market.modules).find(item => item.id === module.id)

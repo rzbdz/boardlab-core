@@ -47,9 +47,10 @@
         "src/sdk.ts"
       ],
       "may": [
-        "core"
+        "core",
+        "shared"
       ],
-      "$comment": "the package entry a module outside this build imports: values only, re-exported from core/sdk.ts"
+      "$comment": "the package entry a module outside this build imports: values only, re-exported from core/sdk.ts and shared/commands.ts"
     },
     "bare": {
       "path": "bare",

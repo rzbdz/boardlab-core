@@ -83,11 +83,7 @@ export async function following<T>(client: BoardsClient, target: string, run: ()
 
 export const splitTarget = (target: string) => { const [board, die] = target.split('.', 2) as [string, string | undefined]; return { board, die } }
 
-export function parseDuration(text: string): number {
-  const match = text.match(/^(\d+)(s|m|h)?$/)
-  if (!match) throw new Error(`时长格式不对：${text}（例如 30m、2h、90s）`)
-  return Number(match[1]) * { s: 1000, m: 60_000, h: 3_600_000 }[(match[2] ?? 'm') as 's' | 'm' | 'h']
-}
+export { parseDuration } from '../shared/duration.ts'
 
 /** Lock tokens this user's CLI obtained, so later commands of the same holder can prove the lock. */
 export class TokenStore {
