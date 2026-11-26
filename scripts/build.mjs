@@ -8,6 +8,7 @@
  */
 import { build } from 'esbuild'
 import { chmod, mkdir } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -28,6 +29,9 @@ await build({ entryPoints: { cli, client: join(core, 'src/shared/client.ts'), sd
   // person or a program asked for. The program says what it needs to; nothing is hidden that a user acts on.
   js: "#!/usr/bin/env -S node --no-warnings\nimport { createRequire as __boardlabCreateRequire } from 'node:module'; const require = __boardlabCreateRequire(import.meta.url);",
 } })
-if (browserSdk) await build({ entryPoints: { 'sdk.browser': resolve(browserSdk) }, outdir: out, bundle: true, format: 'esm', platform: 'browser', target: 'es2022', sourcemap: true, define: { 'process.env.NODE_ENV': '"production"' } })
+// The browser SDK the page imports for a market module's part of it: what a module's `ui` file imports as `boardlab/ui`.
+if (existsSync(resolve(browserSdk ?? ''))) {
+  await build({ entryPoints: { 'sdk.browser': resolve(browserSdk) }, outdir: out, bundle: true, format: 'esm', platform: 'browser', target: 'es2022', sourcemap: true, define: { 'process.env.NODE_ENV': '"production"' }, external: ['process'] })
+}
 await chmod(join(out, 'cli.js'), 0o755)
 console.log(`Built the boardlab CLI and its client into ${out}.`)

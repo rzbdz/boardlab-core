@@ -21,7 +21,7 @@
  */
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
-import { join, relative, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 
 /** What a market offers: one module, as the market's manifest describes it (no code has run). */
 export interface MarketModule {
@@ -38,8 +38,10 @@ export interface MarketModule {
   market: string
   /** Its entry file, absolute. */
   entry: string
-  /** The file a page imports for this module's part of it, absolute; null when the module brings no page part. */
+  /** What a page imports for this module's part of it, at `/module-ui/<module>/<file>`; null when it brings none. */
   ui: string | null
+  /** The directory that page part is served from, absolute; null when it brings none. Nothing else of it is served. */
+  uiDir: string | null
   /** sha256 of the entry file: a market update that changes the code changes this. */
   digest: string
 }
@@ -102,11 +104,14 @@ export function readMarket(id: string, dir: string): { modules: MarketModule[], 
     if (!entry || !entry.startsWith(resolve(dir))) { problems.push(`${id}：${moduleId} 的 entry ${named ?? '（没写）'} 不在市场目录里`); continue }
     if (!existsSync(entry)) { problems.push(`${id}：${moduleId} 的 entry ${relative(dir, entry)} 不在`); continue }
     const uiName = text(item.ui)
-    const ui = uiName ? resolve(dir, uiName) : null
-    if (uiName && (!ui!.startsWith(resolve(dir)) || !existsSync(ui!))) { problems.push(`${id}：${moduleId} 的 ui ${uiName} ${ui!.startsWith(resolve(dir)) ? '不在' : '不在市场目录里'}`); continue }
+    const uiFile = uiName ? resolve(dir, uiName) : null
+    if (uiName && (!uiFile!.startsWith(resolve(dir)) || !existsSync(uiFile!))) { problems.push(`${id}：${moduleId} 的 ui ${uiName} ${uiFile!.startsWith(resolve(dir)) ? '不在' : '不在市场目录里'}`); continue }
+    // Where the page imports it: boardd serves the file's own directory, one file deep, and nothing else of the market's.
+    const ui = uiFile ? `/module-ui/${moduleId}/${uiName!.slice(uiName!.lastIndexOf('/') + 1)}` : null
+    const uiDir = uiFile ? dirname(uiFile) : null
     modules.push({
       id: moduleId, title: text(item.title) ?? moduleId, about: text(item.about) ?? '', tags: words(item.tags),
-      inject: words(item.inject), provide: words(item.provide), version: text(item.version), market: id, entry, ui, digest: digestOf(entry),
+      inject: words(item.inject), provide: words(item.provide), version: text(item.version), market: id, entry, ui, uiDir, digest: digestOf(entry),
     })
   }
   return { modules, problems }

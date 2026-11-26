@@ -352,7 +352,7 @@ export async function serve(lab: BoardLab, options: ServeOptions): Promise<Servi
     if (pathname === '/api' || pathname.startsWith('/api/')) return void api(request, response, { holder, local: false })
     if (!options.uiDir) return send(response, 404, { error: '这个 boardd 不带网页（只有 /api）' })
     const frontends = readFrontends(options.uiDir)
-    serveStatic(frontends ? join(options.uiDir, current(frontends)) : options.uiDir, pathname, response, uiRootsOf(options.stateDir ?? ''))
+    serveStatic(frontends ? join(options.uiDir, current(frontends)) : options.uiDir, pathname, response, uiRootsOf(lab.moduleMarkets))
   }
   const unix = createServer((request, response) => {
     const pathname = new URL(request.url ?? '/', 'http://boardd').pathname
