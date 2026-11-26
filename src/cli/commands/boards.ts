@@ -265,7 +265,7 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'stage', usage: ['stage <board>[.<die>] <固件名>\t往内存加载 boardd 自带的固件，例如 minor-board-info'],
+    name: 'stage', usage: ['stage <board>[.<die>] <固件名>\t往内存加载一个固件（`boardlab firmware` 列出能加载的），例如 minor-board-info'],
     async run({ client, args, out, target, token }) {
       if (!args[1]) throw new Error('缺少固件名，例如 minor-board-info')
       const result = await client.stage(target().board, args[1], target().die, token())
@@ -324,7 +324,7 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'firmware', usage: ['firmware\t列出 boardd 自带的固件（仓库的 firmware/）'],
+    name: 'firmware', usage: ['firmware\t列出 boardd 能加载的固件：发行版 firmware/ 里的，和模块带来的'],
     async run({ client, out }) {
       const { firmware } = await client.state()
       out(firmware, () => console.log(firmware.map(item => `${item.soc}\t${item.purpose}\t${item.path}\t${item.sha256.slice(0, 16)}…${item.note ? `\t${item.note}` : ''}`).join('\n') || '没有自带固件'))

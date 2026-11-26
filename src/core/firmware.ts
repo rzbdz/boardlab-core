@@ -1,4 +1,11 @@
-/** The firmware boardd ships: firmware/firmware.json lists each file with the sha256 it must still have. */
+/**
+ * The firmware boardd can load: files a *release* ships in `firmware/firmware.json`, and files a *module* adds at
+ * start, each listed with the sha256 it must still have.
+ *
+ * A vendor's firmware is not every vendor's: a distribution that has none still boots and flashes with the SDK, and a
+ * module that brings its own (a market's, on the machines that need it) adds it without touching the core. Both are
+ * the same shape, so `stage`, `boot` and `firmware` do not know which one an image came from.
+ */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -26,15 +33,22 @@ export function readFirmware(dir: string | undefined): Firmware[] {
   })
 }
 
-/** A firmware file by purpose, for the board's SoC when it is known, whose content still matches firmware.json. */
-export function verifiedFirmware(dir: string | undefined, purpose: string, soc: string | null): Firmware {
-  const matches = readFirmware(dir).filter(item => item.purpose === purpose && (!soc || item.soc === soc))
-  if (!matches.length) throw new BoardError('not-found', `boardd 没有自带${soc ? ` ${soc} 的` : ''}固件 ${purpose}（见仓库的 firmware/firmware.json）`)
+/** Everything a lab can load: a release's own files, then what its modules added (a module's win a duplicate). */
+export function firmwareOf(dir: string | undefined, added: Firmware[]): Firmware[] {
+  const merged = new Map<string, Firmware>()
+  for (const item of [...readFirmware(dir), ...added]) merged.set(`${item.soc}/${item.purpose}`, item)
+  return [...merged.values()]
+}
+
+/** A firmware file by purpose, for the board's SoC when it is known, whose content still matches its manifest. */
+export function verifiedFirmware(all: Firmware[], purpose: string, soc: string | null): Firmware {
+  const matches = all.filter(item => item.purpose === purpose && (!soc || item.soc === soc))
+  if (!matches.length) throw new BoardError('not-found', `boardd 没有可加载的${soc ? ` ${soc} ` : ''}固件 ${purpose}（自带的在 firmware/firmware.json，模块带来的在它自己的设置里）`)
   if (matches.length > 1) throw new BoardError('invalid', `有多个 SoC 的固件叫 ${purpose}，这块板的 SoC 未知`)
   const image = matches[0]!
   let actual: string
   try { actual = createHash('sha256').update(readFileSync(image.path)).digest('hex') }
   catch { throw new BoardError('invalid', `固件文件不可读：${image.path}`) }
-  if (actual !== image.sha256) throw new BoardError('invalid', `固件 ${image.path} 的 sha256 与 firmware.json 不符，拒绝加载`)
+  if (actual !== image.sha256) throw new BoardError('invalid', `固件 ${image.path} 的 sha256 与它的清单不符，拒绝加载`)
   return image
 }

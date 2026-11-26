@@ -223,7 +223,7 @@ export interface Action {
   message: string | null
 }
 
-/** A firmware file boardd ships in firmware/, listed in its firmware.json. */
+/** A firmware file boardd can load: one a release ships in firmware/, or one a module brings. */
 export interface Firmware { soc: string, purpose: string, path: string, sha256: string, note: string | null }
 
 /** A proposed inventory change supplied by a distribution module. */
