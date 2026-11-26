@@ -5,6 +5,8 @@
  *
  * A market changes what the next boardd process loads, so these commands write to the state directory directly rather
  * than through a running boardd: they work whether boardd is up or not, and a running boardd keeps what it started with.
+ * The state directory is boardd's own, so a CLI talking to a boardd elsewhere runs these there (`boarddState`), where
+ * that state is: the market's copies, its commits and the configuration the next start reads are all on that machine.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -23,12 +25,12 @@ function save(stateDir: string, records: MarketRecord[]) {
 
 const commands: Command[] = [
   {
-    name: 'market', noBoard: true,
+    name: 'market', noBoard: true, boarddState: true,
     usage: [
-      'market\t这台机器的 boardd 从哪些模块市场装模块，各自提供什么',
+      'market\tboardd 那台机器从哪些模块市场装模块，各自提供什么（连别的机器上的 boardd 时在那边读写）',
       'market add <市场> <git 地址> [--branch <分支>]\t加一个模块市场：克隆一份到 boardd 的状态目录里，下次启动 boardd 时可用',
       'market update [<市场>|--all]\t拉取市场的新版本（不给就是全部），改了什么会列出来；下次启动 boardd 生效',
-      'market remove <市场> [--yes]\t删掉一个模块市场和它在本机的复制品（配置里从它装的模块会变成没装）',
+      'market remove <市场> [--yes]\t删掉一个模块市场和它在 boardd 那台机器上的复制品（配置里从它装的模块会变成没装）',
       'market show <市场>\t一个市场提供哪些模块：id、说明、标签、要什么、给什么',
     ],
     async run({ args, flag, flags, out, stateDir }) {
@@ -118,7 +120,7 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'module', noBoard: true,
+    name: 'module', noBoard: true, boarddState: true,
     usage: [
       'module [list] [--tag <标签>]\tboardd 装了哪些模块：它是什么、要什么、给什么、在不在跑；--tag 只看带这个标签的',
       'module search <文字>\t在装了的模块和模块市场里按名字、说明和标签找',

@@ -98,6 +98,22 @@ function usageOf(groups: CommandGroup[], topic?: string): string {
 
 interface Args { positional: string[], flags: Map<string, string | true> }
 
+/**
+ * The words to hand a command on to a boardd: as typed, less what only means something here — `--as` (the caller acts
+ * as the holder boardd already knows), its value, and `--json` (the proxy carries that separately).
+ */
+function forwarded(argv: string[]): string[] {
+  const kept: string[] = []
+  for (let at = 0; at < argv.length; at++) {
+    const arg = argv[at]!
+    if (arg === '--json') continue
+    if (arg === '--as') { at++; continue }
+    if (arg.startsWith('--as=')) continue
+    kept.push(arg)
+  }
+  return kept
+}
+
 export function parseArgs(argv: string[]): Args {
   const positional: string[] = []
   const flags = new Map<string, string | true>()
@@ -196,9 +212,8 @@ async function run(argv: string[], COMMANDS: Map<string, Command>, usage: (topic
 
   // A remote boardd may be newer than this CLI: its help, and any command this CLI does not know, come from it.
   if (remote && !process.env.BOARDS_PROXIED && (help || !command)) {
-    const passed = argv.filter(arg => arg !== '--json' && !arg.startsWith('--as') && arg !== flag('as'))
     try {
-      const result = await client.proxy(help ? ['help', ...(name === 'help' ? args : [name]), ...(flags.has('all') ? ['--all'] : [])] : passed, json, write)
+      const result = await client.proxy(help ? ['help', ...(name === 'help' ? args : [name]), ...(flags.has('all') ? ['--all'] : [])] : forwarded(argv), json, write)
       process.exitCode = result.code
       return
     } catch (error) {
@@ -220,6 +235,22 @@ async function run(argv: string[], COMMANDS: Map<string, Command>, usage: (topic
   }
   if (help) return console.log(name === 'help' ? usage(args.length ? args.join('\0') : flags.has('all') ? '--all' : undefined) : usage(name))
   if (!command) throw new Error(`未知命令：${name}（boardlab help 看有哪些）`)
+  // A command about boardd's own state (the module markets, the configuration it loads) changes the machine boardd is
+  // on, so it runs there: this machine's state directory is another lab's, and reading it would answer for the wrong one.
+  if (remote && !process.env.BOARDS_PROXIED && command.boarddState) {
+    try {
+      const result = await client.proxy(forwarded(argv), json, write)
+      process.exitCode = result.code
+    } catch (error) {
+      // That boardd does not run commands for clients (an older one has no `/api/cli`, a bare `serve` has no CLI beside
+      // it), and this machine's state directory is another lab's — so say where it has to run instead of showing that.
+      if (error instanceof BoardsApiError && (error.status === 400 || error.status === 404 || error.status === 501)) {
+        throw new Error(`boardlab ${name} 要在 boardd 那台机器上跑（它读写的状态目录在那里）：到那台机器上用同样的参数运行，或者把那边升级到这一版`)
+      }
+      throw error
+    }
+    return
+  }
   // A board named by its slot (`lab/host/s3`, `slot:5`) is the board in it: resolved once, so lock tokens stay keyed by name.
   let resolved: { board: string, die: string | undefined } | null = null
   if (args[0] && SLOT_REF.test(args[0]) && !command.noBoard) {
