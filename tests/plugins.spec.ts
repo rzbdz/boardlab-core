@@ -249,6 +249,22 @@ describe('the loader on its own', () => {
     loader.add({ id: 'recipes', title: '部门配方', about: '常用 SDK 配方', tags: ['content', 'sdk'], setup: (_l, ctx) => { ctx.effect(() => () => {}); return {} } })
     expect(loader.list()).toEqual([{ id: 'recipes', title: '部门配方', about: '常用 SDK 配方', tags: ['content', 'sdk'], inject: [], provide: [], status: 'active', why: null }])
   })
+
+  it('finds a file of the release it runs in, and says null when there is none', () => {
+    // A module from a market has no catalog entry to be told the release through: it asks its own context.
+    const lab = labOf()
+    const seen: Array<string | null> = []
+    lab.use({
+      id: 'installer', title: '装到别的机器上',
+      setup: (_lab, ctx) => { seen.push(ctx.shipped('install.sh'), ctx.shipped('nope')) ; return {} },
+    })
+    expect(seen).toEqual([null, null])
+    const shipped = (path: string) => path === 'install.sh' ? '/opt/boardlab-0.5.0/install.sh' : null
+    const withRelease = new BoardLab({ db: openDatabase(join(dir, 'shipped.sqlite')), shipped })
+    let found: string | null = null
+    withRelease.use({ id: 'installer', title: '装到别的机器上', setup: (_lab, ctx) => { found = ctx.shipped('install.sh'); return {} } })
+    expect(found).toBe('/opt/boardlab-0.5.0/install.sh')
+  })
 })
 
 describe('the registry of a lab', () => {
