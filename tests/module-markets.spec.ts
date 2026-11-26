@@ -117,6 +117,18 @@ describe('a module from a market', () => {
     expect(lab.api.list().some(item => item.path === '/api/probe')).toBe(false)
   })
 
+  it('takes a module exported by name, for a file that also exports what the module is made of', async () => {
+    const source = marketRepo('named', [{ id: 'probe', source: `
+      export function helper() { return 1 }
+      export const module = { id: 'probe', title: 'probe', setup: () => ({ made: helper() }) }
+    ` }])
+    const state = join(root, 'state-named')
+    const synced = await syncMarket(state, 'demo', { url: source })
+    writeFileSync(marketsFile(state), JSON.stringify({ markets: [{ id: 'demo', url: synced.dir, commit: synced.commit }] }))
+    const selected = await marketModules(state, { probe: {} }, [], SDK)
+    expect((selected[0]!.module.setup({} as never, {} as never) as { made: number }).made).toBe(1)
+  })
+
   it('refuses a module whose id is not the one the manifest offered, and one a market offers twice', async () => {
     const wrong = join(root, 'wrong-src')
     mkdirSync(join(wrong, 'asked'), { recursive: true })

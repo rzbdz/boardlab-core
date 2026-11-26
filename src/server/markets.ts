@@ -75,12 +75,15 @@ export async function syncMarket(stateDir: string, id: string, options: { url: s
   return { commit: head.stdout.trim(), dir }
 }
 
-/** Import a market module's entry file and hand back the module it exports. */
+/**
+ * Import a market module's entry file and hand back the module it exports: the default export, or a named `module` (a
+ * file that also exports the parts its module is built from has a name for it).
+ */
 export async function importMarketModule(offered: MarketModule): Promise<Module> {
-  const loaded = await import(pathToFileURL(offered.entry).href) as { default?: unknown }
-  const module = loaded.default as Module | undefined
+  const loaded = await import(pathToFileURL(offered.entry).href) as { default?: unknown, module?: unknown }
+  const module = (loaded.default ?? loaded.module) as Module | undefined
   if (!module || typeof module !== 'object' || typeof module.setup !== 'function' || typeof module.id !== 'string') {
-    throw new Error(`${offered.market}：${offered.id} 的 ${offered.entry} 没有默认导出一个模块（要 { id, title, setup }）`)
+    throw new Error(`${offered.market}：${offered.id} 的 ${offered.entry} 没有导出一个模块（默认导出，或叫 module，要是 { id, title, setup }）`)
   }
   // The id the manifest offers is the id it is configured by: a module that exports another one is not what was asked.
   if (module.id !== offered.id) throw new Error(`${offered.market}：${offered.id} 的模块说自己是 ${module.id}`)
