@@ -123,6 +123,17 @@ describe('a module from a market', () => {
     await expect(marketModules(state, { probe: {} }, ['probe'])).rejects.toThrow(/随 boardlab 提供/)
   })
 
+  it('gives a market module the settings its configuration has for it', async () => {
+    const source = marketRepo('settings', [{ id: 'probe', source: 'export default { id: "probe", title: "probe", setup(lab, ctx) { lab.api.addOne("probe", { method: "GET", path: "/api/probe", about: "p", handle: () => ({ settings: ctx.config }) }); return {} } }\n' }])
+    const state = join(root, 'state-settings')
+    const synced = await syncMarket(state, 'demo', { url: source })
+    writeFileSync(marketsFile(state), JSON.stringify({ markets: [{ id: 'demo', url: synced.dir, commit: synced.commit }] }))
+    const selected = await marketModules(state, { probe: { greeting: 'hi' } }, [])
+    const lab = new BoardLab({ db: openDatabase(join(state, 'boards.sqlite')), modules: selected.map(({ module }) => module), settings: Object.fromEntries(selected.map(({ module, settings }) => [module.id, settings])) })
+    const found = lab.api.match('GET', '/api/probe')!
+    expect(found.endpoint.handle({ params: found.params, query: new URLSearchParams(), signal: new AbortController().signal } as never)).toEqual({ settings: { greeting: 'hi' } })
+  })
+
   it('imports only what the configuration selects', async () => {
     const state = join(root, 'state-selected')
     const synced = await syncMarket(state, 'demo', { url: marketRepo('selected', [{ id: 'probe' }, { id: 'other' }]) })

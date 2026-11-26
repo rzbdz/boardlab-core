@@ -45,7 +45,10 @@ export interface BoarddOptions {
 
 export async function startBoardd(options: BoarddOptions) {
   mkdirSync(options.stateDir, { recursive: true, mode: 0o700 })
-  const config = loadConfig(options.stateDir, options.config, options.catalog.map(entry => entry.id))
+  // What the configuration may name: the modules this distribution has, and what its markets offer.
+  const markets = marketsOf(options.stateDir)
+  const fromMarket = new Set(markets.flatMap(market => market.modules.map(module => module.id)))
+  const config = loadConfig(options.stateDir, options.config, [...options.catalog.map(entry => entry.id), ...fromMarket])
   const selection = options.modules ? Object.fromEntries(options.modules.map(id => [id, config.modules[id] ?? {}])) : config.modules
   // A module that renamed its id moves the labs someone added by the old name before any kind is offered.
   const moves = Object.fromEntries(options.catalog.flatMap(entry => (entry.was ?? []).map(old => [old, entry.id])))
@@ -53,14 +56,13 @@ export async function startBoardd(options: BoarddOptions) {
     const moved = openDatabase(join(options.stateDir, 'boards.sqlite'), { backups: join(options.stateDir, 'backups'), restore: !options.sharedDatabase })
     try { for (const move of moveAddedLabs(databaseSettings(moved), moves)) console.error(`boardd: lab ${move.id} is a ${move.to} now (was added as ${move.from})`) } finally { moved.close() }
   }
-  const builtIn = createModules(options.catalog, selection, {
+  const builtIn = createModules(options.catalog, Object.fromEntries(Object.entries(selection).filter(([id]) => !fromMarket.has(id))), {
     stateDir: options.stateDir, shipped: options.shipped ?? (() => null), timing: config.timing,
     release: { version: options.version ?? 'dev', revision: options.revision ?? 'dev' },
   })
   // Modules the configuration takes from a market (see markets.ts): imported before the lab exists, so one that cannot
   // be imported stops boardd from starting rather than leaving a half-loaded lab behind.
-  const markets = marketsOf(options.stateDir)
-  for (const problem of markets.flatMap(market => market.problems.map(issue => `${issue}`))) console.error(`boardd: ${problem}`)
+  for (const problem of markets.flatMap(market => market.problems)) console.error(`boardd: ${problem}`)
   const fromMarkets = await marketModules(options.stateDir, selection, options.catalog.map(entry => entry.id))
   const modules = [...builtIn, ...fromMarkets.map(({ module }) => module)]
   for (const { module, settings } of fromMarkets) config.modules[module.id] = settings
@@ -71,6 +73,7 @@ export async function startBoardd(options: BoarddOptions) {
   const lab = new BoardLab({
     db, firmwareDir: options.firmwareDir, filesDir: join(options.stateDir, 'files'),
     bootTiming: config.timing.boot, consoleTiming: config.timing.console, modules, moduleMarkets: markets,
+    settings: Object.fromEntries(fromMarkets.map(({ module, settings }) => [module.id, settings])),
   })
   // A copy a little after start and every 6 hours, while this boardd (or worker) is the one serving: a worker an update
   // drained stops with the lab's other services, and a lock in backups/ keeps two workers from copying at once.

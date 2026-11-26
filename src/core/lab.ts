@@ -41,6 +41,8 @@ export interface BoardLabOptions extends KernelOptions {
   modules?: Module[]
   /** The module markets this boardd was started with, as their copies describe them (see `module-markets.ts`). */
   moduleMarkets?: ModuleMarket[]
+  /** Each module's settings, by id (what its catalog entry, or its market, was made with). */
+  settings?: Record<string, Record<string, unknown>>
 }
 
 /** A running piece of a module (a timer, a stream): started with boardd, stopped with it. */
@@ -92,7 +94,7 @@ export class BoardLab {
     this.api.add('core', [...coreEndpoints(this), ...debugEndpoints(this), ...marketEndpoints(this), ...moduleMarketEndpoints(this), ...databaseEndpoints(this)])
     this.kernel.recordUndo = undo => this.loader.record(undo)
     this.api.track(undo => this.loader.record(undo))
-    for (const module of inLoadOrder(options.modules ?? [])) this.use(module)
+    for (const module of inLoadOrder(options.modules ?? [])) this.use(module, options.settings?.[module.id] ?? {})
   }
 
   // ---------- modules ----------
