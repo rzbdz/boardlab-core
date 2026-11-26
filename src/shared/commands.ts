@@ -18,6 +18,28 @@ import type { BoardsClient } from './client.ts'
  * What a command's `run` is handed. The CLI's own commands get more (`CatalogEntry`s, for running boardd), but this is
  * what a command in a market may rely on: it is the same context, described from the other side of the seam.
  */
+/**
+ * A command's shape, wherever it is written: a distribution's own module and one from a market both declare their
+ * commands this way. `run` is the command; what it is handed is `CommandContext` (`../cli/command.ts`) for a listed
+ * command and `RemoteContext` below for one a market brings.
+ */
+export interface Command {
+  name: string
+  /** Lines for `boardlab help`, each `<synopsis>` or `<synopsis>\t<what it does>`. */
+  usage: string[]
+  /** Runs without reaching boardd (installing, choosing a boardd, running one). */
+  standalone?: boolean
+  /** Its first argument is not a board (it hands its arguments on, or names a lab), so a slot reference there is left alone. */
+  noBoard?: boolean
+  run(context: RemoteContext): Promise<void> | void
+}
+
+/**
+ * Commands under one heading of `boardlab help`: `id` names the group for `boardlab help <id>`, `summary` is its line in
+ * the overview.
+ */
+export interface CommandGroup { title: string, commands: Command[], id?: string, summary?: string }
+
 export interface RemoteContext {
   /** What followed the command name: positional words, and every raw argument (for commands that pass them on). */
   args: string[]

@@ -130,8 +130,10 @@ export async function startBoardd(options: BoarddOptions): Promise<Boardd> {
     // The file a module that changes which modules load (the market's page) has to edit: the one this boardd read.
     configFile: config.source,
     release: { version: options.version ?? 'dev', revision: options.revision ?? 'dev' },
-    // The same files the catalog entries are given, for a module from a market that has no entry to be told through.
+    // The same files and timing the catalog entries are given, for a module from a market that has no entry to be told
+    // them through.
     shipped: options.shipped ?? (() => null),
+    timing: config.timing,
   })
   // A copy a little after start and every 6 hours, while this boardd (or worker) is the one serving: a worker an update
   // drained stops with the lab's other services, and a lock in backups/ keeps two workers from copying at once.

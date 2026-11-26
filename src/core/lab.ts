@@ -47,6 +47,8 @@ export interface BoardLabOptions extends KernelOptions {
   release?: { version: string, revision: string }
   /** A file shipped with that release, for a module's context (`PluginContext.shipped`). */
   shipped?: (path: string) => string | null
+  /** boardd's timing settings, for a module's context (`PluginContext.timing`). */
+  timing?: Record<string, unknown>
   /** Its own configuration file, for a module that changes which modules boardd loads (the market's page). */
   configFile?: string | null
   /** Each module's settings, by id (what its catalog entry, or its market, was made with). */
@@ -94,6 +96,7 @@ export class BoardLab {
       configFile: options.configFile ?? null,
       ...(options.release ? { release: options.release } : {}),
       ...(options.shipped ? { shipped: options.shipped } : {}),
+      ...(options.timing ? { timing: options.timing } : {}),
       log: (id, line) => console.error(`[${id}] ${line}`),
       report: (id, error) => console.error(`[${id}] ${(error as Error)?.stack ?? error}`),
     })

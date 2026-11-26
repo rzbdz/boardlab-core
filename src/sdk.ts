@@ -8,7 +8,7 @@
  */
 export * from './core/sdk.ts'
 export { isRemoteGroup } from './shared/commands.ts'
-export type { RemoteCommand, RemoteCommandGroup, RemoteContext } from './shared/commands.ts'
+export type { Command, CommandGroup, RemoteCommand, RemoteCommandGroup, RemoteContext } from './shared/commands.ts'
 export { parseDuration } from './shared/duration.ts'
 // What a module's own command is handed by the CLI that runs it: a question on the terminal, a streamed answer, and
 // where an agent's skills live. Server side — these touch stdin/stdout and the filesystem — so not in `core/sdk.ts`,

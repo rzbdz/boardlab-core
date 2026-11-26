@@ -5,29 +5,13 @@
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { BoardsClient } from '../shared/client.ts'
-import type { RemoteContext } from '../shared/commands.ts'
+import type { Command as SharedCommand, CommandGroup as SharedCommandGroup, RemoteContext } from '../shared/commands.ts'
 import type { Board, Chip, State } from '../shared/types.ts'
 import type { CatalogEntry } from '../server/catalog.ts'
 
 // Asking a person and writing back are generic terminal work, in `shared` so a module's command gets them too.
 export { confirm, write } from '../shared/terminal.ts'
 
-export interface Command {
-  name: string
-  /** Lines for `boardlab help`, each `<synopsis>` or `<synopsis>\t<what it does>`. */
-  usage: string[]
-  /** Runs without reaching boardd (installing, choosing a boardd, running one). */
-  standalone?: boolean
-  /** Its first argument is not a board (it hands its arguments on, or names a lab), so a slot reference there is left alone. */
-  noBoard?: boolean
-  run(context: CommandContext): Promise<void> | void
-}
-
-/**
- * Commands under one heading of `boardlab help`: `id` names the group for `boardlab help <id>`, `summary` is its line in
- * the overview.
- */
-export interface CommandGroup { title: string, commands: Command[], id?: string, summary?: string }
 
 /** Pure presentation supplied by a distribution; it cannot perform I/O or mutate board state. */
 export interface CliPresentation {
@@ -43,6 +27,11 @@ export interface CommandContext extends RemoteContext {
   /** The distribution's modules, for running boardd (`serve`). */
   catalog: CatalogEntry[]
 }
+
+// A command's shape is the same for this build's CLI and a module's own (`../shared/commands.ts`); here its `run` is
+// handed this build's `CommandContext`.
+export interface Command extends Omit<SharedCommand, 'run'> { run(context: CommandContext): Promise<void> | void }
+export type CommandGroup = Omit<SharedCommandGroup, 'commands'> & { commands: Command[] }
 
 /**
  * Run a long operation on boardd (a boot, a flash, a discovery) that `target` names for `boardlab cancel`. Ctrl-C asks

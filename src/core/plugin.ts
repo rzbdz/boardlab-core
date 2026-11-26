@@ -47,6 +47,11 @@ export interface PluginContext {
    * module from a market has no catalog entry to be given it through. Null when boardd runs without a release tree.
    */
   shipped(path: string): string | null
+  /**
+   * boardd's timing settings (`timing` in its configuration), for a module that takes some (how long a scan may take):
+   * the same ones a distribution's catalog entry is made with.
+   */
+  readonly timing: Record<string, unknown>
   /** Register a side effect, and the way to undo it (returned by what you register, or returned here). */
   effect(run: () => Dispose | void): Dispose
   /** Listen to an event of the lab; the listener is removed when the plugin is taken down. */
@@ -123,6 +128,7 @@ class Context implements PluginContext {
   get configFile(): string | null { return this.loader.options.configFile ?? null }
   get release(): { version: string, revision: string } { return this.loader.options.release ?? { version: 'dev', revision: 'dev' } }
   shipped(path: string): string | null { return this.loader.options.shipped?.(path) ?? null }
+  get timing(): Record<string, unknown> { return this.loader.options.timing ?? {} }
 
   /**
    * Take on an undo: with the effect running now (a nested effect belongs to it), or else with the module. `undo` runs
@@ -224,6 +230,8 @@ export interface LoaderOptions {
   release?: { version: string, revision: string }
   /** A file shipped with the release (see PluginContext.shipped). */
   shipped?: (path: string) => string | null
+  /** boardd's timing settings (see PluginContext.timing). */
+  timing?: Record<string, unknown>
   /** How boardd asks for a process that loads what its configuration says now (see BoardLab.reloader). */
   reloader?: (why: string) => void
   registry: Registry
