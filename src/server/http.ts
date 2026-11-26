@@ -33,6 +33,8 @@ export interface ServeOptions {
   port: number, hosts?: string[], origins?: string[], socketPath: string, uiDir: string | null, cli?: string, stateDir?: string, docsDir?: string | null,
   /** This boardd's release, and the HTTP API version it serves (see GET /api/version). */
   version?: string, revision?: string,
+  /** The SDK a market module's own command runs against (`BOARDLAB_SDK` for the CLI boardd starts), or null. */
+  marketSdk?: string | null,
   /**
    * Whether this process makes the Unix socket (default): one boardd. Under a supervisor it is false — the socket is
    * shared by every worker, so a worker neither removes nor re-permissions it.
@@ -83,6 +85,8 @@ export interface Serving {
 type GatewayOptions = {
   cli?: string, stateDir?: string, docsDir?: string | null, version?: string, revision?: string,
   marketCommands?: () => Promise<DescribedCommand[]>, marketCli?: string,
+  /** The SDK a market module's own command runs against, given to the CLI boardd starts as `BOARDLAB_SDK`. */
+  marketSdk?: string | null,
   /** The help pages modules loaded from markets bring, by name as a view names them (`<module>/<page>`). */
   marketDocs?: () => Array<{ name: string, title: string, file: string }>,
 }
@@ -276,7 +280,7 @@ function cliEndpoint(options: GatewayOptions): Endpoint {
       return new EventStream((emit, end, signal) => {
         // The same Node flags as boardd itself (on some CPUs it needs --no-sparkplug to run at all).
         const child = spawn(process.execPath, [...process.execArgv, options.cli!, ...(args as string[]), ...(body.json === true ? ['--json'] : [])], {
-          env: { ...process.env, BOARDS_HOLDER: caller.holder, BOARDS_STATE_DIR: options.stateDir, BOARDS_REMOTE: '', BOARDS_PROXIED: '1', BOARDS_RUN: runId(headers), ...(options.marketCli ? { BOARDLAB_MARKET_CLI: options.marketCli } : {}) },
+          env: { ...process.env, BOARDS_HOLDER: caller.holder, BOARDS_STATE_DIR: options.stateDir, BOARDS_REMOTE: '', BOARDS_PROXIED: '1', BOARDS_RUN: runId(headers), ...(options.marketCli ? { BOARDLAB_MARKET_CLI: options.marketCli } : {}), ...(options.marketSdk ? { BOARDLAB_SDK: options.marketSdk } : {}) },
           stdio: ['ignore', 'pipe', 'pipe'],
         })
         child.stdout.setEncoding('utf8').on('data', text => emit('out', { stream: 'stdout', text }))

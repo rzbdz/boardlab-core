@@ -13,6 +13,7 @@
 import { delimiter } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { isRemoteGroup, type RemoteCommandGroup } from '../shared/commands.ts'
+import { resolveBoardlab } from '../shared/sdk-resolve.ts'
 
 /** One command of a module, as a CLI that does not have the module can list and check it. */
 export interface DescribedCommand {
@@ -57,6 +58,9 @@ export interface RegisteredCommand { name: string, run: RemoteCommandGroup['comm
  */
 export async function withMarketCli(spec: string): Promise<RegisteredCommand[]> {
   const out: RegisteredCommand[] = []
+  // A module's `cli.ts` imports `boardlab` like its `index.ts` does: this process must resolve that name before the
+  // first one loads. `BOARDLAB_SDK` is the SDK beside the CLI boardd started (see http.ts).
+  if (process.env.BOARDLAB_SDK) resolveBoardlab(pathToFileURL(process.env.BOARDLAB_SDK).href)
   for (const item of spec.split(delimiter)) {
     const at = item.indexOf('=')
     if (at <= 0) continue

@@ -142,7 +142,7 @@ export async function startBoardd(options: BoarddOptions): Promise<Boardd> {
   const port = options.port ?? DEFAULT_PORT
   // One frontend (index.html at the top), or several (frontends.json, see http.ts).
   const uiDir = options.uiDir && (existsSync(join(options.uiDir, 'index.html')) || existsSync(join(options.uiDir, 'frontends.json'))) ? options.uiDir : null
-  const server = await serve(lab, { port, hosts: options.hosts, origins: options.origins, cli: options.cli, stateDir: options.stateDir, socketPath: socketPathFor(options.stateDir), uiDir, docsDir: options.shipped?.('docs/help') ?? null, version: options.version, revision: options.revision, ownSocket: !options.worker, handed: options.handed, observe: options.observe, sdkDir: options.shipped?.('dist') ?? null, marketCommands: async () => commandGroups.flatMap(describe), marketCli: commandFiles.join(delimiter), marketDocs: () => marketDocs })
+  const server = await serve(lab, { port, hosts: options.hosts, origins: options.origins, cli: options.cli, stateDir: options.stateDir, socketPath: socketPathFor(options.stateDir), uiDir, docsDir: options.shipped?.('docs/help') ?? null, version: options.version, revision: options.revision, ownSocket: !options.worker, handed: options.handed, observe: options.observe, sdkDir: options.shipped?.('dist') ?? null, marketSdk: options.shipped?.('dist/sdk.js') ?? null, marketCommands: async () => commandGroups.flatMap(describe), marketCli: commandFiles.join(delimiter), marketDocs: () => marketDocs })
   const address = server.http[0]?.address()
   // How this boardd asks for a new process of its own (a module installed or taken out): the CLI wires `reload` when it
   // runs as a worker under a supervisor.
