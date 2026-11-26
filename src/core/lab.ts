@@ -21,6 +21,8 @@ import { resumeRuns } from './resume.ts'
 import { Locks } from './locks.ts'
 import { Markets } from './markets.ts'
 import type { Module, ModuleInfo } from './module.ts'
+import { Loader, type Dispose, type PluginState } from './plugin.ts'
+import { registryOf } from './plugin-registry.ts'
 import { Proposals } from './proposals.ts'
 import { Relay } from './relay.ts'
 import { isHuman } from './text.ts'
@@ -54,13 +56,21 @@ export class BoardLab {
   readonly markets: Markets
   /** Every endpoint, the core's and the modules'; a gateway serves them. */
   readonly api = new Api()
-  private readonly loaded = new Map<string, { module: Module, api: unknown }>()
+  /** The plugin runtime: what a module registers, and how to take it back. */
+  readonly loader: Loader
   private readonly stateParts: Array<(you: string) => Record<string, unknown>> = []
   private readonly historyParts: Array<(limit: number) => Record<string, unknown>> = []
   private readonly services: Service[] = []
   private stops: Array<() => void> = []
 
   constructor(options: BoardLabOptions) {
+    // The plugin runtime comes first: every subsystem below registers extension points that record with it.
+    this.loader = new Loader({
+      lab: this,
+      registry: registryOf(this),
+      log: (id, line) => console.error(`[${id}] ${line}`),
+      report: (id, error) => console.error(`[${id}] ${(error as Error)?.stack ?? error}`),
+    })
     this.kernel = new Kernel(options)
     this.events = this.kernel.events
     this.locks = new Locks(this.kernel)
@@ -73,44 +83,60 @@ export class BoardLab {
     this.consoles = new Consoles(this, options.consoleTiming)
     this.markets = new Markets(this.kernel)
     this.api.add('core', [...coreEndpoints(this), ...debugEndpoints(this), ...marketEndpoints(this), ...databaseEndpoints(this)])
+    this.kernel.recordUndo = undo => this.loader.record(undo)
+    this.api.track(undo => this.loader.record(undo))
     for (const module of inLoadOrder(options.modules ?? [])) this.use(module)
   }
 
   // ---------- modules ----------
 
-  /** Set a module up; the modules it requires must be loaded already. Returns its API. */
-  use<Api>(module: Module<Api>): Api {
-    if (this.loaded.has(module.id)) throw new Error(`module ${module.id} is loaded twice`)
-    const missing = (module.requires ?? []).filter(id => !this.loaded.has(id))
+  /**
+   * Set a module up; the modules it requires must be loaded already. Returns its API. Everything it registers goes
+   * through the plugin context it is given, so it can be taken down again (`Loader.remove`).
+   */
+  use<Api>(module: Module<Api>, config: Record<string, unknown> = {}): Api {
+    if (this.loader.has(module.id)) throw new Error(`module ${module.id} is loaded twice`)
+    // `requires` names modules (set up here, in this order); `inject` names services (provided by whichever module
+    // offers them). A missing one is refused now: boardd lists its modules in an order, so this is a bug in that list.
+    // A plugin added later through the loader waits instead and says why.
+    const missing = [...(module.requires ?? []).filter(id => !this.loader.has(id)), ...(module.inject ?? []).filter(name => !this.loader.services.has(name))]
     if (missing.length) throw new Error(`module ${module.id} needs ${missing.join(', ')} loaded first`)
-    const api = module.setup(this)
-    this.loaded.set(module.id, { module: module as Module, api })
-    return api
+    return this.loader.add(module, config) as Api
   }
 
-  has(id: string): boolean { return this.loaded.has(id) }
+  has(id: string): boolean { return this.loader.has(id) }
+
+  /** A service a module provides (its API is one, under its id). */
+  service<Api>(id: string): Api { return this.loader.service<Api>(id) }
 
   /** A loaded module's API. */
-  module<Api>(id: string): Api {
-    const entry = this.loaded.get(id)
-    if (!entry) throw new Error(`module ${id} is not loaded`)
-    return entry.api as Api
-  }
+  module<Api>(id: string): Api { return this.loader.api<Api>(id) }
 
-  modules(): ModuleInfo[] { return [...this.loaded.values()].map(({ module }) => ({ id: module.id, title: module.title })) }
+  modules(): ModuleInfo[] { return this.loader.list().filter(state => state.status === 'active').map(state => ({ id: state.id, title: state.title })) }
+  /** What every module is and whether it runs (a pending one says which service it waits for). */
+  plugins(): PluginState[] { return this.loader.list() }
+
+  /** Record an undo with the module being set up now, if any: a direct `lab.…` registration in a module's setup. */
+  track(undo: Dispose) { this.loader.record(undo) }
+
+  // ---------- what modules add ----------
 
   /** Add to what `state` reports: a module's own part of the picture. */
-  addState(part: (you: string) => Record<string, unknown>) { this.stateParts.push(part) }
-  addHistory(part: (limit: number) => Record<string, unknown>) { this.historyParts.push(part) }
+  addState(part: (you: string) => Record<string, unknown>) { this.stateParts.push(part); this.track(() => this.removeState(part)) }
+  removeState(part: (you: string) => Record<string, unknown>) { this.drop(this.stateParts, part) }
+  addHistory(part: (limit: number) => Record<string, unknown>) { this.historyParts.push(part); this.track(() => this.removeHistory(part)) }
+  removeHistory(part: (limit: number) => Record<string, unknown>) { this.drop(this.historyParts, part) }
   /** Run something while boardd runs (see `start`). */
-  addService(service: Service) { this.services.push(service) }
+  addService(service: Service) { this.services.push(service); this.track(() => this.removeService(service)) }
+  removeService(service: Service) { this.drop(this.services, service) }
+  private drop<T>(list: T[], item: T) { const at = list.indexOf(item); if (at >= 0) list.splice(at, 1) }
 
   // ---------- the whole picture ----------
 
   state(you: string): State {
     const state: State = {
       boards: this.boards.list(), labs: this.backends.labSettings(), firmware: this.download.firmware(),
-      proposals: this.proposals.pending(), modules: this.modules(), you, now: this.kernel.iso(), yields: this.locks.yieldsList(you),
+      proposals: this.proposals.pending(), modules: this.modules(), plugins: this.plugins(), you, now: this.kernel.iso(), yields: this.locks.yieldsList(you),
       restored: restoreRecord(this.kernel.db), markets: this.markets.list(),
     }
     for (const part of this.stateParts) Object.assign(state, part(you))

@@ -4,6 +4,7 @@
  * front end can serve the same endpoints its own way. `GET /api` lists them.
  */
 import { BoardError } from './errors.ts'
+import type { Dispose } from './plugin.ts'
 
 /** Who calls: a holder (`user:<name>`, or an agent of one), over the local socket or not. */
 export interface Caller { holder: string, local: boolean }
@@ -61,6 +62,11 @@ interface Registered extends Endpoint { module: string, pattern: RegExp, keys: s
 
 export class Api {
   private readonly endpoints: Registered[] = []
+  /** Told when an endpoint is added through the plugin runtime's registry, so a module's can be taken back. */
+  private readonly tracker: { record(undo: Dispose): void } = { record: () => {} }
+
+  /** Record what is added here with the module being set up, if any (see `plugin-registry.ts`). */
+  track(record: (undo: Dispose) => void) { (this.tracker as { record(undo: Dispose): void }).record = record }
 
   /** Add a module's endpoints; a method and path may be served once. */
   add(module: string, endpoints: Endpoint[]) {
@@ -73,7 +79,20 @@ export class Api {
       const pattern = new RegExp(`^${fixed.replace(/[.]/g, '\\.').replace(/:([A-Za-z0-9_]+)/g, (_, key: string) => { keys.push(key); return '([^/]+)' })}${rest ? '(/.*)?' : ''}$`)
       if (rest) keys.push('*')
       this.endpoints.push({ ...endpoint, module, pattern, keys })
+      this.tracker.record(() => this.take(endpoint, module))
     }
+  }
+
+  /** Take one endpoint away: the same registration can only be served once, so method and path name it. */
+  private take(endpoint: Endpoint, module: string) {
+    const at = this.endpoints.findIndex(item => item.method === endpoint.method && item.path === endpoint.path && item.module === module)
+    if (at >= 0) this.endpoints.splice(at, 1)
+  }
+
+  /** Add one endpoint, and hand back the way to take it away (a plugin being taken down). */
+  addOne(module: string, endpoint: Endpoint): Dispose {
+    this.add(module, [endpoint])
+    return () => this.take(endpoint, module)
   }
 
   match(method: string, path: string): { endpoint: Registered, params: Record<string, string> } | null {

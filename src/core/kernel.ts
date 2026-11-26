@@ -220,6 +220,11 @@ export class Kernel {
       .run(this.iso(), actor, board, kind, detail, ok ? 1 : 0, message)
   }
 
+  /** Record an undo with the module being set up now, if any (`BoardLab` sets this to its loader). */
+  track(undo: () => void | Promise<void>) { this.recordUndo?.(undo) }
+  /** Set by `BoardLab`: its loader records a registration made while a module's setup runs. */
+  recordUndo: ((undo: () => void | Promise<void>) => void) | null = null
+
   setting(key: string): string | null {
     const row = this.db.prepare('SELECT value FROM settings WHERE key=?').get(key)
     return row ? String(row.value) : null

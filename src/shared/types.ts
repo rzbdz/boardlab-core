@@ -243,6 +243,27 @@ export interface Proposal {
 export interface ModuleInfo { id: string, title: string }
 
 /**
+ * A module as boardd loaded it: what it is, what it needs and offers, and whether it runs. A module whose services
+ * nobody provides is `pending`, with `why` naming what it waits for; one that failed to set up is `failed`, with what
+ * went wrong. Listed for people and agents: `boardlab module list`.
+ */
+export interface PluginInfo {
+  id: string
+  title: string
+  /** One line on what it is. */
+  about: string
+  /** Free text for search: `content`, `backend`, a vendor's name… */
+  tags: string[]
+  /** Services it needs before it can run. */
+  inject: string[]
+  /** Services it offers. */
+  provide: string[]
+  status: 'active' | 'pending' | 'failed' | 'stopped'
+  /** Why it is not active, or null. */
+  why: string | null
+}
+
+/**
  * boardd found its database damaged when it started and put a copy in its place (or, with no good copy, started empty):
  * what changed after that copy is gone. Reported in the state until someone acknowledges it.
  */
@@ -264,6 +285,8 @@ export interface State {
   firmware: Firmware[]
   proposals: Proposal[]
   modules: ModuleInfo[]
+  /** Every module boardd was given, including one that is waiting or failed (see `PluginInfo`). */
+  plugins: PluginInfo[]
   you: string
   now: string
   /** Agents waiting for a person to let go of a board they are using. */

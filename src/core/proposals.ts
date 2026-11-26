@@ -24,7 +24,7 @@ export class Proposals {
 
   constructor(private readonly k: Kernel) {}
 
-  addOwner(owner: ProposalOwner) { this.owners.push(owner) }
+  addOwner(owner: ProposalOwner) { this.owners.push(owner); this.k.track(() => { const at = this.owners.indexOf(owner); if (at >= 0) this.owners.splice(at, 1) }) }
 
   pending(): Proposal[] { return this.k.db.prepare(`SELECT * FROM proposals WHERE status='pending' ORDER BY slot, rowid`).all().map(toProposal) }
 

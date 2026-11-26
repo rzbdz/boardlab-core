@@ -38,7 +38,8 @@ export class Boards {
   }
 
   /** Add to what boards show: a backend's live view of them. */
-  addView(view: BoardView) { this.views.push(view) }
+  addView(view: BoardView) { this.views.push(view); this.lab.track(() => this.removeView(view)) }
+  removeView(view: BoardView) { const at = this.views.indexOf(view); if (at >= 0) this.views.splice(at, 1) }
 
   exists(name: string): boolean { return !!this.lab.kernel.db.prepare('SELECT 1 FROM boards WHERE name=?').get(name) }
 

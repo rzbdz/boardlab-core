@@ -14,6 +14,7 @@ import { boardCommands, presentBoards } from './commands/boards.ts'
 import { debugCommands } from './commands/debug.ts'
 import { imageCommands } from './commands/images.ts'
 import { labCommands } from './commands/labs.ts'
+import { moduleCommands } from './commands/modules.ts'
 import { presentRelease, setupCommands, type ReleaseIdentity } from './commands/setup.ts'
 import type { CliPresentation } from './command.ts'
 
@@ -130,7 +131,7 @@ export interface Cli {
 export function createCli(distribution: Distribution): Cli {
   presentBoards(distribution.presentation ?? {})
   if (distribution.identity) presentRelease(distribution.identity)
-  const groups = [boardCommands, debugCommands, imageCommands, labCommands, ...distribution.groups, setupCommands]
+  const groups = [boardCommands, debugCommands, imageCommands, labCommands, moduleCommands, ...distribution.groups, setupCommands]
   const commands = new Map<string, Command>(groups.flatMap(group => group.commands.map(command => [command.name, command] as const)))
   const usage = (topic?: string) => usageOf(groups, topic)
   return { usage, main: argv => run(argv, commands, usage, distribution) }

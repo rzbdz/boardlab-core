@@ -46,18 +46,13 @@ export class Backends {
   private readonly instances = new Map<string, Instance>()
   /** The instance of boards registered without a backend: this machine's. */
   defaultId = 'local'
-  /** What each listed board's backend said about it at the last listing, by board name. */
+  /** What each backend said at the last listing, a lease that could not follow, news streams, ports, discoveries. */
   private readonly devices = new Map<string, LabDevice>()
-  /** Boards whose backend lease could not be made to follow the lock. */
   private readonly leaseErrors = new Map<string, string>()
-  /** The news streams followed, by instance: each entry stops one. */
   private readonly watches = new Map<string, () => void>()
-  /** Free ports as last heard, and the asks under way. */
   private readonly portCache = new Map<string, { hosts: LabSlots[], at: string | null, error: string | null }>()
   private readonly portRuns = new Map<string, Promise<void>>()
-  /** Discoveries by instance: the latest progress line, and whether one is still running. */
   private readonly discoveries = new Map<string, { running: boolean, line: string, at: string }>()
-  /** How to stop the search running on each instance (a person cancelling it). */
   private readonly findingStops = new Map<string, AbortController>()
 
   constructor(private readonly lab: BoardLab) {
@@ -70,24 +65,39 @@ export class Backends {
     lab.boards.addView((board, record) => this.view(board, record))
     lab.proposals.addOwner({ owns: proposal => typeof proposal.change.lab === 'string', resolve: (actor, proposals, decision, given) => this.resolve(actor, proposals, decision, given) })
   }
-
   // ---------- instances ----------
-
   register(id: string, backend: Backend, options: { configurable?: boolean, isDefault?: boolean, kind?: string } = {}) {
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(id)) throw new Error(`backend id ${id}`)
     if (this.instances.has(id)) throw new Error(`backend ${id} is registered twice`)
     this.instances.set(id, { id, backend, configurable: options.configurable ?? true, kind: options.kind ?? null })
     if (options.isDefault) this.defaultId = id
+    this.lab.track(() => this.unregister(id))
+  }
+
+  /** Take a backend away (its module is going): its boards' live data, leases, ports and news stream go with it. */
+  unregister(id: string) {
+    if (!this.instances.delete(id)) return
+    for (const [name] of this.onLab(id)) this.devices.delete(name)
+    for (const cache of [this.leaseErrors, this.portCache, this.discoveries]) cache.delete(id)
+    this.watches.get(id)?.(); this.watches.delete(id)
+    if (this.defaultId === id) this.defaultId = [...this.instances.keys()][0] ?? null
+    this.lab.kernel.changed(null)
   }
 
   // ---------- kinds: labs added at runtime ----------
-
   private readonly kinds = new Map<string, LabKind>()
+
+  /** A kind is no longer offered (its module is going): its labs added at runtime stay stored, to return with it. */
+  withdraw(kind: string) {
+    this.kinds.delete(kind)
+    for (const [id, instance] of [...this.instances]) if (instance.kind === kind) this.unregister(id)
+  }
 
   /** A module offers a kind of lab; the labs of it added before are made again. */
   offer(kind: LabKind) {
     if (this.kinds.has(kind.kind)) throw new Error(`lab kind ${kind.kind} is offered twice`)
     this.kinds.set(kind.kind, kind)
+    this.lab.track(() => this.withdraw(kind.kind))
     for (const added of this.added()) if (added.kind === kind.kind && !this.instances.has(added.id)) this.register(added.id, kind.create(added.id), { kind: kind.kind })
   }
 
@@ -246,9 +256,7 @@ export class Backends {
     this.devices.delete(board.name)
     return instance.id
   }
-
   // ---------- leases ----------
-
   /** Make a board's backend lease follow its lock: held for the holder (renewed, renamed on handover or steal) while
    *  locked, given back when free. A run that outlives the lock (a flash) keeps the lease until it ends. Failures are
    *  kept and shown. */
@@ -282,9 +290,7 @@ export class Backends {
     }
     return error
   }
-
   // ---------- settings ----------
-
   labSettings(): LabSettings[] {
     return this.list().filter(instance => instance.configurable).map(({ id, backend, kind: addedAs }) => {
       const { get, flag } = this.settings(id)
@@ -426,9 +432,7 @@ export class Backends {
     this.lab.kernel.changed(null)
     return this.labSetting(id)
   }
-
   // ---------- discovery ----------
-
   /** The ways an instance can find a board, as its backend reports them: core knows their shape only (see discovery.ts). */
   async discoveryMethods(id: string, context: DiscoveryContext = {}): Promise<DiscoveryMethod[]> {
     const { backend } = this.configurable(id)
@@ -615,9 +619,7 @@ export class Backends {
     this.lab.kernel.changed(null)
     if (failures.length) throw new BoardError('hardware', `有板子没能登记：${failures.join('；')}`)
   }
-
   // ---------- free ports ----------
-
   /**
    * An instance's free ports by host: serial consoles and download ports no board uses yet. What it said last is returned
    * at once and asked again in the background when older than a few seconds (or always, with `fresh`, which then waits
@@ -653,9 +655,7 @@ export class Backends {
     this.lab.kernel.emit({ type: 'lab-ports', lab: id })
     return run
   }
-
   // ---------- listing and news ----------
-
   /** List every enabled instance's boards again; one that cannot be read keeps what it had. */
   async syncAll(): Promise<void> {
     this.follow()
@@ -777,8 +777,7 @@ export class Backends {
     status(true, message)
     if (listing() !== before) this.lab.kernel.record(actor, null, 'lab-sync', id, true, message)
     if (listing() !== before || known() !== beforeStatus) this.lab.kernel.changed(null)
-    // Keep backend leases alive (a run that outlived its lock keeps one), and hand boards someone let go of in the
-    // backend to whoever queued for them here.
+    // Keep backend leases alive (a run that outlived its lock keeps one); hand released boards to the queue.
     for (const name of listed) {
       if (this.lab.locks.held(name) || this.lab.kernel.occupied(name)) await this.lab.locks.settle(name)
       if (!this.lab.locks.held(name) && this.lab.locks.queue(name).length) this.lab.locks.promote(name)

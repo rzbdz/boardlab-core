@@ -104,10 +104,14 @@ export class Locks {
   // ---------- extension points ----------
 
   /** Lock targets: true for one that exists, false for one not of this kind; throws for one of its kind that is missing. */
-  addTarget(exists: (target: string) => boolean) { this.targets.push(exists) }
+  addTarget(exists: (target: string) => boolean) { this.targets.push(exists); this.k.track(() => this.removeTarget(exists)) }
+  removeTarget(exists: (target: string) => boolean) { this.drop(this.targets, exists) }
   /** Who holds a target outside boardlab, if anyone; locking waits for them as for a holder here. */
-  addOccupant(occupant: (target: string) => string | null) { this.occupants.push(occupant) }
-  addFollower(follower: LockFollower) { this.followers.push(follower) }
+  addOccupant(occupant: (target: string) => string | null) { this.occupants.push(occupant); this.k.track(() => this.removeOccupant(occupant)) }
+  removeOccupant(occupant: (target: string) => string | null) { this.drop(this.occupants, occupant) }
+  addFollower(follower: LockFollower) { this.followers.push(follower); this.k.track(() => this.removeFollower(follower)) }
+  removeFollower(follower: LockFollower) { this.drop(this.followers, follower) }
+  private drop<T>(list: T[], item: T) { const at = list.indexOf(item); if (at >= 0) list.splice(at, 1) }
   /** Called once a lease on the target ended. */
   onEnd(listener: (target: string) => void) { this.endings.push(listener) }
 
