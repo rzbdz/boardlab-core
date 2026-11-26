@@ -83,6 +83,15 @@ describe('a market manifest', () => {
     const dir = marketRepo('default-entry', [{ id: 'probe' }])
     expect(readMarket('default-entry', dir).problems).toEqual([])
   })
+
+  it('says the ids a module had before, so a configuration written then still names it', () => {
+    // A module that moves to a market keeps the id it had: who added a lab as `bsp` still has one after the move, and
+    // this is what tells boardd so before it imports anything.
+    const dir = marketRepo('renamed', [{ id: 'probe', manifest: { was: ['older', 'oldest'] } }, { id: 'other' }])
+    const { modules } = readMarket('renamed', dir)
+    expect(modules.find(module => module.id === 'probe')?.was).toEqual(['older', 'oldest'])
+    expect(modules.find(module => module.id === 'other')?.was).toEqual([])
+  })
 })
 
 describe('a market on this machine', () => {

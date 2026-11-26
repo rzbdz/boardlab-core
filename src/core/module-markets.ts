@@ -36,6 +36,11 @@ export interface MarketModule {
   /** Services it offers. */
   provide: string[]
   version: string | null
+  /**
+   * The ids this module had before, as its manifest says (`was`): a configuration written before a rename names it by
+   * one of them, and a lab someone added then is moved to `id`. Read without importing the module.
+   */
+  was: string[]
   /** The market it comes from. */
   market: string
   /** Its entry file, absolute. */
@@ -139,7 +144,7 @@ export function readMarket(id: string, dir: string): { modules: MarketModule[], 
     const docs = docsOf(dir, moduleId, item.docs, entry, problems)
     modules.push({
       id: moduleId, title: text(item.title) ?? moduleId, about: text(item.about) ?? '', tags: words(item.tags),
-      inject: words(item.inject), provide: words(item.provide), version: text(item.version), market: id, entry, ui, uiDir, cli, docs, digest: digestOf(entry),
+      inject: words(item.inject), provide: words(item.provide), version: text(item.version), was: words(item.was), market: id, entry, ui, uiDir, cli, docs, digest: digestOf(entry),
     })
   }
   return { modules, problems }
