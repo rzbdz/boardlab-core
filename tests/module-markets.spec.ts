@@ -228,3 +228,66 @@ describe('the markets in the state', () => {
     expect(readFileSync(marketsFile(state), 'utf8')).toBe('{ not json')
   })
 })
+
+describe('a market cannot reach past its own page part', () => {
+  /** A manifest naming `ui`, written by hand: the checks are about paths, not about what the module does. */
+  const withUi = (ui: string) => {
+    const dir = join(root, `ui-${Math.random().toString(36).slice(2, 8)}-src`)
+    mkdirSync(join(dir, 'probe'), { recursive: true })
+    writeFileSync(join(dir, 'market.json'), JSON.stringify({ modules: [{ id: 'probe', title: 'p', entry: 'probe/module.js', ui }] }))
+    writeFileSync(join(dir, 'probe/module.js'), 'export default { id: "probe", title: "p", setup: () => ({}) }')
+    // The part itself, when the manifest names one under the module's own directory: it is committed with the market.
+    if (ui.startsWith('probe/') && !ui.includes('..')) writeFileSync(join(dir, ui), 'export const ui = { views: () => [] }')
+    git(dir, 'init', '-q', '-b', 'main'); git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', 'market')
+    return dir
+  }
+
+  it('refuses a ui that is the clone\'s .git, a file outside it, or a symlink pointing out', async () => {
+    const state = join(root, 'state-ui')
+    const out = join(root, 'outside.json'); writeFileSync(out, 'secret')
+    const gitConfig = await syncMarket(state, 'gitprobe', { url: marketRepo('gitprobe', [{ id: 'probe', manifest: { ui: '.git/config' } }]) })
+    expect(readMarket('gitprobe', gitConfig.dir).problems.join('\n')).toMatch(/\.git/)
+    const outside = withUi('../../outside.json')
+    expect(readMarket('sym', outside).problems.join('\n')).toMatch(/不能从市场里提供|不在/)
+    const linked = withUi('probe/leak.js')
+    mkdirSync(join(linked, 'probe'), { recursive: true })
+    try { execFileSync('ln', ['-s', out, join(linked, 'probe/leak.js')]) } catch { return }
+    expect(readMarket('link', linked).problems.join('\n')).toMatch(/不能从市场里提供/)
+  })
+
+  it('serves a loaded module\'s page part, and not other files of its directory', async () => {
+    const { serve } = await import('../src/server/http.ts')
+    const state = join(root, 'state-serve')
+    const dir = withUi('probe/ui.js')
+    writeFileSync(join(dir, 'probe/secret.txt'), 'no')
+    const synced = await syncMarket(state, 'serve', { url: dir })
+    writeFileSync(marketsFile(state), JSON.stringify({ markets: [{ id: 'serve', url: synced.dir, commit: synced.commit }] }))
+    const markets = marketsOf(state)
+    const lab = new BoardLab({ db: openDatabase(join(state, 'boards.sqlite')), moduleMarkets: markets,
+      modules: [{ id: 'probe', title: 'p', setup: (_l, ctx) => { ctx.effect(() => () => {}); return {} } }] })
+    const ui = join(state, 'ui'); mkdirSync(ui, { recursive: true }); writeFileSync(join(ui, 'index.html'), '<html></html>')
+    const running = await serve(lab, { port: 0, socketPath: join(state, 'b.sock'), uiDir: ui })
+    try {
+      const port = (running.http[0]!.address() as { port: number }).port
+      const ask = async (path: string) => (await fetch(`http://127.0.0.1:${port}${path}`)).status
+      const first = await ask('/module-ui/probe/ui.js'); expect([first, await ask('/module-ui/probe/secret.txt'), await ask('/api/state')]).toEqual([200, 404, 200])
+      // `constructor` is Object's own property on a plain map: it must be a 404, never a throw that ends the process.
+      expect(await ask('/module-ui/constructor/x')).toBe(404)
+      expect(await ask('/module-ui/probe/secret.txt')).toBe(404)
+      expect(await ask('/module-ui/probe/..%2Fmarket.json')).toBe(404)
+      // boardd is still answering after all of that.
+      expect(await ask('/api/state')).toBe(200)
+    } finally { await running.close() }
+  })
+
+  it('does not offer a page part of a module that is not loaded', async () => {
+    const state = join(root, 'state-unloaded')
+    const dir = withUi('probe/ui.js')
+    const synced = await syncMarket(state, 'unloaded', { url: dir })
+    writeFileSync(marketsFile(state), JSON.stringify({ markets: [{ id: 'unloaded', url: synced.dir, commit: synced.commit }] }))
+    const lab = new BoardLab({ db: openDatabase(join(state, 'boards.sqlite')), moduleMarkets: marketsOf(state) })
+    const found = lab.api.match('GET', '/api/module-markets')!
+    const answered = found.endpoint.handle({ params: found.params, query: new URLSearchParams(), caller: { holder: 'user:a' } as never, signal: new AbortController().signal } as never) as { pages: unknown[] }
+    expect(answered.pages).toEqual([])
+  })
+})

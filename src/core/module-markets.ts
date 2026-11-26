@@ -20,8 +20,8 @@
  * modules changed before anything is imported.
  */
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 
 /** What a market offers: one module, as the market's manifest describes it (no code has run). */
 export interface MarketModule {
@@ -38,7 +38,7 @@ export interface MarketModule {
   market: string
   /** Its entry file, absolute. */
   entry: string
-  /** What a page imports for this module's part of it, at `/module-ui/<module>/<file>`; null when it brings none. */
+  /** What a page imports for this module's part of it, at `module-ui/<module>/<file>` (relative: a page works under a sub-path); null when it brings none. */
   ui: string | null
   /** The directory that page part is served from, absolute; null when it brings none. Nothing else of it is served. */
   uiDir: string | null
@@ -101,14 +101,20 @@ export function readMarket(id: string, dir: string): { modules: MarketModule[], 
     seen.add(moduleId)
     const named = text(item.entry)
     const entry = named ? resolve(dir, named) : entryFor(dir, moduleId)
-    if (!entry || !entry.startsWith(resolve(dir))) { problems.push(`${id}：${moduleId} 的 entry ${named ?? '（没写）'} 不在市场目录里`); continue }
+    if (!entry || !inside(dir, entry)) { problems.push(`${id}：${moduleId} 的 entry ${named ?? '（没写）'} 不在市场目录里`); continue }
     if (!existsSync(entry)) { problems.push(`${id}：${moduleId} 的 entry ${relative(dir, entry)} 不在`); continue }
     const uiName = text(item.ui)
     const uiFile = uiName ? resolve(dir, uiName) : null
-    if (uiName && (!uiFile!.startsWith(resolve(dir)) || !existsSync(uiFile!))) { problems.push(`${id}：${moduleId} 的 ui ${uiName} ${uiFile!.startsWith(resolve(dir)) ? '不在' : '不在市场目录里'}`); continue }
-    // Where the page imports it: boardd serves the file's own directory, one file deep, and nothing else of the market's.
-    const ui = uiFile ? `/module-ui/${moduleId}/${uiName!.slice(uiName!.lastIndexOf('/') + 1)}` : null
-    const uiDir = uiFile ? dirname(uiFile) : null
+    // A page part a market cannot serve is said, and costs only that part: the module itself still loads. It is never
+    // `.git` (a clone's config holds the URL and token it was cloned with) nor anything outside the copy through a
+    // symlink; both checks are on the real path, as boardd serves it.
+    let ui: string | null = null, uiDir: string | null = null
+    if (uiName) {
+      const real = uiFile ? realOf(uiFile) : null
+      if (!uiFile || !inside(dir, uiFile) || !real || !inside(dir, real) || real.split(sep).includes('.git')) problems.push(`${id}：${moduleId} 的 ui ${uiName} 不能从市场里提供（要在市场目录里，且不在 .git 里）`)
+      else if (!existsSync(uiFile)) problems.push(`${id}：${moduleId} 的 ui ${uiName} 不在，页面部分不会出现`)
+      else { ui = `module-ui/${moduleId}/${uiName.slice(uiName.lastIndexOf('/') + 1)}`; uiDir = dirname(real) }
+    }
     modules.push({
       id: moduleId, title: text(item.title) ?? moduleId, about: text(item.about) ?? '', tags: words(item.tags),
       inject: words(item.inject), provide: words(item.provide), version: text(item.version), market: id, entry, ui, uiDir, digest: digestOf(entry),
@@ -120,6 +126,23 @@ export function readMarket(id: string, dir: string): { modules: MarketModule[], 
 /** The markets a boardd has: `<state>/markets.json` says which, and each has a copy under `<state>/markets/<id>`. */
 export function marketsDir(stateDir: string) { return join(stateDir, 'markets') }
 export function marketsFile(stateDir: string) { return join(stateDir, 'markets.json') }
+
+/** `path` is inside `dir` (and not `dir` itself or a sibling whose name starts with `dir`'s). */
+function inside(dir: string, path: string): boolean {
+  const base = resolve(dir)
+  return path === base || path.startsWith(base.endsWith(sep) ? base : base + sep)
+}
+
+/** Where a path really is, symlinks followed; null when it is not there. */
+function realOf(path: string): string | null {
+  try { return realpathSync(path) } catch { return null }
+}
+
+/** The page parts of the modules boardd loaded, by id and URL: what the page imports. */
+export function uiPartsOf(markets: ModuleMarket[], loaded: string[]): Array<{ id: string, ui: string }> {
+  const active = new Set(loaded)
+  return markets.flatMap(market => market.modules.filter(module => module.ui && active.has(module.id)).map(module => ({ id: module.id, ui: module.ui! })))
+}
 
 /** The records in `markets.json`; a file that cannot be read is a problem, not a boardd that will not start. */
 export function readRecords(stateDir: string): { records: MarketRecord[], problems: string[] } {

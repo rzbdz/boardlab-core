@@ -5,10 +5,10 @@
  */
 import { spawn } from 'node:child_process'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { chmodSync, createReadStream, existsSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs'
+import { chmodSync, createReadStream, existsSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync } from 'node:fs'
 import type { Socket } from 'node:net'
 import { userInfo } from 'node:os'
-import { extname, join } from 'node:path'
+import { extname, join, sep } from 'node:path'
 import { Api, EventStream, FileReply, RawReply, TextReply, type Caller, type Emit, type Endpoint } from '../core/api.ts'
 import { BoardError } from '../core/errors.ts'
 import type { BoardLab } from '../core/lab.ts'
@@ -292,13 +292,26 @@ function serveStatic(uiDir: string, pathname: string, response: ServerResponse, 
   // market's copy, and only from a directory that module's manifest named, so no other file there is reachable.
   const at = /^\/module-ui\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})\/(.+)$/.exec(pathname)
   if (at) {
-    const root = roots[at[1]!]
-    if (!root || at[2]!.includes('..')) return send(response, 404, { error: 'not found' })
-    return serveFile(join(root, at[2]!), response)
+    // Own property only: `roots['constructor']` is Object's, and joining it would throw in the request listener.
+    if (!Object.hasOwn(roots, at[1]!)) return send(response, 404, { error: 'not found' })
+    return serveInside(roots[at[1]!]!, at[2]!, response)
   }
   const file = pathname === '/' ? 'index.html' : pathname.slice(1)
   if (file.includes('..')) return send(response, 404, { error: 'not found' })
   return serveFile(join(uiDir, file), response)
+}
+
+/**
+ * Serve `name` from inside `root`, and nothing else: the real file (a symlink resolved) must still be under `root`, and
+ * a market's `.git` is never served — its config holds the URL and token `boardlab market add` cloned with.
+ */
+function serveInside(root: string, name: string, response: ServerResponse) {
+  if (name.includes('..')) return send(response, 404, { error: 'not found' })
+  let real: string, base: string
+  try { real = realpathSync(join(root, name)); base = realpathSync(root) } catch { return send(response, 404, { error: 'not found' }) }
+  if (real !== base && !real.startsWith(base.endsWith(sep) ? base : base + sep)) return send(response, 404, { error: 'not found' })
+  if (real.split(sep).includes('.git')) return send(response, 404, { error: 'not found' })
+  return serveFile(real, response)
 }
 
 function serveFile(path: string, response: ServerResponse, type?: string) {
@@ -319,7 +332,16 @@ export async function serve(lab: BoardLab, options: ServeOptions): Promise<Servi
 
   const events = new Set<ServerResponse>()
   const notices = (response: ServerResponse) => { events.add(response); response.once('close', () => events.delete(response)) }
-  const handle = (request: IncomingMessage, response: ServerResponse) => {
+  // A request is answered or refused, never fatal: whatever a path, a file or an endpoint does, boardd goes on serving.
+  const guard = (what: (request: IncomingMessage, response: ServerResponse) => void) => (request: IncomingMessage, response: ServerResponse) => {
+    try { what(request, response) }
+    catch (error) {
+      console.error(`boardd: ${request.method} ${request.url} failed: ${(error as Error)?.stack ?? error}`)
+      if (!response.headersSent) send(response, 500, { error: 'internal error' })
+      else response.destroy()
+    }
+  }
+  const handle = guard((request: IncomingMessage, response: ServerResponse) => {
     // Refuse rebinding hosts and cross-site writes.
     if (!allowed.has(request.headers.host ?? '')) return send(response, 403, { error: '不接受这个地址的访问' })
     const origin = request.headers.origin
@@ -352,15 +374,15 @@ export async function serve(lab: BoardLab, options: ServeOptions): Promise<Servi
     if (pathname === '/api' || pathname.startsWith('/api/')) return void api(request, response, { holder, local: false })
     if (!options.uiDir) return send(response, 404, { error: '这个 boardd 不带网页（只有 /api）' })
     const frontends = readFrontends(options.uiDir)
-    serveStatic(frontends ? join(options.uiDir, current(frontends)) : options.uiDir, pathname, response, uiRootsOf(lab.moduleMarkets))
-  }
-  const unix = createServer((request, response) => {
+    serveStatic(frontends ? join(options.uiDir, current(frontends)) : options.uiDir, pathname, response, uiRootsOf(lab.moduleMarkets, lab.plugins().map(plugin => plugin.id)))
+  })
+  const unix = createServer(guard((request: IncomingMessage, response: ServerResponse) => {
     const pathname = new URL(request.url ?? '/', 'http://boardd').pathname
     options.observe?.(request.method ?? 'GET', pathname)
     if (pathname === '/api/events') notices(response)
     const holder = String(request.headers[HOLDER_HEADER] ?? human)
     void api(request, response, { holder, local: true })
-  })
+  }))
 
   // Every connection, counted until it closes: a drained worker exits once none is left. Requests in progress are
   // counted per connection, so the idle ones can be closed (Node's own tracking starts only on a server that listens).

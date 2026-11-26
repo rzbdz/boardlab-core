@@ -5,13 +5,18 @@
  */
 import type { Endpoint } from './api.ts'
 import type { BoardLab } from './lab.ts'
+import { uiPartsOf } from './module-markets.ts'
 
 export function moduleMarketEndpoints(lab: BoardLab): Endpoint[] {
   return [
     {
       method: 'GET', path: '/api/module-markets',
       about: '装了哪些模块市场，各自从哪来、在哪个提交上、提供哪些模块（id、说明、标签、要什么、给什么），以及复制品有什么问题',
-      handle: () => ({ markets: lab.moduleMarkets, problems: lab.moduleMarkets.flatMap(market => market.problems) }),
+      // The page parts of the modules boardd loaded (a market added only to browse it serves no code to the page).
+      handle: () => {
+        const loaded = lab.plugins().filter(plugin => plugin.status === 'active').map(plugin => plugin.id)
+        return { markets: lab.moduleMarkets, pages: uiPartsOf(lab.moduleMarkets, loaded), problems: lab.moduleMarkets.flatMap(market => market.problems) }
+      },
     },
     {
       method: 'GET', path: '/api/module-markets/:id',

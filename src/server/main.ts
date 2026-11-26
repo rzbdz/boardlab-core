@@ -48,7 +48,9 @@ export async function startBoardd(options: BoarddOptions) {
   // What the configuration may name: the modules this distribution has, and what its markets offer.
   const markets = marketsOf(options.stateDir)
   const fromMarket = new Set(markets.flatMap(market => market.modules.map(module => module.id)))
-  const config = loadConfig(options.stateDir, options.config, [...options.catalog.map(entry => entry.id), ...fromMarket])
+  // A configuration that names no modules takes the distribution's own, never a market's: a market is a shop, not a
+  // load order, so installing one to browse it does not run its modules.
+  const config = loadConfig(options.stateDir, options.config, options.catalog.map(entry => entry.id))
   const selection = options.modules ? Object.fromEntries(options.modules.map(id => [id, config.modules[id] ?? {}])) : config.modules
   // A module that renamed its id moves the labs someone added by the old name before any kind is offered.
   const moves = Object.fromEntries(options.catalog.flatMap(entry => (entry.was ?? []).map(old => [old, entry.id])))
