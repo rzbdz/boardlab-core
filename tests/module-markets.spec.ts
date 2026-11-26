@@ -144,6 +144,14 @@ describe('a module from a market', () => {
     await expect(marketModules(state, { probe: {} }, ['probe'], SDK)).rejects.toThrow(/随 boardlab 提供/)
   })
 
+  it('tells a market module where boardd keeps its state, and nothing else', async () => {
+    // `ctx.stateDir` is where a module writes what outlives a run (a vendor module's certificate); a lab built without it
+    // must not hand a module the working directory of whatever process built it.
+    const state = join(root, 'state-dir')
+    const lab = new BoardLab({ db: openDatabase(join(state, 'boards.sqlite')), stateDir: state, modules: [{ id: 'probe', title: 'probe', setup: (_l, ctx) => ({ dir: ctx.stateDir }) }] })
+    expect(lab.service<{ dir: string }>('probe').dir).toBe(state)
+  })
+
   it('gives a market module the settings its configuration has for it', async () => {
     const source = marketRepo('settings', [{ id: 'probe', source: 'export default { id: "probe", title: "probe", setup(lab, ctx) { lab.api.addOne("probe", { method: "GET", path: "/api/probe", about: "p", handle: () => ({ settings: ctx.config }) }); return {} } }\n' }])
     const state = join(root, 'state-settings')

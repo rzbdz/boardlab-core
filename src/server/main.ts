@@ -79,7 +79,7 @@ export async function startBoardd(options: BoarddOptions) {
   const file = join(options.stateDir, 'boards.sqlite'), backups = join(options.stateDir, 'backups')
   const db = openDatabase(file, { backups, restore: !options.sharedDatabase })
   const lab = new BoardLab({
-    db, firmwareDir: options.firmwareDir, filesDir: join(options.stateDir, 'files'),
+    db, stateDir: options.stateDir, firmwareDir: options.firmwareDir, filesDir: join(options.stateDir, 'files'),
     bootTiming: config.timing.boot, consoleTiming: config.timing.console, modules, moduleMarkets: markets,
     settings: Object.fromEntries(fromMarkets.map(({ module, settings }) => [module.id, settings])),
   })
