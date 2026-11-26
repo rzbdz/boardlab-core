@@ -63,7 +63,9 @@ export async function startBoardd(options: BoarddOptions) {
   // Modules the configuration takes from a market (see markets.ts): imported before the lab exists, so one that cannot
   // be imported stops boardd from starting rather than leaving a half-loaded lab behind.
   for (const problem of markets.flatMap(market => market.problems)) console.error(`boardd: ${problem}`)
-  const fromMarkets = await marketModules(options.stateDir, selection, options.catalog.map(entry => entry.id))
+  const sdk = options.shipped?.('dist/sdk.js') ?? null
+  if (fromMarket.size && !sdk) throw new Error('这个 boardlab 没有带 dist/sdk.js：模块市场的模块要它才能 import \'boardlab\'')
+  const fromMarkets = sdk ? await marketModules(options.stateDir, selection, options.catalog.map(entry => entry.id), sdk) : []
   const modules = [...builtIn, ...fromMarkets.map(({ module }) => module)]
   for (const { module, settings } of fromMarkets) config.modules[module.id] = settings
   // Checked before it opens: a broken file is moved aside and the newest good copy from backups/ put in its place, by

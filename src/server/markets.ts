@@ -7,6 +7,8 @@
  * listed from what the copy says they offer (see `module-markets.ts`) and imported by their file URL, so a market needs
  * no `node_modules` on the machine.
  *
+ * `sdk` is where this build keeps the surface a market module imports as `boardlab` (`dist/sdk.js`).
+ *
  * What a market offers and what a module does are kept apart: the manifest is what boardd imports and what a person
  * searches; the module, once imported, is the truth about what it injects and provides.
  */
@@ -15,6 +17,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { Module } from '../core/module.ts'
+import { resolveBoardlab } from './sdk.ts'
 import { marketsDir, readMarket, readRecords, type MarketModule, type MarketRecord, type ModuleMarket } from '../core/module-markets.ts'
 
 // A CLI reads and writes markets without a boardd: what it needs of the manifest format is here, re-exported, so `cli`
@@ -78,7 +81,7 @@ export async function importMarketModule(offered: MarketModule): Promise<Module>
  * for is not imported: a market is a shop, not a load order. Two markets offering the same id, or a market offering an
  * id the distribution already has, is refused before anything is imported.
  */
-export async function marketModules(stateDir: string, selection: Record<string, Record<string, unknown>>, builtIn: string[]): Promise<Array<{ module: Module, settings: Record<string, unknown> }>> {
+export async function marketModules(stateDir: string, selection: Record<string, Record<string, unknown>>, builtIn: string[], sdk: string): Promise<Array<{ module: Module, settings: Record<string, unknown> }>> {
   const markets = marketsOf(stateDir)
   const wanted = new Map<string, Array<{ offered: MarketModule, settings: Record<string, unknown> }>>()
   for (const market of markets) {
@@ -89,6 +92,9 @@ export async function marketModules(stateDir: string, selection: Record<string, 
       wanted.set(offered.id, list)
     }
   }
+  // A market module reaches boardlab through `import 'boardlab'`: the SDK this build carries, resolved before the first
+  // of them is imported. Without it a module would need boardlab on the machine as a package.
+  if (wanted.size) resolveBoardlab(pathToFileURL(sdk).href)
   const loaded: Array<{ module: Module, settings: Record<string, unknown> }> = []
   for (const [id, list] of wanted) {
     if (builtIn.includes(id)) throw new Error(`模块 ${id} 随 boardlab 提供，不能从市场再装一个（${list.map(item => item.offered.market).join('、')}）`)

@@ -15,6 +15,15 @@ import { digestOf, readMarket, readRecords, marketsFile } from '../src/core/modu
 import { importMarketModule, marketModules, marketsOf, syncMarket } from '../src/server/markets.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'boardlab-markets-'))
+/** The surface a market module imports as `boardlab`, built from this core (not built in a test: the SDK is the core's). */
+/** A plain ES module exporting the same values as `core/sdk.ts`: what the child in the import test points `boardlab` at. */
+const SDK = join(root, 'sdk.mjs')
+writeFileSync(SDK, [
+  "export class BoardError extends Error { constructor(code, message) { super(message); this.code = code } }",
+  'export class BusyError extends BoardError { constructor(message) { super("conflict", message) } }',
+  'export class TextReply { constructor(body, type = "application/json") { this.body = body; this.type = type } }',
+  'export const SDK = 1',
+].join('\n'))
 afterAll(() => { /* the temp tree is left for the OS to reap: nothing here is shared */ })
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.org', ...args], { cwd, encoding: 'utf8' }).trim()
@@ -99,7 +108,7 @@ describe('a module from a market', () => {
     const state = join(root, 'state-running')
     const synced = await syncMarket(state, 'demo', { url: source })
     writeFileSync(marketsFile(state), JSON.stringify({ markets: [{ id: 'demo', url: source, branch: null, commit: synced.commit }] }))
-    const selected = await marketModules(state, { probe: {} }, [])
+    const selected = await marketModules(state, { probe: {} }, [], SDK)
     expect(selected).toHaveLength(1)
     const lab = new BoardLab({ db: openDatabase(join(state, 'boards.sqlite')), modules: selected.map(({ module }) => module), moduleMarkets: marketsOf(state) })
     expect(lab.api.list().some(item => item.path === '/api/probe')).toBe(true)
@@ -119,8 +128,8 @@ describe('a module from a market', () => {
     const one = await syncMarket(state, 'one', { url: marketRepo('one', [{ id: 'probe' }]) })
     const two = await syncMarket(state, 'two', { url: marketRepo('two', [{ id: 'probe' }]) })
     writeFileSync(marketsFile(state), JSON.stringify({ markets: [{ id: 'one', url: one.dir, commit: one.commit }, { id: 'two', url: two.dir, commit: two.commit }] }))
-    await expect(marketModules(state, { probe: {} }, [])).rejects.toThrow(/几个市场都提供/)
-    await expect(marketModules(state, { probe: {} }, ['probe'])).rejects.toThrow(/随 boardlab 提供/)
+    await expect(marketModules(state, { probe: {} }, [], SDK)).rejects.toThrow(/几个市场都提供/)
+    await expect(marketModules(state, { probe: {} }, ['probe'], SDK)).rejects.toThrow(/随 boardlab 提供/)
   })
 
   it('gives a market module the settings its configuration has for it', async () => {
@@ -128,18 +137,48 @@ describe('a module from a market', () => {
     const state = join(root, 'state-settings')
     const synced = await syncMarket(state, 'demo', { url: source })
     writeFileSync(marketsFile(state), JSON.stringify({ markets: [{ id: 'demo', url: synced.dir, commit: synced.commit }] }))
-    const selected = await marketModules(state, { probe: { greeting: 'hi' } }, [])
+    const selected = await marketModules(state, { probe: { greeting: 'hi' } }, [], SDK)
     const lab = new BoardLab({ db: openDatabase(join(state, 'boards.sqlite')), modules: selected.map(({ module }) => module), settings: Object.fromEntries(selected.map(({ module, settings }) => [module.id, settings])) })
     const found = lab.api.match('GET', '/api/probe')!
     expect(found.endpoint.handle({ params: found.params, query: new URLSearchParams(), signal: new AbortController().signal } as never)).toEqual({ settings: { greeting: 'hi' } })
+  })
+
+  it('reaches boardlab by importing it by name, resolved to the surface this boardd runs', async () => {
+    // What a module outside boardlab's build does: no node_modules, no relative path into the distribution. The resolver
+    // hook is node's own, so this runs in a child node rather than in place: vitest resolves modules its own way.
+    const source = marketRepo('boardlab-import', [{
+      id: 'probe',
+      source: `
+        import { BoardError, TextReply, SDK } from 'boardlab'
+        const caught = (() => { try { throw new BoardError('invalid', 'nope') } catch (error) { return error instanceof BoardError && error.code === 'invalid' } })()
+        export default { id: 'probe', title: 'probe', setup: () => ({ caught, sdk: SDK, text: new TextReply('ok', 'text/plain').body }) }
+      `,
+    }])
+    const state = join(root, 'state-boardlab-import')
+    const synced = await syncMarket(state, 'demo', { url: source })
+    writeFileSync(marketsFile(state), JSON.stringify({ markets: [{ id: 'demo', url: source, commit: synced.commit }] }))
+    const script = join(root, 'import-check.mjs')
+    // The hook this process installs (src/server/sdk.ts), in plain JS: this child runs from source, and only a built
+    // boardlab has a dist/sdk.js for the hook to point at.
+    writeFileSync(script, [
+      "import { registerHooks } from 'node:module'",
+      "import { pathToFileURL } from 'node:url'",
+      'let sdk = null',
+      "registerHooks({ resolve(specifier, context, next) { return specifier === 'boardlab' && sdk ? { url: sdk, shortCircuit: true, format: 'module' } : next(specifier, context) } })",
+      'sdk = pathToFileURL(process.env.SDK).href',
+      'const loaded = await import(pathToFileURL(process.env.ENTRY).href)',
+      'console.log(JSON.stringify(loaded.default.setup()))',
+    ].join('\n'))
+    const out = execFileSync(process.execPath, ['--no-warnings', script], { env: { ...process.env, SDK, ENTRY: join(synced.dir, 'probe/module.js') }, encoding: 'utf8' })
+    expect(JSON.parse(out.trim().split('\n').at(-1)!)).toEqual({ caught: true, sdk: 1, text: 'ok' })
   })
 
   it('imports only what the configuration selects', async () => {
     const state = join(root, 'state-selected')
     const synced = await syncMarket(state, 'demo', { url: marketRepo('selected', [{ id: 'probe' }, { id: 'other' }]) })
     writeFileSync(marketsFile(state), JSON.stringify({ markets: [{ id: 'demo', url: synced.dir, commit: synced.commit }] }))
-    expect(await marketModules(state, {}, [])).toEqual([])
-    expect((await marketModules(state, { other: {} }, [])).map(item => item.module.id)).toEqual(['other'])
+    expect(await marketModules(state, {}, [], SDK)).toEqual([])
+    expect((await marketModules(state, { other: {} }, [], SDK)).map(item => item.module.id)).toEqual(['other'])
   })
 })
 
