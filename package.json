@@ -1,6 +1,6 @@
 {
   "name": "boardlab-core",
-  "version": "0.2.40",
+  "version": "0.2.41",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -10,6 +10,7 @@
     "node": ">=24"
   },
   "exports": {
+    ".": "./src/sdk.ts",
     "./*": "./src/*"
   },
   "scripts": {

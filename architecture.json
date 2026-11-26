@@ -38,6 +38,15 @@
         "src/server/worker.ts"
       ]
     },
+    "sdk": {
+      "paths": [
+        "src/sdk.ts"
+      ],
+      "may": [
+        "core"
+      ],
+      "$comment": "the package entry a module outside this build imports: values only, re-exported from core/sdk.ts"
+    },
     "bare": {
       "path": "bare",
       "may": [
