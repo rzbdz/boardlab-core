@@ -31,6 +31,12 @@ export interface Command {
   standalone?: boolean
   /** Its first argument is not a board (it hands its arguments on, or names a lab), so a slot reference there is left alone. */
   noBoard?: boolean
+  /**
+   * It reads and writes boardd's own state directory (the module markets, the configuration a running boardd loads), so
+   * it has to run on the machine boardd is on. A CLI talking to a boardd elsewhere runs it there, by that boardd's own
+   * CLI: the local state of the machine it was typed on is another lab's.
+   */
+  boarddState?: boolean
   run(context: RemoteContext): Promise<void> | void
 }
 

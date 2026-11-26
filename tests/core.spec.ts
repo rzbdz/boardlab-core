@@ -1941,6 +1941,31 @@ describe('commands older clients do not know', () => {
       await expect(client.proxy(['lock', 'x', '--as', 'user:someone-else'], false, () => {})).rejects.toThrow(/不能带 --as/)
     } finally { await running.close() }
   })
+
+  it('runs a command about boardd\'s state on boardd\'s machine, not on the one it was typed on', async () => {
+    // Two state directories: the workstation's (where the CLI runs) and the boardd's (where the markets are).
+    const remoteState = join(dir, 'remote-state')
+    mkdirSync(remoteState)
+    const cli = join(dir, 'state-cli.mjs')
+    writeFileSync(cli, "console.log(JSON.stringify({ args: process.argv.slice(2), stateDir: process.env.BOARDS_STATE_DIR }))\n")
+    const port = 44000 + Math.floor(Math.random() * 1000)
+    const running = await serve(service(), { port, socketPath: join(dir, 'state.sock'), uiDir: null, cli, stateDir: remoteState })
+    const written: string[] = []
+    const original = process.stdout.write.bind(process.stdout)
+    const before = process.env.BOARDS_REMOTE
+    process.env.BOARDS_REMOTE = `http://127.0.0.1:${port}`
+    process.stdout.write = ((chunk: string | Uint8Array) => { written.push(String(chunk)); return true }) as typeof process.stdout.write
+    try {
+      // `market` reads and writes the state directory of the boardd it talks to: it runs there, with the words as typed
+      // (`--as` is the one left out: the caller acts as the holder that boardd already knows it as).
+      await main(['market', 'show', 'pub', '--json', '--as', 'claude:elsewhere'])
+      expect(JSON.parse(written.join(''))).toEqual({ args: ['market', 'show', 'pub', '--json'], stateDir: remoteState })
+    } finally {
+      process.stdout.write = original
+      if (before === undefined) delete process.env.BOARDS_REMOTE; else process.env.BOARDS_REMOTE = before
+      await running.close()
+    }
+  })
 })
 
 describe('CLI arguments', () => {
