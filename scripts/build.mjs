@@ -30,7 +30,7 @@ await build({ entryPoints: { cli, client: join(core, 'src/shared/client.ts'), sd
   js: "#!/usr/bin/env -S node --no-warnings\nimport { createRequire as __boardlabCreateRequire } from 'node:module'; const require = __boardlabCreateRequire(import.meta.url);",
 } })
 // The browser SDK the page imports for a market module's part of it: what a module's `ui` file imports as `boardlab/ui`.
-if (existsSync(resolve(browserSdk ?? ''))) {
+if (browserSdk && existsSync(resolve(browserSdk))) {
   await build({ entryPoints: { 'sdk.browser': resolve(browserSdk) }, outdir: out, bundle: true, format: 'esm', platform: 'browser', target: 'es2022', sourcemap: true, define: { 'process.env.NODE_ENV': '"production"' }, external: ['process'] })
 }
 await chmod(join(out, 'cli.js'), 0o755)
