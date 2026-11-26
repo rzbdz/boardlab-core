@@ -56,7 +56,13 @@ export async function startBoardd(options: BoarddOptions) {
     const moved = openDatabase(join(options.stateDir, 'boards.sqlite'), { backups: join(options.stateDir, 'backups'), restore: !options.sharedDatabase })
     try { for (const move of moveAddedLabs(databaseSettings(moved), moves)) console.error(`boardd: lab ${move.id} is a ${move.to} now (was added as ${move.from})`) } finally { moved.close() }
   }
-  const builtIn = createModules(options.catalog, Object.fromEntries(Object.entries(selection).filter(([id]) => !fromMarket.has(id))), {
+  // A module the configuration names that no market offers now (its market was removed, or updated away from it) is
+  // said, not fatal: the rest of the boardd is what a person needs to see to fix it.
+  for (const id of Object.keys(selection)) {
+    if (!fromMarket.has(id) && !options.catalog.some(entry => entry.id === id)) console.error(`boardd: 配置里的模块 ${id} 没有：不在这个 boardlab 里，也不在已装的模块市场里（boardlab module search ${id}）`)
+  }
+  const known = Object.fromEntries(Object.entries(selection).filter(([id]) => !fromMarket.has(id) && options.catalog.some(entry => entry.id === id)))
+  const builtIn = createModules(options.catalog, known, {
     stateDir: options.stateDir, shipped: options.shipped ?? (() => null), timing: config.timing,
     release: { version: options.version ?? 'dev', revision: options.revision ?? 'dev' },
   })
