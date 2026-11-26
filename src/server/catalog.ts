@@ -14,6 +14,8 @@ export interface ModuleContext {
   timing: Record<string, unknown>
   /** The distribution release boardd is serving. */
   release: { version: string, revision: string }
+  /** boardd's configuration file, for a module that changes which modules boardd loads (the market's page). */
+  configFile?: string | null
 }
 
 export type Settings = Record<string, unknown>

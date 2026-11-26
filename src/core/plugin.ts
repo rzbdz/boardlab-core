@@ -31,6 +31,11 @@ export interface PluginContext {
   readonly config: Record<string, unknown>
   /** boardd's state directory: where it keeps what outlives a run (its database, files, its own keys). */
   readonly stateDir: string
+  /**
+   * boardd's configuration file (boardd.json), for a module that changes which modules boardd loads: the market's page
+   * installs and uninstalls from it. Null when boardd runs without one (a test, an embedder).
+   */
+  readonly configFile: string | null
   /** Register a side effect, and the way to undo it (returned by what you register, or returned here). */
   effect(run: () => Dispose | void): Dispose
   /** Listen to an event of the lab; the listener is removed when the plugin is taken down. */
@@ -104,6 +109,7 @@ class Context implements PluginContext {
   private spent = false
 
   constructor(readonly id: string, readonly config: Record<string, unknown>, readonly stateDir: string, private readonly loader: Loader) {}
+  get configFile(): string | null { return this.loader.options.configFile ?? null }
 
   /**
    * Take on an undo: with the effect running now (a nested effect belongs to it), or else with the module. `undo` runs
@@ -199,6 +205,10 @@ export interface LoaderOptions {
   lab: unknown
   /** boardd's state directory, given to every module's context. */
   stateDir: string
+  /** boardd's configuration file, for a module that changes which modules boardd loads. */
+  configFile?: string | null
+  /** How boardd asks for a process that loads what its configuration says now (see BoardLab.reloader). */
+  reloader?: (why: string) => void
   registry: Registry
   /** Where a module's own log lines go. */
   log?: (id: string, line: string) => void
@@ -208,6 +218,7 @@ export interface LoaderOptions {
 
 export class Loader {
   readonly services = new Map<string, unknown>()
+  readonly options: LoaderOptions
   private readonly entries = new Map<string, Entry>()
   private readonly order: string[] = []
   /** The module being set up right now, if any: what a direct `lab.…` registration is recorded with. */
@@ -233,7 +244,7 @@ export class Loader {
     try { return run() } finally { this.effects.shift() }
   }
 
-  constructor(private readonly options: LoaderOptions) {}
+  constructor(options: LoaderOptions) { this.options = options }
 
   get registry(): Registry { return this.options.registry }
   log(id: string, line: string) { this.options.log?.(id, line) }

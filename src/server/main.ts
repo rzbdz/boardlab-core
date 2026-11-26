@@ -1,5 +1,6 @@
 /** `boardlab serve`: build a BoardLab from boardd's configuration and the distribution's modules, and serve it. */
 import { existsSync, mkdirSync } from 'node:fs'
+import type { Socket } from 'node:net'
 import { join } from 'node:path'
 import { DEFAULT_PORT, socketPathFor } from '../shared/client.ts'
 import { openDatabase, scheduleBackups } from '../core/db.ts'
@@ -7,7 +8,7 @@ import { BoardLab } from '../core/lab.ts'
 import { databaseSettings, moveAddedLabs } from '../core/renamed-kinds.ts'
 import { createModules, type CatalogEntry } from './catalog.ts'
 import { marketsOf, marketModules } from './markets.ts'
-import { loadConfig } from './config.ts'
+import { loadConfig, type BoarddConfig } from './config.ts'
 import { serve } from './http.ts'
 
 export interface BoarddOptions {
@@ -43,7 +44,24 @@ export interface BoarddOptions {
   observe?: (method: string, path: string) => void
 }
 
-export async function startBoardd(options: BoarddOptions) {
+/** A boardd running: its lab, where it serves, and the handles its process (a supervisor's worker) needs. */
+export interface Boardd {
+  lab: BoardLab
+  port: number
+  uiDir: string | null
+  config: BoarddConfig
+  hosts: string[]
+  accept(kind: 'http' | 'unix', socket: Socket): void
+  connections(): number
+  stopListening(): void
+  closeIdle(): void
+  endEvents(): void
+  close(): Promise<void>
+  /** Asks for a process that loads what the configuration says now; the CLI wires it under a supervisor. */
+  reload?: (why: string) => void
+}
+
+export async function startBoardd(options: BoarddOptions): Promise<Boardd> {
   mkdirSync(options.stateDir, { recursive: true, mode: 0o700 })
   // What the configuration may name: the modules this distribution has, and what its markets offer.
   const markets = marketsOf(options.stateDir)
@@ -69,6 +87,7 @@ export async function startBoardd(options: BoarddOptions) {
   const builtIn = createModules(options.catalog, known, {
     stateDir: options.stateDir, shipped: options.shipped ?? (() => null), timing: config.timing,
     release: { version: options.version ?? 'dev', revision: options.revision ?? 'dev' },
+    configFile: options.config ?? process.env.BOARDLAB_CONFIG ?? join(options.stateDir, 'boardd.json'),
   })
   // Modules the configuration takes from a market (see markets.ts). One that cannot be imported is said and left out,
   // never fatal: it is a package the machine's owner chose, and the rest of the lab — and the page that says what is
@@ -91,6 +110,8 @@ export async function startBoardd(options: BoarddOptions) {
     db, stateDir: options.stateDir, firmwareDir: options.firmwareDir, filesDir: join(options.stateDir, 'files'),
     bootTiming: config.timing.boot, consoleTiming: config.timing.console, modules, moduleMarkets: markets,
     settings: Object.fromEntries(fromMarkets.map(({ module, settings }) => [module.id, settings])),
+    // The file a module that changes which modules load (the market's page) has to edit: the one this boardd read.
+    configFile: config.source,
   })
   // A copy a little after start and every 6 hours, while this boardd (or worker) is the one serving: a worker an update
   // drained stops with the lab's other services, and a lock in backups/ keeps two workers from copying at once.
@@ -101,7 +122,9 @@ export async function startBoardd(options: BoarddOptions) {
   const uiDir = options.uiDir && (existsSync(join(options.uiDir, 'index.html')) || existsSync(join(options.uiDir, 'frontends.json'))) ? options.uiDir : null
   const server = await serve(lab, { port, hosts: options.hosts, origins: options.origins, cli: options.cli, stateDir: options.stateDir, socketPath: socketPathFor(options.stateDir), uiDir, docsDir: options.shipped?.('docs/help') ?? null, version: options.version, revision: options.revision, ownSocket: !options.worker, handed: options.handed, observe: options.observe, sdkDir: options.shipped?.('dist') ?? null })
   const address = server.http[0]?.address()
-  return {
+  // How this boardd asks for a new process of its own (a module installed or taken out): the CLI wires `reload` when it
+  // runs as a worker under a supervisor.
+  const handle: Boardd = {
     lab, port: address && typeof address === 'object' ? address.port : port, uiDir, config, hosts: ['127.0.0.1', ...(options.hosts ?? [])],
     accept: server.accept, connections: server.connections, stopListening: server.stopListening, closeIdle: server.closeIdle, endEvents: server.endEvents,
     async close() {
@@ -112,4 +135,7 @@ export async function startBoardd(options: BoarddOptions) {
       await server.close(); db.close()
     },
   }
+  // Modules (the market's page) ask through the lab for a boardd that loads what its configuration says now.
+  lab.reloader = why => handle.reload?.(why)
+  return handle
 }

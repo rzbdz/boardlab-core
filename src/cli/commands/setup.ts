@@ -120,7 +120,10 @@ const serve: Command = {
       const { superviseWorker } = await import('../../server/worker.ts')
       // BOARDLAB_DRAIN_CAP_MS: how long a drained worker may keep its connections (default 6 hours).
       const cap = Number(process.env.BOARDLAB_DRAIN_CAP_MS)
-      superviseWorker(boardd, { version, revision, requests, wanted: supervisor.workerExecArgv(process.arch, process.env, []), ...(cap > 0 ? { drainCapMs: cap } : {}) })
+      const worker = superviseWorker(boardd, { version, revision, requests, wanted: supervisor.workerExecArgv(process.arch, process.env, []), ...(cap > 0 ? { drainCapMs: cap } : {}) })
+      // A module installed or taken out changes what the next worker loads: whoever asks for a reload gets a message
+      // when the new worker serves, so a page reloads once rather than when it happens to read the state next.
+      boardd.reload = why => { worker.reload(why) }
     } else if (supervisor) {
       process.send?.({ type: 'ready', version, revision })
       // The supervisor starts a new worker and asks this one to stop taking background work; its existing connections

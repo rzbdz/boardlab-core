@@ -50,6 +50,11 @@ export interface Took { type: 'took', id: number }
 /** What a worker reports every half minute, and the requests it began (method and path) since its last report. */
 export interface Stats { type: 'stats', rss: number, heapUsed: number, heapTotal: number, connections: number, busy: number }
 export interface Requests { type: 'requests', lines: string[] }
+/**
+ * A worker asking for a new one of the same release: what it did changed what a boardd loads (a module was installed
+ * or taken out), and only a worker started after that has it. The next worker serves; this one finishes what it has.
+ */
+export interface Reload { type: 'reload', why?: string }
 
 const isReady = (message: unknown): message is Ready => (message as Ready | undefined)?.type === 'ready'
 
@@ -230,6 +235,15 @@ export async function supervise(options: SupervisorOptions): Promise<void> {
       if (type === 'took') taken(worker, (message as Took).id)
       else if (type === 'stats') record.stats = message as Stats
       else if (type === 'requests') record.requests = [...record.requests, ...(message as Requests).lines].slice(-8)
+      else if (type === 'reload' && worker === current && !updating && !stopping) {
+        // Same release, same CLI: a worker started now loads what the configuration says now.
+        console.log(`boardd: ${(message as Reload).why ?? 'the configuration changed'}; starting a new worker`)
+        updating = true
+        void replaceWith(exec, 'reload')
+          .then(() => console.log('boardd: the new worker serves; the old one finishes what it has'))
+          .catch(error => console.error(`boardd: could not reload: ${(error as Error).message}`))
+          .finally(() => { updating = false; ensure() })
+      }
       else if (isReady(message)) {
         // A worker that cannot take handed connections (a release older than this supervisor) would listen itself,
         // on the port this process holds: it is not given any.

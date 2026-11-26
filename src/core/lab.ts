@@ -43,6 +43,8 @@ export interface BoardLabOptions extends KernelOptions {
   modules?: Module[]
   /** The module markets this boardd was started with, as their copies describe them (see `module-markets.ts`). */
   moduleMarkets?: ModuleMarket[]
+  /** Its own configuration file, for a module that changes which modules boardd loads (the market's page). */
+  configFile?: string | null
   /** Each module's settings, by id (what its catalog entry, or its market, was made with). */
   settings?: Record<string, Record<string, unknown>>
 }
@@ -68,6 +70,12 @@ export class BoardLab {
   readonly api = new Api()
   /** The plugin runtime: what a module registers, and how to take it back. */
   readonly loader: Loader
+  /**
+   * Set by boardd when it runs under a supervisor: asks for a new process that loads what the configuration says now
+   * (a module installed or taken out). Undefined when there is none — a boardd on its own restarts when its operator
+   * says, and a module that needs one has to say so rather than pretend.
+   */
+  reloader?: (why: string) => void
   private readonly stateParts: Array<(you: string) => Record<string, unknown>> = []
   private readonly historyParts: Array<(limit: number) => Record<string, unknown>> = []
   private readonly services: Service[] = []
@@ -79,6 +87,7 @@ export class BoardLab {
       lab: this,
       stateDir: options.stateDir ?? '',
       registry: registryOf(this),
+      configFile: options.configFile ?? null,
       log: (id, line) => console.error(`[${id}] ${line}`),
       report: (id, error) => console.error(`[${id}] ${(error as Error)?.stack ?? error}`),
     })

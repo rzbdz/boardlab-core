@@ -4,7 +4,7 @@
  */
 import cluster from 'node:cluster'
 import type { Socket } from 'node:net'
-import type { Handed, Requests, Stats, Took } from './supervisor.ts'
+import type { Handed, Reload, Requests, Stats, Took } from './supervisor.ts'
 
 export interface Supervised {
   lab: { stop(): void, kernel: { busy: Map<string, unknown> } }
@@ -86,5 +86,7 @@ export function superviseWorker(boardd: Supervised, options: WorkerOptions) {
   channel.on('disconnect', drain)
   const missing = options.wanted.filter(flag => !process.execArgv.includes(flag))
   send({ type: 'ready', version: options.version, revision: options.revision, handed: true, ...(missing.length ? { execArgv: missing } : {}) })
-  return { drain, report, stop: () => { for (const timer of timers) clearInterval(timer) } }
+  /** Ask the supervisor for a worker started now (a module was installed or taken out): it serves, and this one drains. */
+  const reload = (why: string) => send({ type: 'reload', why } satisfies Reload)
+  return { drain, reload, report, stop: () => { for (const timer of timers) clearInterval(timer) } }
 }

@@ -104,4 +104,15 @@ describe('a supervised worker', () => {
       expect(exits).toEqual([0])
     } finally { vi.useRealTimers() }
   })
+
+  it('asks the supervisor for a worker started now when what it loads changed, and says why', () => {
+    const { sent, handlers, boardd, channel } = fake()
+    const worker = superviseWorker(boardd as never, { version: '1', revision: 'r', requests: [], wanted: [], channel: channel as never })
+    // The market's page installed a module: this worker's configuration is out of date, and only one started now has it.
+    worker.reload('a module was installed')
+    expect(sent.at(-1)).toEqual({ type: 'reload', why: 'a module was installed' })
+    // It is a request, not a drain: this worker keeps serving until the supervisor hands over.
+    expect(sent.some(message => message.type === 'drain')).toBe(false)
+    expect(handlers.size).toBeGreaterThan(0)
+  })
 })
