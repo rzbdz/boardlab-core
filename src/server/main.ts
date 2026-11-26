@@ -48,12 +48,14 @@ export async function startBoardd(options: BoarddOptions) {
   // What the configuration may name: the modules this distribution has, and what its markets offer.
   const markets = marketsOf(options.stateDir)
   const fromMarket = new Set(markets.flatMap(market => market.modules.map(module => module.id)))
+  // A module that renamed its id says so in its catalog entry: the configuration that still names it by the old one is
+  // read as naming it now, and the labs someone added by the old name move before any kind is offered.
+  const moves = Object.fromEntries(options.catalog.flatMap(entry => (entry.was ?? []).map(old => [old, entry.id])))
   // A configuration that names no modules takes the distribution's own, never a market's: a market is a shop, not a
   // load order, so installing one to browse it does not run its modules.
-  const config = loadConfig(options.stateDir, options.config, options.catalog.map(entry => entry.id))
+  const config = loadConfig(options.stateDir, options.config, options.catalog.map(entry => entry.id), moves)
+  for (const [from, to] of Object.entries(config.renamed ?? {})) console.error(`boardd: 配置里的模块 ${from} 现在叫 ${to}（已在这次启动时照此加载；boardd.json 里的名字可以改了）`)
   const selection = options.modules ? Object.fromEntries(options.modules.map(id => [id, config.modules[id] ?? {}])) : config.modules
-  // A module that renamed its id moves the labs someone added by the old name before any kind is offered.
-  const moves = Object.fromEntries(options.catalog.flatMap(entry => (entry.was ?? []).map(old => [old, entry.id])))
   if (Object.keys(moves).length) {
     const moved = openDatabase(join(options.stateDir, 'boards.sqlite'), { backups: join(options.stateDir, 'backups'), restore: !options.sharedDatabase })
     try { for (const move of moveAddedLabs(databaseSettings(moved), moves)) console.error(`boardd: lab ${move.id} is a ${move.to} now (was added as ${move.from})`) } finally { moved.close() }

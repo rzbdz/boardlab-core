@@ -1543,6 +1543,20 @@ describe('boardd configuration', () => {
     expect(parseConfig({ modules: ['b'] }, null, ['a', 'b']).modules).toEqual({ b: {} })
     expect(parseConfig({ timing: { boot: { firstMs: 5000 }, scan: { rounds: 3 }, syncMs: 30000 } }).timing).toMatchObject({ boot: { firstMs: 5000 }, scan: { rounds: 3 }, syncMs: 30000 })
     expect(() => parseConfig({ modules: 'b' })).toThrow(/modules 要是/)
+  })
+
+  it('reads a configuration that names a module by the id it had before it renamed itself', () => {
+    // A machine upgrading with `{"modules": {"bsp": {…}}}` must load the board controller, not lose it: the catalog
+    // entry says the old id, and the configuration is read as naming the module now.
+    const moves = { bsp: 'boardctrl' }
+    expect(parseConfig({ modules: { bsp: { instances: ['x'] }, system: {} } }, null, ['boardctrl', 'system'], moves)).toMatchObject({
+      modules: { boardctrl: { instances: ['x'] }, system: {} }, renamed: { bsp: 'boardctrl' },
+    })
+    expect(parseConfig({ modules: ['bsp', 'system'] }, null, ['boardctrl', 'system'], moves).modules).toEqual({ boardctrl: {}, system: {} })
+    // Under both names is one module, and what it says now wins.
+    expect(parseConfig({ modules: { bsp: { a: 1 }, boardctrl: { b: 2 } } }, null, ['boardctrl'], moves).modules).toEqual({ boardctrl: { a: 1, b: 2 } })
+    // Nothing renamed: no note, and the configuration is what it says.
+    expect(parseConfig({ modules: { system: {} } }, null, ['boardctrl', 'system'], moves).renamed).toBeUndefined()
     expect(() => parseConfig({ timing: { boot: { firstMs: 'soon' } } })).toThrow(/timing.boot/)
     const made: unknown[] = []
     const catalog: CatalogEntry[] = [

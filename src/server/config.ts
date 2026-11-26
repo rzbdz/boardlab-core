@@ -9,6 +9,10 @@
  *
  * `timing.boot`, `timing.console`, `syncMs` and `reapMs` are the core's; any other group (`scan`, say) is a module's,
  * handed to modules through their context.
+ *
+ * `modules` names modules by id. A module that renamed itself says what it was called in its catalog entry's `was`
+ * (see renamed-kinds.ts), and a configuration written before the rename is read with those names moved: a machine
+ * upgrading must not lose a module because the file still says what the module used to be called.
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -21,6 +25,8 @@ export interface BoarddConfig {
   timing: { boot?: Partial<BootTiming>, console?: Partial<ConsoleTiming>, syncMs?: number, reapMs?: number, [group: string]: unknown }
   /** Where it was read from, if anywhere. */
   source: string | null
+  /** Modules the file named by an id they no longer have, and the id they run as (`{ bsp: 'boardctrl' }`). */
+  renamed?: Record<string, string>
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
@@ -33,16 +39,31 @@ function timings(value: unknown, where: string): Record<string, number> | undefi
 
 /**
  * Check a configuration as written; `modules` given as a list of ids takes each with its defaults, and left out takes
- * every module the distribution has (`available`).
+ * every module the distribution has (`available`). `moves` (old id -> the id that replaced it) applies to `modules`
+ * before it is checked.
  */
-export function parseConfig(raw: unknown, source: string | null = null, available: string[] = []): BoarddConfig {
+export function parseConfig(raw: unknown, source: string | null = null, available: string[] = [], moves: Record<string, string> = {}): BoarddConfig {
   const where = source ?? '配置'
   if (!isObject(raw)) throw new Error(`${where} 要是一个 JSON 对象`)
   let modules: Record<string, Settings>
+  const moved: Record<string, string> = {}
+  /** A module's id as the configuration's author meant it: the name it had before the module renamed itself. */
+  const renamed = (id: string): string => {
+    const to = moves[id]
+    if (!to) return id
+    moved[id] = to
+    return to
+  }
   if (raw.modules === undefined) modules = Object.fromEntries(available.map(id => [id, {}]))
-  else if (Array.isArray(raw.modules) && raw.modules.every(id => typeof id === 'string')) modules = Object.fromEntries((raw.modules as string[]).map(id => [id, {}]))
-  else if (isObject(raw.modules) && Object.values(raw.modules).every(isObject)) modules = raw.modules as Record<string, Settings>
-  else throw new Error(`${where} 的 modules 要是模块名的数组，或 {模块名: 设置}`)
+  else if (Array.isArray(raw.modules) && raw.modules.every(id => typeof id === 'string')) modules = Object.fromEntries([...new Set((raw.modules as string[]).map(renamed))].map(id => [id, {}]))
+  else if (isObject(raw.modules) && Object.values(raw.modules).every(isObject)) {
+    // A module under both names keeps one entry, and its settings win over the old name's.
+    modules = {}
+    for (const [id, settings] of Object.entries(raw.modules as Record<string, Settings>)) {
+      const next = renamed(id)
+      modules[next] = { ...(modules[next] ?? {}), ...settings }
+    }
+  } else throw new Error(`${where} 的 modules 要是模块名的数组，或 {模块名: 设置}`)
   const timing = raw.timing === undefined ? {} : raw.timing
   if (!isObject(timing)) throw new Error(`${where} 的 timing 要是对象`)
   const ms = (key: string) => {
@@ -54,16 +75,17 @@ export function parseConfig(raw: unknown, source: string | null = null, availabl
     .map(([key, value]) => [key, timings(value, `${where} 的 timing.${key}`)]))
   return {
     modules, source,
+    ...(Object.keys(moved).length ? { renamed: moved } : {}),
     timing: { ...groups, boot: timings(timing.boot, `${where} 的 timing.boot`), console: timings(timing.console, `${where} 的 timing.console`), syncMs: ms('syncMs'), reapMs: ms('reapMs') },
   }
 }
 
 /** The configuration boardd runs with: from `file`, or `$BOARDLAB_CONFIG`, or `boardd.json` in its state directory. */
-export function loadConfig(stateDir: string, file: string | undefined, available: string[]): BoarddConfig {
+export function loadConfig(stateDir: string, file: string | undefined, available: string[], moves: Record<string, string> = {}): BoarddConfig {
   const path = file ?? process.env.BOARDLAB_CONFIG ?? join(stateDir, 'boardd.json')
-  if (!file && !process.env.BOARDLAB_CONFIG && !existsSync(path)) return parseConfig({}, null, available)
+  if (!file && !process.env.BOARDLAB_CONFIG && !existsSync(path)) return parseConfig({}, null, available, moves)
   let raw: unknown
   try { raw = JSON.parse(readFileSync(path, 'utf8')) }
   catch (error) { throw new Error(`读不了 boardd 的配置 ${path}：${(error as Error).message}`) }
-  return parseConfig(raw, path, available)
+  return parseConfig(raw, path, available, moves)
 }
