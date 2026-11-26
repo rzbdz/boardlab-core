@@ -166,7 +166,8 @@ async function run(argv: string[], COMMANDS: Map<string, Command>, usage: (topic
       COMMANDS.set(command.name, { name: command.name, usage: found.usage, ...(found.standalone ? { standalone: true } : {}), ...(found.noBoard ? { noBoard: true } : {}), run: context => found.run(context) })
     }
   }
-  const command = COMMANDS.get(name)
+  // A module's commands are registered below, so the lookup is repeated after that: this file's own commands first.
+  let command = COMMANDS.get(name)
   // What followed the command word, flags included, for commands that hand their arguments on.
   const rest = argv.slice(argv.indexOf(name) + 1)
   const base = { args, argv: rest, flags, flag, json, out, stateDir, catalog: distribution.catalog }
@@ -213,6 +214,8 @@ async function run(argv: string[], COMMANDS: Map<string, Command>, usage: (topic
     if (offered.length) {
       const groups = withMarketCommands([], offered, () => client)
       extend({ groups, commands: groups.flatMap(group => group.commands.map(item => ({ name: item.name, command: item }))) })
+      // The command asked for may be the one this boardd just offered (`boardlab boardctrl …`).
+      command = COMMANDS.get(name)
     }
   }
   if (help) return console.log(name === 'help' ? usage(args.length ? args.join('\0') : flags.has('all') ? '--all' : undefined) : usage(name))
