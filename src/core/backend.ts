@@ -300,7 +300,14 @@ export interface PortsCapability {
  * `refresh`: fetch `url` again even when the backend keeps a cached copy of it. `partitions`: write only these of
  * the package's partitions (names as the backend's `plan` gives them); absent, the whole package.
  */
-export interface FlashPackage { url?: string, path?: string, sha256?: string | null, flasher?: string | null, refresh?: boolean, partitions?: string[] }
+export interface FlashPackage {
+  url?: string, path?: string, sha256?: string | null, flasher?: string | null, refresh?: boolean
+  /** Only these partitions (a plan's names). */
+  partitions?: string[]
+  /** Only this layout's medium (a plan's preset): with a backend that writes one layout of a package it carries
+   * layouts for several media in. */
+  layout?: string
+}
 
 /**
  * Which packages a backend can flash: the URL schemes it fetches (`https`), and the endings of the file names it can

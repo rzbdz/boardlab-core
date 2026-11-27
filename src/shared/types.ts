@@ -368,15 +368,23 @@ export interface FlashPartition {
   selectable: boolean
 }
 
-/** A medium a package lays out (a NOR flash, a disk), in the backend's own words. */
-export interface FlashMedium { id: string, label: string, size: number | null, partitions: FlashPartition[] }
+/** A medium a package lays out (a NOR flash, a disk), in the backend's own words. `kind` groups the media a preset
+ * chooses between (`nor`, `emmc`), so a page can name them without reading a backend's label. */
+export interface FlashMedium { id: string, label: string, size: number | null, kind?: string, partitions: FlashPartition[] }
 
 /**
  * A named selection of partitions, as the backend groups them for a board: "NOR boot" is the layout on the NOR flash,
  * "eMMC/SD" the one on a block device. A package that carries both flashes only the layout the board's own medium
  * reports, so a person picks where the board boots from rather than reading every layout in the package.
  */
-export interface FlashPreset { id: string, label: string, about: string | null, partitions: string[] }
+export interface FlashPreset {
+  id: string
+  label: string
+  about: string | null
+  /** The medium it writes (a `FlashMedium.id`): the preset is that medium *and* these partitions. */
+  layout: string
+  partitions: string[]
+}
 
 /**
  * What a package would write, as its board's backend reads it. `partial`: the backend can write only some partitions;

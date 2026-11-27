@@ -371,8 +371,10 @@ async function booting({ client, args, flag, flags, json, out, remote, target, t
       return out(plan, () => printPlan(plan))
     }
     let partitions = flag('partitions')?.split(',').map(name => name.trim()).filter(Boolean)
+    let layout: string | undefined
     // A preset the backend named, by id or by its label: a person picks "NOR boot" rather than every partition name the
-    // package's several layouts list, and the plan says which partitions that is.
+    // package's several layouts list. The preset names its layout too, so a board whose medium is another one is told
+    // by the backend rather than handed another medium's partitions.
     const presetWanted = flag('preset')
     if (presetWanted) {
       if (partitions?.length) throw new Error('--preset 和 --partitions 选一个：--preset 是后端给的整套选择，--partitions 是逐片挑')
@@ -381,9 +383,10 @@ async function booting({ client, args, flag, flags, json, out, remote, target, t
       const preset = presets.find(item => item.id === presetWanted) ?? presets.find(item => item.label === presetWanted)
       if (!preset) throw new Error(`这个包没有 presets 里的 ${presetWanted}：${presets.length ? presets.map(item => `${item.id}（${item.label}）`).join('、') : '它没有给 presets，用 --partitions 逐片挑'}`)
       partitions = preset.partitions
+      layout = preset.layout
     }
     if (!json) console.error(`${board}：刷机包 ${what}${partitions?.length ? `，只刷 ${partitions.join('、')}` : ''}，要几分钟…`)
-    const result = await client.flashPackage(board, { ...pkg, ...(partitions?.length ? { partitions } : {}), ...(flags.has('reset') ? { reset: true } : {}) }, token())
+    const result = await client.flashPackage(board, { ...pkg, ...(partitions?.length ? { partitions } : {}), ...(layout ? { layout } : {}), ...(flags.has('reset') ? { reset: true } : {}) }, token())
     return out(result, () => console.log(result.output))
   }
   if (flag('sdk') || command === 'flash') {
@@ -411,7 +414,7 @@ function printPlan(plan: FlashPlan) {
   console.log(`${plan.package}${plan.partial ? '（可以只刷其中几个分区：--partitions）' : '（只能整包刷）'}`)
   if (plan.presets?.length) {
     console.log('\n可以按名字整组选（--preset）：')
-    for (const preset of plan.presets) console.log(`  ${preset.id}  ${preset.label}${preset.about ? `：${preset.about}` : ''}\n      ${preset.partitions.join('、') || '（没有能单独刷的分区）'}`)
+    for (const preset of plan.presets) console.log(`  ${preset.id}  ${preset.label}${preset.about ? `：${preset.about}` : ''}\n      ${preset.layout}：${preset.partitions.join('、') || '（没有能单独刷的分区）'}`)
   }
   for (const medium of plan.media) {
     console.log(`\n${medium.label}${medium.size !== null ? `  ${size(medium.size)}` : ''}`)
