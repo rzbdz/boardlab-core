@@ -834,6 +834,8 @@ describe('remote labs', () => {
   it('shows what a package would write, flashes chosen partitions, and resets after when asked', async () => {
     const plan = {
       package: 'pkg.zip', partial: true, notes: ['the layout is chosen once the board is seen'],
+      // The package carries a layout for each medium: a person picks one by name instead of reading both.
+      presets: [{ id: 'nor', label: 'NOR 启动', about: null, layout: 'table-a', partitions: ['boot'] }],
       media: [{ id: 'table-a', label: 'disk · 8 MiB', size: 8 << 20, partitions: [
         { name: 'boot', offset: 0, size: 1 << 20, image: 'boot.img', payload: 4096, selectable: true },
         { name: 'root', offset: 1 << 20, size: null, image: null, payload: null, selectable: false },
@@ -891,10 +893,11 @@ describe('remote labs', () => {
     console.log = (line: string) => printed.push(line)
     try {
       await main(['flash', board, url, '--plan', '--state-dir', dir, '--as', 'user:alice'])
-      await main(['flash', board, url, '--partitions', 'boot', '--reset', '--state-dir', dir, '--as', 'user:alice'])
+      await main(['flash', board, url, '--preset', 'NOR 启动', '--reset', '--state-dir', dir, '--as', 'user:alice'])
     } finally { console.log = log; await running.close() }
-    expect(printed.join('\n')).toMatch(/pkg\.zip（可以只刷其中几个分区：--partitions）\n\ndisk · 8 MiB  8 MiB\n  · boot +@0 B +1 MiB +boot\.img（4 KiB）\n    root +@1 MiB +— +（包里没有，不写）\n\n注意：the layout is chosen once the board is seen/)
-    expect(lab.flashed.at(-1)).toEqual({ device: 'sub0-0', pkg: { url, flasher: null, partitions: ['boot'] } })
+    expect(printed.join('\n')).toMatch(/pkg\.zip（可以只刷其中几个分区：--partitions）\n\n可以按名字整组选（--preset）：\n  nor  NOR 启动\n      table-a：boot\n\ndisk · 8 MiB  8 MiB\n  · boot +@0 B +1 MiB +boot\.img（4 KiB）\n    root +@1 MiB +— +（包里没有，不写）\n\n注意：the layout is chosen once the board is seen/)
+    // The preset by its label names both the partitions and the medium: the backend writes that layout alone.
+    expect(lab.flashed.at(-1)).toEqual({ device: 'sub0-0', pkg: { url, flasher: null, partitions: ['boot'], layout: 'table-a' } })
     expect(lab.calls.at(-1)).toBe('reset sub0-0')
     // A backend that cannot read a package first says so.
     lab.builds = { ...lab.builds, plan: undefined } as unknown as typeof lab.builds
