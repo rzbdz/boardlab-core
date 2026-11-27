@@ -220,7 +220,9 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
       method: 'POST', path: '/api/flash/package', about: '用刷机包刷机：镜像市场里的镜像（image: {market, path}）、链接（url，后端自己取，板子上的 packages 说它收哪些）或传上来的文件（sha256），flasher 选刷机工具，refresh 让后端不用它缓存的这个链接、重新下载；partitions 只刷这些分区（名字照 /api/flash/plan 给的），reset 刷完复位', handle: async ({ body, caller }) => {
         const name = board(body)
         const partitions = Array.isArray(body.partitions) ? body.partitions.map(String) : null
-        const input = { ...packageInput(body), partitions, reset: body.reset === true }
+        // `layout`: a preset's medium (one layout the package carries), so only that one is written.
+        const layout = typeof body.layout === 'string' ? body.layout : null
+        const input = { ...packageInput(body), partitions, layout, reset: body.reset === true }
         return { output: await doing(name, 'boot', '刷机中', caller.holder, body, (signal, line, context) => lab.download.flashPackage(name, who(caller.holder, body), input, signal, line, context), true, 'flash') }
       },
     },

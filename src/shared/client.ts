@@ -483,7 +483,7 @@ export class BoardsClient {
   /** Run one of the actions the path reports (`halt`, `regs`, …). */
   debugAction(board: string, action: string, token?: string | null) { return this.call<{ debug: DebugResult }>('POST', '/api/debug', { board, action, token }) }
   /** Flash a package: a `url` the board's backend downloads, or a file sent first (`sendFile`'s `sha256:<hex>`). */
-  flashPackage(board: string, input: PackageRequest & { partitions?: string[], reset?: boolean }, token?: string | null) { return this.startRun('/api/flash/package', { board, ...input, token }) }
+  flashPackage(board: string, input: PackageRequest & { partitions?: string[], layout?: string, reset?: boolean }, token?: string | null) { return this.startRun('/api/flash/package', { board, ...input, token }) }
   /** What flashing a package would write, without touching the board; `line` gets the backend's progress (a fetch). */
   async flashPlan(board: string, input: PackageRequest, line: (text: string) => void = () => {}, token?: string | null): Promise<FlashPlan> {
     const out = await this.streamCommand('/api/flash/plan', { board, ...input, token }, (_stream, text) => line(text)) as unknown as { ok: boolean, plan?: FlashPlan, message?: string, code?: string | null }

@@ -187,7 +187,7 @@ export class Download {
    * Flash a board with a package: an http(s) `url` the backend downloads itself, or a file sent to boardd (`sha256`,
    * bare or as `sha256:<hex>`). `flasher` names the backend's tool to write it with; `refresh` asks it to download a link again rather than use a copy it cached. `line` gets each progress line.
    */
-  async flashPackage(board: string, caller: Caller, input: PackageInput & { partitions?: string[] | null, reset?: boolean }, signal?: AbortSignal, line?: (text: string) => void, report?: RunReport): Promise<string> {
+  async flashPackage(board: string, caller: Caller, input: PackageInput & { partitions?: string[] | null, layout?: string | null, reset?: boolean }, signal?: AbortSignal, line?: (text: string) => void, report?: RunReport): Promise<string> {
     const lease = this.lab.locks.authorize(board, caller)
     const route = this.lab.backends.route(board)
     const builds = route.backend.builds
@@ -196,6 +196,12 @@ export class Download {
     if (partitions?.some(name => !NAME.test(name))) throw new BoardError('invalid', `分区名不合法：${partitions.join(',')}`)
     const { pkg, what } = await this.package(board, builds.accepts ?? DEFAULT_PACKAGES, input, signal, line)
     if (partitions) pkg.partitions = partitions
+    // A preset names the layout it writes as well as the partitions: a package carrying a layout for each medium
+    // has only the one the board is to boot from written.
+    if (typeof input.layout === 'string' && input.layout) {
+      if (!NAME.test(input.layout)) throw new BoardError('invalid', `布局名不合法：${input.layout}`)
+      pkg.layout = input.layout
+    }
     const detail = `刷机包 ${what}${pkg.flasher ? `（${pkg.flasher}）` : ''}${partitions ? `，只刷 ${partitions.join('、')}` : ''}`
     let output: string
     // A file of the store stays while its flash reads it, however long ago it was sent.
