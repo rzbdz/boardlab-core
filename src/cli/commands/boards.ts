@@ -287,7 +287,8 @@ const commands: Command[] = [
       'flash <board> <链接|文件> [--flasher <工具>] [--refresh]\t用刷机包刷机（要拿锁）：链接由板子所在主机下载（后端可以按链接缓存一段时间，--refresh 重新下载；收哪些链接看 show 里的 packages），本机的文件先传给 boardd；不给 --flasher 时板卡主机按板子、SoC、主机的顺序选第一个能用的刷机工具，下载和复位前就先检查；--flasher 指定一个，主机上没有或用不了就报错并列出可用的',
       'flash <board> --image <市场>:<路径>\t用镜像市场里的镜像刷机（boardlab images 看有哪些）',
       'flash <board> <包> --plan\t只看这个包会写什么：各介质和分区，哪些能单独刷；不碰板子',
-      'flash <board> <包> [--partitions a,b] [--reset]\t只刷这几个分区（名字照 --plan 列的）；--reset 刷完复位，从刚写的系统启动',
+      'flash <board> <包> [--partitions a,b] [--reset]\t只刷这几个分区（名字照 --plan 列的，或 plan 里 presets 的一个：--preset <名字>）；--reset 刷完复位，从刚写的系统启动',
+      'flash <board> <包> --preset <名字>\t按后端给出的选择刷：例如 NOR 启动只刷 NOR 上那套，eMMC/SD 只刷块设备那套（boardlab flash <board> <包> --plan 列出 presets）',
       'flash <board> --sdk <SDK> [--variant V]\t用 SDK 的产物刷机，同 boot --sdk <SDK> --method download',
     ],
     run: context => boot(context, 'flash'),
@@ -369,7 +370,18 @@ async function booting({ client, args, flag, flags, json, out, remote, target, t
       const plan = await client.flashPlan(board, pkg, text => { if (!json) process.stderr.write(text) }, token())
       return out(plan, () => printPlan(plan))
     }
-    const partitions = flag('partitions')?.split(',').map(name => name.trim()).filter(Boolean)
+    let partitions = flag('partitions')?.split(',').map(name => name.trim()).filter(Boolean)
+    // A preset the backend named, by id or by its label: a person picks "NOR boot" rather than every partition name the
+    // package's several layouts list, and the plan says which partitions that is.
+    const presetWanted = flag('preset')
+    if (presetWanted) {
+      if (partitions?.length) throw new Error('--preset 和 --partitions 选一个：--preset 是后端给的整套选择，--partitions 是逐片挑')
+      const plan = await client.flashPlan(board, pkg, text => { if (!json) process.stderr.write(text) }, token())
+      const presets = plan.presets ?? []
+      const preset = presets.find(item => item.id === presetWanted) ?? presets.find(item => item.label === presetWanted)
+      if (!preset) throw new Error(`这个包没有 presets 里的 ${presetWanted}：${presets.length ? presets.map(item => `${item.id}（${item.label}）`).join('、') : '它没有给 presets，用 --partitions 逐片挑'}`)
+      partitions = preset.partitions
+    }
     if (!json) console.error(`${board}：刷机包 ${what}${partitions?.length ? `，只刷 ${partitions.join('、')}` : ''}，要几分钟…`)
     const result = await client.flashPackage(board, { ...pkg, ...(partitions?.length ? { partitions } : {}), ...(flags.has('reset') ? { reset: true } : {}) }, token())
     return out(result, () => console.log(result.output))
@@ -397,6 +409,10 @@ async function booting({ client, args, flag, flags, json, out, remote, target, t
 function printPlan(plan: FlashPlan) {
   const size = (bytes: number | null) => bytes === null ? '—' : bytes >= 1 << 30 ? `${(bytes / (1 << 30)).toFixed(1)} GiB` : bytes >= 1 << 20 ? `${(bytes / (1 << 20)).toFixed(bytes % (1 << 20) ? 1 : 0)} MiB` : bytes >= 1024 ? `${Math.round(bytes / 1024)} KiB` : `${bytes} B`
   console.log(`${plan.package}${plan.partial ? '（可以只刷其中几个分区：--partitions）' : '（只能整包刷）'}`)
+  if (plan.presets?.length) {
+    console.log('\n可以按名字整组选（--preset）：')
+    for (const preset of plan.presets) console.log(`  ${preset.id}  ${preset.label}${preset.about ? `：${preset.about}` : ''}\n      ${preset.partitions.join('、') || '（没有能单独刷的分区）'}`)
+  }
   for (const medium of plan.media) {
     console.log(`\n${medium.label}${medium.size !== null ? `  ${size(medium.size)}` : ''}`)
     for (const part of medium.partitions) {

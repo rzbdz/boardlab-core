@@ -372,10 +372,18 @@ export interface FlashPartition {
 export interface FlashMedium { id: string, label: string, size: number | null, partitions: FlashPartition[] }
 
 /**
- * What a package would write, as its board's backend reads it. `partial`: the backend can write only some partitions;
- * `notes`: what the reader should know (a layout chosen only once the board is seen, say), in the backend's words.
+ * A named selection of partitions, as the backend groups them for a board: "NOR boot" is the layout on the NOR flash,
+ * "eMMC/SD" the one on a block device. A package that carries both flashes only the layout the board's own medium
+ * reports, so a person picks where the board boots from rather than reading every layout in the package.
  */
-export interface FlashPlan { package: string, media: FlashMedium[], partial: boolean, notes: string[] }
+export interface FlashPreset { id: string, label: string, about: string | null, partitions: string[] }
+
+/**
+ * What a package would write, as its board's backend reads it. `partial`: the backend can write only some partitions;
+ * `presets`: selections worth offering by name (the backend groups them); `notes`: what the reader should know (a layout
+ * chosen only once the board is seen, say), in the backend's words.
+ */
+export interface FlashPlan { package: string, media: FlashMedium[], partial: boolean, presets?: FlashPreset[], notes: string[] }
 
 /** A relay, button or line wired to a board, as its backend's relay controller names it (`<board>/power`). */
 export interface Channel {
