@@ -22,6 +22,11 @@ export interface LockFollower {
   binding?: boolean
 }
 
+/** The word a forced takeover's lease carries: it is the board's only until the operation it was taken for ends. */
+export const TAKEOVER = '强制接管'
+/** How a taken-over board goes back: read as what ended it, in the board's history. */
+export const TAKEOVER_END = '接管用完了'
+
 const hash = (token: string) => createHash('sha256').update(token).digest('hex')
 const newToken = () => randomBytes(24).toString('base64url')
 
@@ -73,6 +78,9 @@ export class Locks {
 
   /** Ask the person holding a board to let an agent have it; true if they did. */
   private async askYield(target: string, holder: string, purpose: string, held: Lease): Promise<boolean> {
+    // A board a person took by force is theirs for one operation: an agent cannot ask for it to be let go under them.
+    if (held.purpose === TAKEOVER) throw new BoardError('locked', `${target} 正被人手动操作（强制接管中）：这一次调不通，等这一步结束再试`)
+    // Nothing keeps a person from taking the board by force under the wait, and the wait has nothing to go on then.
     if (this.yields.has(target)) throw new BoardError('conflict', `${target} 已经有一个 AI 在等让出`)
     const request: YieldRequest = {
       id: randomUUID(), board: target, holder, purpose, owner: held.holder,
@@ -314,12 +322,78 @@ export class Locks {
     return { lease: result.lease, token: result.token, gateToken: this.gated(target) ? result.gateToken : null, queued: null }
   }
 
+  /**
+   * A person taking a board someone else holds by force: the holder's lock ends and theirs begins, with no reason asked
+   * for and no warning given — the page's own confirmation is the whole of it, and what it costs is theirs. It lasts one
+   * operation (see `releaseTakeover`), so the holder is not shut out while someone fiddles with the board by hand.
+   */
+  forceTake(target: string, holder: string): Lease {
+    if (!isHuman(holder)) throw new BoardError('forbidden', '只有人可以强制接管')
+    const result = transaction(this.k.db, () => {
+      this.assertTarget(target)
+      const held = this.held(target)
+      if (held?.holder === holder) throw new BoardError('conflict', '锁已经是你自己的了，不用强制接管')
+      // A board nobody holds is not taken by force: the page's button is for someone else's lock.
+      if (!held) throw new BoardError('conflict', `${target} 没有拿着锁：直接拿锁就好`)
+      this.end(held, 'stolen', `${holder}：强制接管`)
+      this.k.db.prepare('DELETE FROM lease_waiters WHERE board=? AND holder=?').run(target, holder)
+      // Granted first, so the takeover is the last thing the board's history says (granting writes a plain lock).
+      const granted = this.grant(target, holder, TAKEOVER)
+      this.k.record(holder, target, 'force-take', null, true, `原持有人 ${held!.holder}`)
+      return { previous: held?.holder ?? null, ...granted }
+    })
+    this.k.emit({ type: 'lease-stolen', board: target, from: result.previous!, by: holder, reason: TAKEOVER })
+    this.k.changed(target)
+    this.stir(target)
+    return result.lease
+  }
+
+  /**
+   * The operation a takeover was taken for has ended: the board goes back to nobody, not to the holder it was taken
+   * from. One whose operation already ended (`missing`), or that boardd sees after starting again, has nothing to go
+   * on for and goes back the same way.
+   */
+  private releaseTakeover(target: string): boolean {
+    const held = this.held(target)
+    if (!held || held.purpose !== TAKEOVER) return false
+    this.end(held, 'released', TAKEOVER_END)
+    this.k.record('boardd', target, 'force-take-end', null, true, '接管用完了，锁放回空着')
+    this.k.changed(target)
+    this.promote(target)
+    this.stir(target)
+    return true
+  }
+
+  /** Every board a person still holds by force: one operation each, and a restart is no place for one to outlive. */
+  releasedTakeovers(): number {
+    const targets = (this.k.db.prepare(`SELECT board FROM leases WHERE status='held' AND purpose=?`).all(TAKEOVER) as Row[])
+      .map(row => String(row.board))
+    for (const target of targets) this.releaseTakeover(target)
+    return targets.length
+  }
+
   end(lease: Pick<Lease, 'id'>, status: Lease['status'], reason: string) {
     this.k.db.prepare('UPDATE leases SET status=?, ended_at=?, end_reason=? WHERE id=?').run(status, this.k.iso(), reason, lease.id)
     // What the holder was doing on the board stops holding it up for whoever comes next.
     this.k.leaseEnded(lease.id)
     const row = this.k.db.prepare('SELECT board FROM leases WHERE id=?').get(lease.id)
     if (row) queueMicrotask(() => this.endings.forEach(listener => listener(String(row.board))))
+  }
+
+  /**
+   * One operation that a person took a board by force for has ended: the board goes back to nobody, not to the holder it
+   * was taken from. Whatever the backend kept of the old holder goes with it — the lab's lease is given back here, and
+   * the next lock takes a fresh one — so the lab is not left refusing a new holder an old lease. Every way an operation
+   * can end calls it (a run's end, a reset and a download mode, a relay or a button, a cancelled run).
+   */
+  finishOperation(target: string): void {
+    const held = this.held(target)
+    if (!held) return
+    // A force-taken board goes back; a lock a person took with `steal` stays theirs until they let go of it.
+    if (held.purpose === TAKEOVER) this.releaseTakeover(target)
+    // A backend's lease of its own is no holder's: give it back, the next lock takes a fresh one. Asked after the
+    // takeover's own follow, which renews that lease for the holder — the last ask wins.
+    setTimeout(() => this.stir(target), 0)
   }
 
   /** A board renamed: its lock, queue and any request to let go of it go with it. */
