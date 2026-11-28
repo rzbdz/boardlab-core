@@ -144,6 +144,34 @@ export class Kernel {
   onIdle(listener: (target: string) => void) { this.idles.push(listener) }
 
   /**
+   * A person stepping in on a board for one operation (`Locks.takeOver`): whatever runs on it stops, as it would if the
+   * lock had ended, and the board is free once the run has returned. A run that must not be left halfway (a flash that
+   * outlives its lock) is refused rather than stopped. A run another boardd makes only that process can stop.
+   */
+  async stopForTakeover(target: string, by: string): Promise<void> {
+    const entry = this.busy.get(target)
+    if (!entry) {
+      const other = this.occupied(target)
+      if (other) throw new BoardError('conflict', `${target} 正在${other.label.replace(/中$/, '')}，由另一个 boardd 进程在做，这里接管不了；等它结束`)
+      return
+    }
+    const run = this.running.get(entry)
+    // A run without a lease is one that must not be left halfway (a load or a flash): it is not stopped for anyone.
+    if (!run || run.lease === null) throw new BoardError('conflict', `${target} 正在${entry.label.replace(/中$/, '')}，这一步不能中途停下，等它完成`)
+    const ended = new Promise<void>(resolve => {
+      const listener = (board: string) => {
+        if (board !== target) return
+        const at = this.idles.indexOf(listener)
+        if (at >= 0) this.idles.splice(at, 1)
+        resolve()
+      }
+      this.idles.push(listener)
+    })
+    run.stop.abort(new CancelledError(`${target} 的${entry.label.replace(/中$/, '')}被 ${by} 手动接管停下了`))
+    await ended
+  }
+
+  /**
    * Stop what is being done to `target` (a board, or `lab:<id>`), whatever kind of operation it is: its run's signal
    * aborts with a CancelledError. Throws when nothing runs there, or when what runs cannot be stopped halfway. The
    * boards stay busy until the run has ended.

@@ -59,8 +59,9 @@ export class Backends {
     lab.locks.addOccupant(target => this.devices.get(target)?.heldBy ?? null)
     lab.locks.addTarget(target => [...this.instances.values()].some(instance => instance.backend.lockTarget?.(target) ?? false))
     lab.locks.addFollower({ binding: true, follow: target => this.followLease(target) })
-    // A lease kept for a run that outlived its lock is given back once the run ends.
-    lab.kernel.onIdle(target => { if (!lab.locks.held(target)) lab.locks.stir(target) })
+    // A run ended: a lease kept for one that outlived its lock is given back, and a person's forced takeover of the
+    // board has had what it was taken for.
+    lab.kernel.onIdle(target => { if (!lab.locks.held(target)) lab.locks.stir(target); lab.locks.finishOperation(target) })
     lab.locks.gated = target => { try { return !!this.route(target).backend.serial.gated } catch { return false } }
     lab.boards.addView((board, record) => this.view(board, record))
     lab.proposals.addOwner({ owns: proposal => typeof proposal.change.lab === 'string', resolve: (actor, proposals, decision, given) => this.resolve(actor, proposals, decision, given) })

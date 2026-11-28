@@ -108,6 +108,11 @@ export interface Board {
   chips: Chip[]
   lease: Lease | null
   waiters: Waiter[]
+  /**
+   * A person stepping in on the board for one operation, beside its lock's holder (it is not taken from them): the
+   * person's holder name, or null. Ends by itself when the operation does.
+   */
+  stepping?: string | null
   /** What boardd is doing to it right now. */
   busy: Busy | null
   /** The board's current or last run, with how it ended: kept after it ends and across a restart of boardd. */

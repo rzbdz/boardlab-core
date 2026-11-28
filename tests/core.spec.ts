@@ -15,7 +15,7 @@ import { BoardLab, inLoadOrder } from '../src/core/lab.ts'
 import { moveAddedLabs } from '../src/core/renamed-kinds.ts'
 import { main } from '../bare/boardlab.ts'
 import { BoardError } from '../src/core/errors.ts'
-import { API_VERSION, type DiscoveryMethod, type LabFields } from '../src/shared/types.ts'
+import { API_VERSION, type DiscoveryMethod, type LabFields, type Lease } from '../src/shared/types.ts'
 import type { Module } from '../src/core/module.ts'
 import type { ConsoleSession } from '../src/core/console.ts'
 import { serve } from '../src/server/http.ts'
@@ -1505,6 +1505,93 @@ describe('busy boards', () => {
 })
 
 const on = (device: string): BoardTarget => ({ board: `lab1-${device}`, device, lease: null, die: 'die0', usbPath: null, port: null, gate: null })
+
+describe('stepping in on a board for one operation', () => {
+  it('lets a person operate a board an agent holds without taking its lock, and hands it back when that operation ends', async () => {
+    const { svc, here } = coreLab()
+    const { lease: held, token: heldToken } = await svc.locks.lock('com260', 'claude:s1', '刷机前的检查')
+    // A person steps in: the agent keeps its lock, and the person gets a token good for one operation on the board.
+    const take = await call(svc, '/api/take-over', 'user:alice', { board: 'com260' }) as { lease: Lease, token: string }
+    expect(take.lease).toMatchObject({ board: 'com260', holder: 'claude:s1' })
+    expect(take.token).toBeTruthy()
+    expect(svc.locks.held('com260')).toMatchObject({ id: held!.id, holder: 'claude:s1', status: 'held' })
+    expect(svc.boards.get('com260').stepping).toBe('user:alice')
+    expect(svc.kernel.db.prepare("SELECT actor, kind, ok FROM actions WHERE board='com260' ORDER BY id DESC LIMIT 1").get())
+      .toMatchObject({ actor: 'user:alice', kind: 'take-over', ok: 1 })
+    // The agent's own token is not accepted while the person is operating; the person's is, for this one operation.
+    await expect(call(svc, '/api/reset', 'claude:s1', { board: 'com260', token: heldToken })).rejects.toMatchObject({ code: 'locked' })
+    await call(svc, '/api/reset', 'user:alice', { board: 'com260', token: take.token })
+    expect(here.resets).toEqual(['com260'])
+    // That operation ends: the step-in is over, and the board is the agent's again, with the lock it never lost.
+    expect(svc.locks.held('com260')).toMatchObject({ id: held!.id, holder: 'claude:s1' })
+    expect(svc.boards.get('com260').stepping).toBeNull()
+    await expect(call(svc, '/api/reset', 'claude:s1', { board: 'com260', token: heldToken })).resolves.toBeUndefined()
+  })
+
+  it('stops what boardd was doing for the holder, and refuses a run that must not be left halfway', async () => {
+    const { svc } = coreLab()
+    const { lease } = await svc.locks.lock('com260', 'claude:s1', '复位看看')
+    // The agent's run under its lock: it ends when its signal aborts, as a backend that watches the signal does.
+    let stopped: string | null = null
+    const running = svc.kernel.doing(['com260'], 'reset', '复位中', 'claude:s1', (_line, signal) =>
+      new Promise<void>((resolve) => { signal.addEventListener('abort', () => { stopped = (signal.reason as Error).message; resolve() }, { once: true }) }),
+    { lease: lease.id })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    // The person steps in: it stops first, before they touch the board, and the step-in then goes ahead.
+    const take = await svc.locks.takeOver('com260', 'user:alice')
+    await running.catch(() => {})
+    expect(stopped).toMatch(/接管/)
+    expect(svc.boards.get('com260').stepping).toBe('user:alice')
+    svc.locks.finishOperation('com260')
+    void take
+    // A flash that outlives its lock (a run with no lease) is not stopped for anyone: it is refused, not interrupted.
+    let finish!: () => void
+    const flashing = svc.kernel.doing(['com260'], 'boot', '刷机中', 'claude:s1', () => new Promise<void>(resolve => { finish = resolve }), { lease: null })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    await expect(svc.locks.takeOver('com260', 'user:alice')).rejects.toThrow(/不能中途停下/)
+    finish()
+    await flashing
+  })
+
+  it('refuses an agent, a board nothing holds, its own holder, and a second person', async () => {
+    const { svc } = coreLab()
+    const { token } = await svc.locks.lock('com260', 'claude:s1', '调 PCIe')
+    // Only a person steps in: an agent asks the person to let go instead (`/api/yields`).
+    await expect(svc.locks.takeOver('com260', 'claude:s2')).rejects.toThrow(/只有人可以/)
+    // Nothing to step in on a board nobody uses: take its lock like everyone else.
+    svc.locks.unlock('com260', { holder: 'claude:s1', token })
+    await expect(svc.locks.takeOver('com260', 'user:alice')).rejects.toThrow(/没有在被使用/)
+    // A person who holds the board operates it as the holder already.
+    await svc.locks.lock('com260', 'user:alice', '用着')
+    await expect(svc.locks.takeOver('com260', 'user:alice')).rejects.toThrow(/直接操作就好/)
+    // One person at a time: the second is refused while the first is operating.
+    await svc.locks.unlock('com260', { holder: 'user:alice' })
+    await svc.locks.lock('com260', 'claude:s1', '再用')
+    await svc.locks.takeOver('com260', 'user:alice')
+    await expect(svc.locks.takeOver('com260', 'user:bob')).rejects.toThrow(/已经有人/)
+    // Taking the lock takes it from a person stepping in too.
+    svc.locks.steal('com260', 'user:bob', '我要用')
+    expect(svc.boards.get('com260').stepping).toBeNull()
+  })
+
+  it('ends a step-in once, however many times it is told the operation ended, and never outlives a restart', async () => {
+    const { svc } = coreLab()
+    const { lease: held } = await svc.locks.lock('com260', 'claude:s1', '调东西')
+    await call(svc, '/api/take-over', 'user:alice', { board: 'com260' })
+    expect(svc.boards.get('com260').stepping).toBe('user:alice')
+    svc.locks.finishOperation('com260')
+    expect(svc.boards.get('com260').stepping).toBeNull()
+    expect(svc.locks.held('com260')).toMatchObject({ id: held!.id, holder: 'claude:s1' })
+    svc.locks.finishOperation('com260')
+    expect(svc.boards.get('com260').stepping).toBeNull()
+    // Boardd starting again finds none left over; one a stopped boardd left is dropped at its start.
+    expect(svc.locks.releasedTakeovers()).toBe(0)
+    await call(svc, '/api/take-over', 'user:alice', { board: 'com260' })
+    expect(svc.locks.releasedTakeovers()).toBe(1)
+    expect(svc.boards.get('com260').stepping).toBeNull()
+    expect(svc.locks.held('com260')).toMatchObject({ holder: 'claude:s1' })
+  })
+})
 
 describe('modules', () => {
   it('serve only what they bring: a boardd of remote labs alone has no slots, scans or Home Assistant', async () => {

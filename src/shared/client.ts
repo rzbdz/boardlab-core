@@ -430,6 +430,9 @@ export class BoardsClient {
   unqueue(board: string) { return this.call<{ ok: true }>('POST', '/api/unqueue', { board }) }
   unlock(board: string, token?: string | null) { return this.call<{ ok: true }>('POST', '/api/unlock', { board, token }) }
   steal(board: string, reason: string) { return this.call<LockResult>('POST', '/api/steal', { board, reason }) }
+  /** A person takes a board someone else holds, for one operation: it goes back to nobody once that ends. */
+  /** Step in on a board for one operation beside whoever holds it: the lock stays theirs, and this ends with the one operation (the token it gives is what acts on the board). */
+  takeOver(board: string) { return this.call<{ lease: Lease, token: string }>('POST', '/api/take-over', { board }) }
   reset(board: string, token?: string | null) { return this.call<{ ok: true }>('POST', '/api/reset', { board, token }) }
   confirm(board: string, note?: string, request?: string | null) { return this.call<{ message: string }>('POST', '/api/confirm', { board, note, request }) }
   channels(board: string) { return this.call<BoardChannels>('GET', `/api/relay?board=${encodeURIComponent(board)}`) }

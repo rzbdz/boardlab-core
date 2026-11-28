@@ -199,7 +199,8 @@ describe('cancelling an operation', () => {
     }
     // Unlocked while it runs: the lease stays with the run, and anyone's cancel stops it under that lease.
     const { running: first } = await flash()
-    expect(leases).toEqual(['take', 'take'])
+    // Taken for the lock, then again once the lock was let go while the run kept the lease.
+    expect(leases).toEqual(['take', 'take', 'take'])
     expect(await call(svc, '/api/cancel', 'user:bob', { target: 'b1' })).toMatchObject({ cancelled: true })
     expect(await first).toBeInstanceOf(CancelledError)
     await svc.locks.settle('b1')
@@ -211,6 +212,9 @@ describe('cancelling an operation', () => {
     expect(svc.boards.get('b1').busy).toMatchObject({ kind: 'boot' })
     finish()
     expect(await second).toMatchObject({ output: 'written' })
+    // The run ended with the board free, so the lab's lease is given back where it used to be kept for the next lock.
+    await svc.locks.settle('b1')
+    expect(leases.at(-1)).toBe('give L1')
   })
 
   it('cancels a run on a lab by `lab:<id>`', async () => {

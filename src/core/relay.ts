@@ -84,6 +84,8 @@ export class Relay {
     this.lab.kernel.record(lease.holder, target, kind, detail, true, message)
     if (route.isBoard) this.lab.boards.setMode(target, kind === 'reset' ? 'normal' : 'fastboot')
     this.lab.kernel.changed(target)
+    // A reset or a download mode is an operation like any other: one a person took the board by force for ends here.
+    this.lab.locks.finishOperation(target)
   }
 
   /** A board's relays and buttons, as its backend's relay controller has them; none for a backend without channels. */
@@ -113,6 +115,7 @@ export class Relay {
     this.lab.kernel.record(lease.holder, board, 'relay', detail, true, message)
     this.lab.boards.setMode(board, 'unknown')
     this.lab.kernel.changed(board)
+    this.lab.locks.finishOperation(board)
     return message
   }
 
@@ -132,6 +135,7 @@ export class Relay {
     }
     this.lab.kernel.record(actor, board, 'confirm', note || null, true, message)
     this.lab.kernel.changed(board)
+    this.lab.locks.finishOperation(board)
     return message
   }
 }

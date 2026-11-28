@@ -218,6 +218,9 @@ export class BoardLab {
     sync.unref()
     reap.unref()
     this.stops = [() => clearInterval(sync), () => clearInterval(reap), () => this.backends.stopFollowing()]
+    // A board someone forced into their own hands for one operation after boardd stopped is nobody's now: a takeover
+    // outlives no restart, and a board left locked by it would be locked by a click nobody remembers making.
+    this.locks.releasedTakeovers()
     for (const service of this.services) {
       const stop = service()
       if (stop) this.stops.push(stop)
