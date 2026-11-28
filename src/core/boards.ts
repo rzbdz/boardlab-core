@@ -64,7 +64,7 @@ export class Boards {
         name, slot: row.slot === null ? null : Number(row.slot), slotRef, serial: str(row.serial), product: str(row.product),
         baseMac: str(row.base_mac), soc: str(row.soc), notes: str(row.notes), source: row.source as Board['source'],
         mode: row.mode as BoardMode, lastSeenAt: str(row.last_seen_at), backend: record.backend,
-        chips: chips.filter(chip => chip.board === name).map(chip => ({ ...chip })), lease: leases.get(name) ?? null,
+        chips: chips.filter(chip => chip.board === name).map(chip => ({ ...chip })), lease: leases.get(name) ?? null, stepping: this.lab.locks.stepping(name),
         waiters: waiters.filter(waiter => waiter.board === name), busy: busy.get(name) ?? null, run: runs.get(name) ?? null, lab: null,
       }
       for (const view of this.views) view(board, record)

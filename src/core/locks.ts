@@ -22,10 +22,13 @@ export interface LockFollower {
   binding?: boolean
 }
 
-/** The word a forced takeover's lease carries: it is the board's only until the operation it was taken for ends. */
-export const TAKEOVER = '强制接管'
-/** How a taken-over board goes back: read as what ended it, in the board's history. */
-export const TAKEOVER_END = '接管用完了'
+/**
+ * A person stepping in beside a holder for one operation: not a lock of their own, and the holder's lock is not taken
+ * from them. It ends when the operation it was given for does (`finishOperation`).
+ */
+export const TAKEOVER = '接管操作'
+/** Who a takeover is recorded as, in the board's history. */
+export const TAKEOVER_BY = 'boardd'
 
 const hash = (token: string) => createHash('sha256').update(token).digest('hex')
 const newToken = () => randomBytes(24).toString('base64url')
@@ -43,6 +46,8 @@ export class Locks {
   private readonly followers: LockFollower[] = []
   private readonly endings: Array<(target: string) => void> = []
   private readonly runs = new Map<string, { tail: Promise<string | null>, waiting: Promise<string | null> | null }>()
+  /** Each board a person is stepping in on (see TAKEOVER): who, and the token of the one operation given to them. */
+  private readonly takes = new Map<string, { holder: string, token: string }>()
   /** Whether the target's consoles have input gates that follow the lock, so a lock comes with a gate token. */
   gated: (target: string) => boolean = () => true
 
@@ -78,8 +83,8 @@ export class Locks {
 
   /** Ask the person holding a board to let an agent have it; true if they did. */
   private async askYield(target: string, holder: string, purpose: string, held: Lease): Promise<boolean> {
-    // A board a person took by force is theirs for one operation: an agent cannot ask for it to be let go under them.
-    if (held.purpose === TAKEOVER) throw new BoardError('locked', `${target} 正被人手动操作（强制接管中）：这一次调不通，等这一步结束再试`)
+    // A board a person is stepping in on is busy with that one operation: an agent waits for it to end like any run.
+    if (this.takes.has(target)) throw new BoardError('locked', `${target} 正被人手动操作：这一步调不通，等它做完再试（板子的锁没变）`)
     // Nothing keeps a person from taking the board by force under the wait, and the wait has nothing to go on then.
     if (this.yields.has(target)) throw new BoardError('conflict', `${target} 已经有一个 AI 在等让出`)
     const request: YieldRequest = {
@@ -191,7 +196,7 @@ export class Locks {
         const yielded = await this.askYield(target, holder, purpose, heldNow)
         if (!yielded) {
           const why = this.k.occupied(target) ? '正忙' : '人还在用'
-          throw new BoardError('locked', `${target} 正被 ${heldNow.holder} 使用（${heldNow.purpose}）：${why}，没有让出`)
+          throw new BoardError('locked', `${target} 正被 ${heldNow.holder} 使用（${heldNow.purpose}）：${why}，没有让出。可以排队等它：${this.queueHint(target, purpose)}`)
         }
       }
     }
@@ -210,8 +215,11 @@ export class Locks {
       const outside = held ? null : this.occupant(target)
       if (!held && !outside && !queue.length) return { ...this.grant(target, holder, purpose), queued: null }
       if (mode === 'none') {
-        throw new BoardError('locked', held ? `${target} 正被 ${held.holder} 使用（${held.purpose}）${queue.length ? `，${queue.length} 人排队` : ''}`
-          : outside ? `${target} 在实验室里正被 ${outside} 使用${queue.length ? `，${queue.length} 人排队` : ''}` : `${target} 有 ${queue.length} 人排队`)
+        const behind = queue.length ? `，${queue.length} 人排队` : ''
+        // The refusal says how to queue for it: an agent reads the answer and knows its next move.
+        throw new BoardError('locked', held ? `${target} 正被 ${held.holder} 使用（${held.purpose}）${behind}。可以排队等它：${this.queueHint(target, purpose)}`
+          : outside ? `${target} 在实验室里正被 ${outside} 使用${behind}。可以排队等它：${this.queueHint(target, purpose)}`
+            : `${target} 有${behind.replace(/^，/, ' ')}。可以排队等它：${this.queueHint(target, purpose)}`)
       }
       const mine = queue.find(waiter => waiter.holder === holder)
       if (mine) return mode === 'join' ? { lease: null, token: null, gateToken: null, queued: { position: queue.indexOf(mine) + 1 } } : { waiter: mine.id }
@@ -259,6 +267,12 @@ export class Locks {
     })
   }
 
+  /**
+   * How a caller that was refused may queue for the target, as the refusal tells it: `lock` with a queue, joining (it
+   * goes on with its own work) or waiting (it holds until the board is handed to it).
+   */
+  private queueHint(target: string, purpose: string): string { return `boardlab lock ${target} --for "${purpose}" --wait（API 里 queue: "wait"；只排队用 join）` }
+
   unqueue(target: string, holder: string) {
     const removed = this.k.db.prepare('DELETE FROM lease_waiters WHERE board=? AND holder=?').run(target, holder).changes
     if (!removed) throw new BoardError('not-found', `你没有在 ${target} 排队`)
@@ -283,19 +297,29 @@ export class Locks {
     this.stir(target)
   }
 
-  /** The caller's held lease. A token proves it; people may instead be matched by their own holder name. */
+  /** The caller's held lease. A token proves it; people may instead be matched by their own holder name. A person
+   *  stepping in on the board (TAKEOVER) acts on the holder's lease for one operation with the token `takeOver` gave them;
+   *  the holder's own token is not accepted again until that operation ends. */
   authorize(target: string, caller: Caller): Lease {
     const held = this.held(target)
     if (!held) throw new BoardError('locked', `请先拿 ${target} 的锁`)
-    const ok = caller.token ? hash(caller.token) === held.tokenHash : isHuman(caller.holder) && caller.holder === held.holder
-    if (!ok) throw new BoardError('locked', `${target} 正被 ${held.holder} 使用（${held.purpose}）`)
+    const stepping = this.steppingIn(target, caller)
+    const holder = caller.token ? hash(caller.token) === held.tokenHash : isHuman(caller.holder) && caller.holder === held.holder
+    // One person drives the board: while someone steps in, the holder's own operations wait for it to end. Their lock is
+    // untouched, and works again the moment the step-in is over.
+    const take = this.takes.get(target)
+    if (take && !stepping) throw new BoardError('locked', `${target} 正被 ${take.holder} 手动操作：等这一步结束`)
+    if (!stepping && !holder) throw new BoardError('locked', `${target} 正被 ${held.holder} 使用（${held.purpose}）`)
     const { tokenHash: _, gateToken: __, ...lease } = held
-    return lease
+    // Read as the stepping-in person's own for the operation: their history, their run, and their end of it.
+    return stepping ? { ...lease, holder: this.takes.get(target)!.holder } : lease
   }
 
   unlock(target: string, caller: Caller): void {
     this.assertTarget(target)
     const lease = this.authorize(target, caller)
+    // Letting go is the holder's own: a person stepping in ends their step-in, never the lock under it.
+    if (this.steppingIn(target, caller)) { this.finishOperation(target); return }
     this.end(lease, 'released', '主动释放')
     this.k.record(lease.holder, target, 'unlock', null, true)
     this.k.changed(target)
@@ -311,6 +335,8 @@ export class Locks {
       this.assertTarget(target)
       const held = this.held(target)
       if (held?.holder === holder) throw new BoardError('conflict', '你已经持有这把锁')
+      // Taking the lock takes it from everyone on it, a person stepping in included.
+      this.takes.delete(target)
       if (held) this.end(held, 'stolen', `${holder}：${reason}`)
       this.k.db.prepare('DELETE FROM lease_waiters WHERE board=? AND holder=?').run(target, holder)
       this.k.record(holder, target, 'steal', reason, true, held ? `原持有人 ${held.holder}` : '没有持有人')
@@ -323,53 +349,41 @@ export class Locks {
   }
 
   /**
-   * A person taking a board someone else holds by force: the holder's lock ends and theirs begins, with no reason asked
-   * for and no warning given — the page's own confirmation is the whole of it, and what it costs is theirs. It lasts one
-   * operation (see `releaseTakeover`), so the holder is not shut out while someone fiddles with the board by hand.
+   * A person stepping in on the board for one operation, beside whoever holds it: the holder's lock stays theirs and
+   * nothing is taken from them — it is not a lock of one's own, which is what `steal` is for. What the caller gets is a
+   * token good for one operation: it is used to act on the board now, and ends when that operation does
+   * (`finishOperation`). Whatever boardd runs on the board stops first, and an agent's runs are refused while it lasts.
    */
-  forceTake(target: string, holder: string): Lease {
-    if (!isHuman(holder)) throw new BoardError('forbidden', '只有人可以强制接管')
-    const result = transaction(this.k.db, () => {
-      this.assertTarget(target)
-      const held = this.held(target)
-      if (held?.holder === holder) throw new BoardError('conflict', '锁已经是你自己的了，不用强制接管')
-      // A board nobody holds is not taken by force: the page's button is for someone else's lock.
-      if (!held) throw new BoardError('conflict', `${target} 没有拿着锁：直接拿锁就好`)
-      this.end(held, 'stolen', `${holder}：强制接管`)
-      this.k.db.prepare('DELETE FROM lease_waiters WHERE board=? AND holder=?').run(target, holder)
-      // Granted first, so the takeover is the last thing the board's history says (granting writes a plain lock).
-      const granted = this.grant(target, holder, TAKEOVER)
-      this.k.record(holder, target, 'force-take', null, true, `原持有人 ${held!.holder}`)
-      return { previous: held?.holder ?? null, ...granted }
-    })
-    this.k.emit({ type: 'lease-stolen', board: target, from: result.previous!, by: holder, reason: TAKEOVER })
-    this.k.changed(target)
-    this.stir(target)
-    return result.lease
-  }
-
-  /**
-   * The operation a takeover was taken for has ended: the board goes back to nobody, not to the holder it was taken
-   * from. One whose operation already ended (`missing`), or that boardd sees after starting again, has nothing to go
-   * on for and goes back the same way.
-   */
-  private releaseTakeover(target: string): boolean {
+  async takeOver(target: string, holder: string): Promise<{ lease: Lease, token: string }> {
+    if (!isHuman(holder)) throw new BoardError('forbidden', '只有人可以接管操作')
+    this.assertTarget(target)
     const held = this.held(target)
-    if (!held || held.purpose !== TAKEOVER) return false
-    this.end(held, 'released', TAKEOVER_END)
-    this.k.record('boardd', target, 'force-take-end', null, true, '接管用完了，锁放回空着')
+    // A board nobody holds is not taken over: the page's button is for a board an agent is using.
+    if (!held) throw new BoardError('conflict', `${target} 没有在被使用：直接拿锁就好`)
+    if (held.holder === holder) throw new BoardError('conflict', '锁已经是你自己的了，直接操作就好')
+    if (this.takes.has(target)) throw new BoardError('conflict', `${target} 已经有人在接管操作了`)
+    // The operation boardd is doing stops before the person touches the board: they cannot both drive it.
+    await this.k.stopForTakeover(target, holder)
+    // Looked at again: the board may have been let go of, or taken by another person, while that ran.
+    const now = this.held(target)
+    if (!now) throw new BoardError('conflict', `${target} 的锁在接管前已经放开了：直接拿锁就好`)
+    if (now.holder === holder) throw new BoardError('conflict', '锁已经是你自己的了，直接操作就好')
+    const token = newToken()
+    const lease: Lease = { id: randomUUID(), board: target, holder, purpose: TAKEOVER, startedAt: this.k.iso(), status: 'held', endedAt: null, endReason: null }
+    this.takes.set(target, { holder, token })
+    this.k.record(holder, target, 'take-over', now.purpose, true, `接管 ${now.holder} 的一次操作`)
     this.k.changed(target)
-    this.promote(target)
-    this.stir(target)
-    return true
+    return { lease: { ...lease, holder: now.holder }, token }
   }
 
-  /** Every board a person still holds by force: one operation each, and a restart is no place for one to outlive. */
-  releasedTakeovers(): number {
-    const targets = (this.k.db.prepare(`SELECT board FROM leases WHERE status='held' AND purpose=?`).all(TAKEOVER) as Row[])
-      .map(row => String(row.board))
-    for (const target of targets) this.releaseTakeover(target)
-    return targets.length
+  /** Whether a person is stepping in on the target for one operation, and who (`null` when nobody is). */
+  stepping(target: string): string | null { return this.takes.get(target)?.holder ?? null }
+
+  /** Whether `caller` is the person stepping in (a token, when given, must be the one `takeOver` gave them). */
+  private steppingIn(target: string, caller: Caller): boolean {
+    const take = this.takes.get(target)
+    if (!take || take.holder !== caller.holder) return false
+    return !caller.token || hash(caller.token) === hash(take.token)
   }
 
   end(lease: Pick<Lease, 'id'>, status: Lease['status'], reason: string) {
@@ -381,19 +395,30 @@ export class Locks {
   }
 
   /**
-   * One operation that a person took a board by force for has ended: the board goes back to nobody, not to the holder it
-   * was taken from. Whatever the backend kept of the old holder goes with it — the lab's lease is given back here, and
-   * the next lock takes a fresh one — so the lab is not left refusing a new holder an old lease. Every way an operation
-   * can end calls it (a run's end, a reset and a download mode, a relay or a button, a cancelled run).
+   * One operation a person stepped in on has ended: their token stops working, the board goes back to its holder
+   * untouched, and whatever the backend kept of a lease for the step-in is given back. Every way an operation can end
+   * calls it (a reset and a download mode, a relay or a button, a run's end).
    */
   finishOperation(target: string): void {
-    const held = this.held(target)
-    if (!held) return
-    // A force-taken board goes back; a lock a person took with `steal` stays theirs until they let go of it.
-    if (held.purpose === TAKEOVER) this.releaseTakeover(target)
-    // A backend's lease of its own is no holder's: give it back, the next lock takes a fresh one. Asked after the
-    // takeover's own follow, which renews that lease for the holder — the last ask wins.
+    const take = this.takes.get(target)
+    if (take) {
+      this.takes.delete(target)
+      this.k.record(TAKEOVER_BY, target, 'take-over-end', null, true, '接管的一次操作做完了')
+      this.k.changed(target)
+    }
+    // A backend's lease of its own is no holder's: give it back, the next lock takes a fresh one.
     setTimeout(() => this.stir(target), 0)
+  }
+
+  /** Every board a person is still stepping in on: one operation each, and a restart is no place for one to outlive. */
+  releasedTakeovers(): number {
+    const targets = [...this.takes.keys()]
+    for (const target of targets) {
+      this.takes.delete(target)
+      this.k.record(TAKEOVER_BY, target, 'take-over-end', null, true, 'boardd 重新开始，接管的一次操作作废')
+      this.k.changed(target)
+    }
+    return targets.length
   }
 
   /** A board renamed: its lock, queue and any request to let go of it go with it. */

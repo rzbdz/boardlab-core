@@ -120,7 +120,7 @@ export function coreEndpoints(lab: BoardLab): Endpoint[] {
     { method: 'POST', path: '/api/unqueue', about: '离开队列', handle: ({ body, caller }) => { lab.locks.unqueue(board(body), caller.holder) } },
     { method: 'POST', path: '/api/steal', about: '抢锁（只有人可以，要写原因）', handle: ({ body, caller }) => lab.locks.steal(board(body), caller.holder, String(body.reason ?? '')) },
     // A person steps in on a board someone else holds, for one operation: the next one that ends gives it back to nobody.
-    { method: 'POST', path: '/api/force-take', about: '强制接管：人把别人的锁拿过来，做完一次操作就自动放掉（不用写理由，后果自负）', handle: ({ body, caller }) => lab.locks.forceTake(board(body), caller.holder) },
+    { method: 'POST', path: '/api/take-over', about: '接管操作：人临时操作一次被别人使用的板子（锁不变，做完这一步自动交回）', handle: async ({ body, caller }) => lab.locks.takeOver(board(body), caller.holder) },
 
     // ---------- relay ----------
     { method: 'POST', path: '/api/reset', about: '复位', handle: async ({ body, caller }) => { const name = board(body); await doing(name, 'reset', '复位中', caller.holder, body, signal => lab.relay.reset(name, who(caller.holder, body), signal), false, 'reset') } },
